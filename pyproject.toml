@@ -1,0 +1,62 @@
+# -*- coding: utf-8 -*-
+
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "jaxrens_active_learning"
+version = "0.1.0"
+authors = [
+    { name = "Nico Unglert", email = "nico.unglert@tuwien.ac.at" }
+]
+description = "Composition root for jaxrens active-learning projects"
+requires-python = ">=3.10"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: OS Independent",
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Chemistry",
+    "Topic :: Scientific/Engineering :: Physics",
+    "Natural Language :: English"
+]
+# This is the *composition root*. The dashboard side only reads a run's
+# artifacts, so it needs alviz + ase -- NOT remote_handler. Running an
+# active-learning loop needs the orchestrator: install the [run] extra.
+#
+# alviz / remote_handler live on a private GitLab instance. For local dev,
+# install the sibling checkouts editable first (see README); in CI, resolve
+# them via CI_JOB_TOKEN (git+https or the package registry).
+dependencies = [
+    # alviz: dashboard engine + generic panels (private; GitLab, madsen group)
+    "alviz @ git+https://gitlab.tuwien.ac.at/e165-03-1_theoretische_materialchemie/madsen-s-research-group/alviz.git@main",
+    "ase",
+]
+readme = "README.md"
+
+[project.optional-dependencies]
+# Orchestration + sampling -- needed to *run* an AL loop (examples/run_al.py),
+# not to build dashboards from an existing run.
+run = [
+    # orchestration (private; GitLab, madsen group)
+    "remote_handler @ git+https://gitlab.tuwien.ac.at/e165-03-1_theoretische_materialchemie/madsen-s-research-group/remote_handler.git@main",
+    # sampling method (private; GitHub)
+    "jaxrens @ git+https://github.com/nunglert/jaxrens.git@main",
+]
+dev = [
+    "pytest",
+    "pytest-cov",
+    "pre-commit",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["test"]
+addopts = "-ra"
+markers = [
+    "local: runs with no cluster/producer; always runnable",
+    "integration: needs a live cluster or producer packages",
+]
