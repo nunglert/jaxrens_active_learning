@@ -40,7 +40,7 @@ readme = "README.md"
 # not to build dashboards from an existing run.
 run = [
     # orchestration (private; GitLab, madsen group)
-    "remote_handler @ git+https://gitlab.tuwien.ac.at/e165-03-1_theoretische_materialchemie/madsen-s-research-group/remote_handler.git@main",
+    "remote_handler @ git+https://gitlab.tuwien.ac.at/e165-03-1_theoretische_materialchemie/madsen-s-research-group/remote_handler.git@jaxrens",
     # sampling method (private; GitHub)
     "jaxrens @ git+https://github.com/nunglert/jaxrens.git@main",
 ]
@@ -52,6 +52,12 @@ dev = [
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+# Ship the jaxrens SLURM body template inside the installed package so
+# JaxrensNSSampler can locate it (via jaxrens_al.template_dir()) from a real,
+# non-editable install too.
+[tool.setuptools.package-data]
+jaxrens_al = ["templates/*.j2"]
 
 [tool.pytest.ini_options]
 testpaths = ["test"]

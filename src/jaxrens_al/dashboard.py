@@ -10,7 +10,7 @@ other; this module is the only place that bridges them.
 from pathlib import Path
 
 from alviz import Dashboard
-from alviz.panels import SampledEnergyVolume
+from alviz.panels import ExtxyzSampledEnergyVolume
 
 from jaxrens_al.panels import DatasetGrowthPanel
 from jaxrens_al.run_layout import evaluated_configs, load_progress
@@ -53,7 +53,7 @@ def build_dashboard(
     # Generic alviz panel: distribution of evaluated (DFT) energies/forces/
     # volumes. Fed the producer's reference keys -- alviz stays neutral.
     board.register_entry(
-        SampledEnergyVolume(
+        ExtxyzSampledEnergyVolume(
             config_files=evald,
             datapath=datapath,
             energy_key=REF_ENERGY_KEY,

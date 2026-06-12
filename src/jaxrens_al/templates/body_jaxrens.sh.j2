@@ -1,0 +1,7 @@
+# Run a jaxrens nested-sampling job. The input file is a jaxrens YAML config
+# (RootSpec); JaxrensNSSampler has already injected the trained model into
+# ``backend.checkpoint_path`` and pointed ``output`` at this job's directory.
+# Trajectories land as ``<out_file_prefix>.traj.extxyz`` (single run) or
+# ``<out_file_prefix>.run{NN}.traj.extxyz`` (multi-replica) in the job cwd and
+# are collected back by the SingleScriptTask.
+jaxrens run -c {{ input_file }} --n-gpus {{ n_cores }} --force

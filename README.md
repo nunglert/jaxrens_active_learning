@@ -4,19 +4,30 @@ The **composition root** for jaxrens active-learning projects. It ties
 together the layered packages and owns all application-specific glue:
 
 ```
-jaxrens_active_learning   ← this repo: wiring + project panels + dashboard assembly
+jaxrens_active_learning   ← this repo: the jaxrens NS Sampler + wiring + panels + dashboard
   ├──▶ remote_handler     orchestration loop, Sampler/Evaluator/Trainer ABCs,
   │                       concrete evaluators (VASP/ORCA) and trainers (MACE/NeuralIL)
   ├──▶ alviz              dashboard engine + generic, reusable panels
-  └──▶ sampler (future)   the pure sampling method
+  └──▶ jaxrens            the nested-sampling method (runs on the cluster)
 ```
 
 No package depends on another except this one, which depends on all of them.
 `alviz` and `remote_handler` never know about each other — this repo is the
-only place that bridges them.
+only place that bridges them. The concrete **nested-sampling Sampler lives
+here** (`jaxrens_al.sampler`), implementing `remote_handler`'s `Sampler`
+interface for `jaxrens` — it does *not* use `remote_handler`'s own deprecated
+`NSTrajectorySampler`.
 
 ## What lives here
 
+- `jaxrens_al.sampler` — `JaxrensNSSampler`, the native nested-sampling
+  `Sampler`. Per AL iteration it injects the freshly trained model into a
+  `jaxrens` YAML config (`backend.checkpoint_path`), runs `jaxrens run` on the
+  cluster via a `remote_handler` `SingleScriptTask`, and reads the resulting
+  `<prefix>.traj.extxyz` trajectories. Needs the `[run]` extra.
+- `jaxrens_al.template_dir()` — directory of the shipped SLURM body template
+  `body_jaxrens.sh.j2` (the `jaxrens run` job body). Copy it into your
+  `REMOTE_HANDLER_SLURM_TEMPLATES` dir alongside your cluster header.
 - `jaxrens_al.run_layout` — reads a remote_handler run's artifacts
   (`AL_progress.json` + the `calchome` tree). **Reads files only; does not
   import remote_handler** — the dashboard is coupled to the orchestrator's
@@ -26,8 +37,10 @@ only place that bridges them.
   paths, plus this project's own panels.
 - `jaxrens_al.panels` — project-specific panels (e.g. `DatasetGrowthPanel`)
   that understand remote_handler's layout. Generic panels belong in `alviz`.
-- `examples/run_al.py` — template wiring the AL loop (needs the `[run]`
-  extra + a configured cluster).
+- `examples/run_al.py` — concrete wiring of the AL loop (jaxrens sampler +
+  VASP evaluator + NeuralIL trainer + dashboard); needs the `[run]` extra + a
+  configured cluster. Run it with `STUB = True` first to exercise the wiring
+  with no cluster. `examples/inputs/ns.yaml` is the base jaxrens NS config.
 
 ## Install
 

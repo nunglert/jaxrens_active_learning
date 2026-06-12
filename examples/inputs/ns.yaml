@@ -1,0 +1,37 @@
+# Example jaxrens nested-sampling config (RootSpec). JaxrensNSSampler keeps
+# everything here EXCEPT it overwrites per iteration:
+#   * backend.checkpoint_path  -> the freshly trained model on the cluster
+#   * output.{working_dir,out_file_prefix,format}
+# and (if you pass start_config_file) init.start_config_file.
+#
+# Validate / migrate a legacy ns.inp with:  jaxrens migrate-ns-inp -i ns.inp -o ns.yaml --validate
+
+run:
+  n_live: 400
+  n_mcmc_steps: 20
+  seed: 42
+
+backend:
+  type: neuralil          # matches the NeuralilILTrainer model (.pkl)
+  checkpoint_path: PLACEHOLDER   # injected per iteration by JaxrensNSSampler
+  periodic: true
+
+moves:
+  - type: gmc
+    n_reflect: 10
+    step_size: 0.1
+    weight: 1.0
+
+init:
+  # One of start_species / start_config_file / start_walker_set / restart_file.
+  start_species: "29 16, 8 4"   # 16 Cu + 4 O
+
+termination:
+  - type: iteration
+    max_iterations: 5000
+
+output:
+  format: extxyz                # JaxrensNSSampler reads <out_file_prefix>.traj.extxyz
+  out_file_prefix: ns
+  traj_interval: 1
+  checkpoint_interval: 500

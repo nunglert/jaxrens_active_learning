@@ -1,8 +1,8 @@
-"""Stub-mode test for the project's jaxrens Sampler.
+"""Tests for the project's native jaxrens Sampler (JaxrensNSSampler).
 
-Needs the [run] extra (remote_handler); skipped otherwise. Runs entirely in
-stub mode -- no cluster, no SSH, no jaxnest -- mirroring remote_handler's own
-NSTrajectorySampler stub tests.
+Needs the [run] extra (remote_handler); the module self-skips otherwise. The
+stub-mode and config-assembly tests run with NO cluster, SSH, or jaxrens --
+only remote_handler + ase + pyyaml on the host.
 """
 
 from unittest.mock import MagicMock
@@ -12,9 +12,11 @@ import pytest
 pytest.importorskip("remote_handler")
 import ase.io  # noqa: E402
 from remote_handler.core.cluster_handler import ClusterConfig  # noqa: E402
+from remote_handler.exceptions import WorkflowError  # noqa: E402
 from remote_handler.workflows.active_learning_base import Sampler  # noqa: E402
 
-from jaxrens_al.sampler import JaxrensNSSampler  # noqa: E402
+from jaxrens_al.sampler import JaxrensNSSampler, _set_dotted  # noqa: E402
+from jaxrens_al.templates import template_dir  # noqa: E402
 
 
 @pytest.fixture
@@ -36,51 +38,115 @@ def mock_cluster_config():
     )
 
 
-@pytest.mark.integration
+def _write_base_config(path):
+    """Minimal-but-valid-shaped jaxrens config the sampler will patch."""
+    path.write_text(
+        "run:\n"
+        "  n_live: 200\n"
+        "backend:\n"
+        "  type: neuralil\n"
+        "  checkpoint_path: PLACEHOLDER\n"
+        "init:\n"
+        "  start_species: '29 16, 8 4'\n"
+    )
+    return path
+
+
 def test_jaxrens_sampler_is_a_sampler(
     mock_remote_fs, mock_cluster_config, tmp_path
 ):
-    ns_input = tmp_path / "ns.inp"
-    ns_input.touch()
+    cfg = _write_base_config(tmp_path / "ns.yaml")
 
     sampler = JaxrensNSSampler(
-        sampling_script="/path/to/ns",
         remote_fs=mock_remote_fs,
         cluster_config=mock_cluster_config,
-        initial_input_file=ns_input,
+        config_file=cfg,
         n_gpu_parallel=4,
         sample_size=100,
-        resample_size=50,
         stub=True,
     )
 
     # Satisfies the orchestrator's Sampler interface...
     assert isinstance(sampler, Sampler)
-    # ...and forwards attribute access to the inner method.
+    # ...with real (not delegated) attributes.
     assert sampler.stub is True
     assert sampler.sample_size == 100
-    assert sampler.resample_size == 50
+    assert sampler.n_gpu_parallel == 4
 
 
-@pytest.mark.integration
-def test_jaxrens_sampler_stub_produces_configs(
+def test_unknown_backend_type_rejected(
     mock_remote_fs, mock_cluster_config, tmp_path
 ):
+    cfg = _write_base_config(tmp_path / "ns.yaml")
+    with pytest.raises(WorkflowError):
+        JaxrensNSSampler(
+            remote_fs=mock_remote_fs,
+            cluster_config=mock_cluster_config,
+            config_file=cfg,
+            backend_type="not-a-backend",
+            stub=True,
+        )
+
+
+def test_build_config_injects_model_and_output(
+    mock_remote_fs, mock_cluster_config, tmp_path
+):
+    """_build_config overwrites checkpoint + output and applies overrides."""
+    cfg = _write_base_config(tmp_path / "ns.yaml")
+    sampler = JaxrensNSSampler(
+        remote_fs=mock_remote_fs,
+        cluster_config=mock_cluster_config,
+        config_file=cfg,
+        backend_type="neuralil",
+        out_file_prefix="ns",
+        stub=True,
+    )
+
+    built = sampler._build_config(
+        model_remote="/remote/models/model_3.pkl",
+        start_remote="/remote/start.xyz",
+        overrides={"run.n_live": 400, "run.n_mcmc_steps": 30},
+    )
+
+    assert built["backend"]["checkpoint_path"] == "/remote/models/model_3.pkl"
+    assert built["backend"]["type"] == "neuralil"
+    assert built["output"]["format"] == "extxyz"
+    assert built["output"]["out_file_prefix"] == "ns"
+    assert built["output"]["working_dir"] == "."
+    # start_config_file replaces the mutually-exclusive start_species.
+    assert built["init"]["start_config_file"] == "/remote/start.xyz"
+    assert "start_species" not in built["init"]
+    # dotted schedule overrides land in the nested config.
+    assert built["run"]["n_live"] == 400
+    assert built["run"]["n_mcmc_steps"] == 30
+
+
+def test_set_dotted_nested_and_guard():
+    config = {"run": {"n_live": 1}}
+    _set_dotted(config, "run.n_live", 9)
+    _set_dotted(config, "output.format", "extxyz")
+    assert config["run"]["n_live"] == 9
+    assert config["output"]["format"] == "extxyz"
+    # non-mapping intermediate is an error
+    with pytest.raises(WorkflowError):
+        _set_dotted({"run": 5}, "run.n_live", 9)
+
+
+def test_stub_produces_sampled_configs(
+    mock_remote_fs, mock_cluster_config, tmp_path
+):
+    cfg = _write_base_config(tmp_path / "ns.yaml")
     calcdir = tmp_path / "iter_0"
     calcdir.mkdir()
-    ns_input = calcdir / "ns.inp"
-    ns_input.write_text("# Mock NS input")
     model_file = tmp_path / "model_0.pkl"
     model_file.write_bytes(b"mock")
 
     sampler = JaxrensNSSampler(
-        sampling_script="/path/to/ns",
         remote_fs=mock_remote_fs,
         cluster_config=mock_cluster_config,
-        initial_input_file=ns_input,
+        config_file=cfg,
         n_gpu_parallel=4,
         sample_size=80,
-        resample_size=None,
         stub=True,
     )
 
@@ -91,5 +157,13 @@ def test_jaxrens_sampler_stub_produces_configs(
     atoms = ase.io.read(sampled, index=":")
     assert len(atoms) == 80
     for at in atoms:
-        assert "energy_uncert" in at.info
-        assert "forces_uncert" in at.info
+        # jaxrens trajectory info keys (NOT uncertainty -- selection is a
+        # separate downstream concern).
+        assert "ns_energy" in at.info
+        assert "run_id" in at.info
+
+
+def test_body_template_is_shipped():
+    body = template_dir() / "body_jaxrens.sh.j2"
+    assert body.exists()
+    assert "jaxrens run" in body.read_text()

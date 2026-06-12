@@ -13,3 +13,4 @@ venv/
 # Run outputs / local figures
 *.pdf
 calchome/
+experiments
