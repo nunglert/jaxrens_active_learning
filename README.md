@@ -33,10 +33,24 @@ interface for `jaxrens` — it does *not* use `remote_handler`'s own deprecated
   import remote_handler** — the dashboard is coupled to the orchestrator's
   output *format*, not its code.
 - `jaxrens_al.dashboard.build_dashboard(calchome)` — assembles an alviz
-  dashboard for a run: generic panels from `alviz.panels` fed the run's
-  paths, plus this project's own panels.
-- `jaxrens_al.panels` — project-specific panels (e.g. `DatasetGrowthPanel`)
-  that understand remote_handler's layout. Generic panels belong in `alviz`.
+  dashboard for a run. Panels are registered **only when their inputs exist**,
+  so a fresh/stub run yields a small board and a full run a richer one; the
+  grid auto-sizes.
+- `jaxrens_al.panels` — project panels. Each takes an alviz skeleton (an
+  abstract `ParityPanel`/`HeatmapPanel`, or the base `Entry`) and equips it
+  with computation that reads the run's artifacts. Generic `Extxyz*` readers
+  belong in `alviz`. Current panels:
+  - `DatasetGrowthPanel` — training-set size per iteration (`AL_progress`).
+  - `NSSampledEnergyPanel` — per-iteration `ns_energy` distribution of the
+    jaxrens-sampled configs.
+  - `NeuralILParityPanel` (← `ParityPanel`) — energy/force parity from the
+    trainer's `save_data` `.npz` bundles.
+  - `NeuralILTrainingCurve` — validation E/F RMSE vs epoch, parsed from the
+    trainer's `error_*.txt`.
+  - `NSThermodynamicsHeatmap` (← `HeatmapPanel`) — heat capacity / mean
+    volume vs temperature, via `jaxrens.postprocess.Monitor` on the NS
+    `.energies` + `.final.checkpoint.h5` (NumPy postprocess — no JAX needed
+    to build the dashboard).
 - `examples/run_al.py` — concrete wiring of the AL loop (jaxrens sampler +
   VASP evaluator + NeuralIL trainer + dashboard); needs the `[run]` extra + a
   configured cluster. Run it with `STUB = True` first to exercise the wiring
@@ -70,12 +84,37 @@ only `alviz`; the run job adds `remote_handler` + `jaxrens`.
 
 ## Visualize a run
 
-```python
-from jaxrens_al import build_dashboard
+Plotting is decoupled from running the loop: `run_al.py` only produces the
+`calchome` run dir, and a standalone CLI turns it into a PDF (re-runnable, like
+the legacy `al_dashboard.py`).
 
-board = build_dashboard("path/to/calchome")
-board.savefig("dashboard.pdf")
+The dashboard is **multipage — one page per AL iteration**, each page carrying
+the same panel layout (parity, sampled-energy, evaluated E/V, NS
+thermodynamics) computed on *that iteration's* artifacts, so the result reads as
+a flip-book of the run. Each iteration is also written on its own under
+`calchome/plots/Iteration<i>.pdf`, then stitched into the combined output via
+`alviz.merge_pdfs` (pypdf). A panel appears on a page only when its inputs exist
+for that iteration, so early iterations get a smaller page.
+
+```bash
+jaxrens-al-dashboard path/to/calchome              # -> calchome/dashboard.pdf (+ plots/Iteration*.pdf)
+jaxrens-al-dashboard path/to/calchome -o out.pdf --force
+jaxrens-al-dashboard path/to/calchome --dry-run    # report per-iteration panel layout only
 ```
+
+From a checkout without installing, the thin wrapper is equivalent:
+`python scripts/al_dashboard.py path/to/calchome`. A single iteration's page is
+also available programmatically:
+
+```python
+from jaxrens_al.dashboard import build_iteration_dashboard
+
+board = build_iteration_dashboard("path/to/calchome", 3, datapath="some/dir")
+board.savefig("iteration3.pdf")
+```
+
+(The cross-iteration *summary* board — dataset growth etc. on one page — is
+still available as `jaxrens_al.build_dashboard(calchome)`.)
 
 ## Test
 

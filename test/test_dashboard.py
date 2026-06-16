@@ -11,12 +11,11 @@ import json
 import numpy as np
 import pytest
 
-pytest.importorskip("ase")
-import ase.io  # noqa: E402
-from ase import Atoms  # noqa: E402
+import ase.io 
+from ase import Atoms 
 
-from jaxrens_al import build_dashboard  # noqa: E402
-from jaxrens_al.run_layout import (  # noqa: E402
+from jaxrens_al import build_dashboard 
+from jaxrens_al.run_layout import ( 
     evaluated_configs,
     load_progress,
 )

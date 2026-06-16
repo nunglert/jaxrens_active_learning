@@ -50,6 +50,10 @@ dev = [
     "pre-commit",
 ]
 
+[project.scripts]
+# Standalone dashboard CLI: turn a finished AL run (calchome) into a PDF.
+jaxrens-al-dashboard = "jaxrens_al.cli:main"
+
 [tool.setuptools.packages.find]
 where = ["src"]
 

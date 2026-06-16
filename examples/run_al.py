@@ -1,9 +1,13 @@
-"""Example: wire and run a jaxrens active-learning loop, then dashboard it.
+"""Example: wire and run a jaxrens active-learning loop.
 
 Composition root in action: ``remote_handler`` drives the
-Sampler -> Evaluator -> Trainer loop, the *sampler* is this project's own
-``JaxrensNSSampler`` (jaxrens nested sampling), and afterwards ``jaxrens_al``
-builds the alviz dashboard from the run directory it produced.
+Sampler -> Evaluator -> Trainer loop and the *sampler* is this project's own
+``JaxrensNSSampler`` (jaxrens nested sampling). The loop only *produces* the
+``calchome`` run directory; visualizing it is a separate step -- run the
+standalone dashboard CLI afterwards (decoupled, like the legacy
+``al_dashboard.py``)::
+
+    jaxrens-al-dashboard calchome            # -> calchome/dashboard.pdf
 
 This is a CONCRETE template -- the values below (SSH aliases, partitions,
 savepaths, conda envs, script/input paths) are real-shaped examples from a
@@ -11,8 +15,8 @@ prior run; **edit them for your cluster/model before running**. It needs the
 ``[run]`` extra (``pip install ".[run]"``) and a configured cluster
 (``REMOTE_HANDLER_CONFIG_DIR`` + SSH config).
 
-Run in stub mode first (``STUB = True``) to exercise the wiring/bookkeeping and
-the dashboard without touching a cluster.
+Run in stub mode first (``STUB = True``) to exercise the wiring/bookkeeping
+without touching a cluster.
 """
 
 import logging
@@ -25,7 +29,7 @@ from remote_handler.core.cluster_handler import ClusterConfig
 from remote_handler.core.file_handler import LocalFileSystem, RemoteFileSystem
 from remote_handler.workflows import active_learning_base, evaluators, trainers
 
-from jaxrens_al import build_dashboard, template_dir
+from jaxrens_al import template_dir
 from jaxrens_al.sampler import JaxrensNSSampler
 
 logging.basicConfig(level=logging.INFO, stream=sys.stdout)
@@ -173,10 +177,10 @@ def main(calchome: str = "calchome"):
     )
     handler.run()
 
-    # --- visualize the run we just produced ------------------------------
-    board = build_dashboard(calchome)
-    board.savefig(calchome / "dashboard.pdf")
-    print(f"Wrote {calchome / 'dashboard.pdf'}")
+    # Visualize separately with the standalone dashboard CLI:
+    #     jaxrens-al-dashboard <calchome>
+    print(f"AL run complete: {calchome}")
+    print(f"Build the dashboard with:  jaxrens-al-dashboard {calchome}")
 
 
 if __name__ == "__main__":

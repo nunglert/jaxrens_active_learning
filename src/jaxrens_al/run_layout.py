@@ -85,3 +85,117 @@ def evaluated_configs_per_iteration(calchome, progress=None) -> list:
         rels = iteration.get("evaluator_output", []) or []
         out.append([(calchome / rel).resolve() for rel in rels])
     return out
+
+
+def sampled_configs_per_iteration(calchome, progress=None) -> list:
+    """List (per iteration) of the sampled-config paths for that iteration."""
+    calchome = Path(calchome)
+    if progress is None:
+        progress = load_progress(calchome)
+    out = []
+    for iteration in progress:
+        rels = iteration.get("sampler_output", []) or []
+        out.append([(calchome / rel).resolve() for rel in rels])
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Per-iteration *working* dirs.
+#
+# AL_progress.json records only the actors' final output files. The richer
+# artifacts some panels need -- the jaxrens NS run (``.energies`` /
+# ``.final.checkpoint.h5``) and the NeuralIL training results (parity
+# ``.npz`` / ``error_*.txt``) -- live inside each iteration's working tree,
+# whose layout is a remote_handler convention:
+#
+#     calchome/<i>/ns_sampler/results/   (JaxrensNSSampler)
+#     calchome/<i>/training/results/     (Neuralil/Mace trainers)
+#
+# These helpers locate them by that convention and glob defensively (missing
+# dirs -> empty), so a panel simply gets nothing to plot when an actor didn't
+# run or produced no such files (e.g. stub mode).
+# ---------------------------------------------------------------------------
+
+
+def iteration_dirs(calchome) -> list:
+    """Numeric per-iteration working dirs (``calchome/0``, ``1``, ...)."""
+    calchome = Path(calchome)
+    dirs = [p for p in calchome.iterdir() if p.is_dir() and p.name.isdigit()]
+    return sorted(dirs, key=lambda p: int(p.name))
+
+
+def ns_result_dirs(calchome, prefix: str = "ns") -> list:
+    """Per-iteration dirs that contain a jaxrens ``<prefix>.energies`` file.
+
+    Returns the *containing* directory of each energies file (what
+    ``jaxrens.postprocess.Monitor.from_directory`` expects), newest last.
+    """
+    out = []
+    for it_dir in iteration_dirs(calchome):
+        found = ns_result_dir(it_dir, prefix=prefix)
+        if found is not None:
+            out.append(found)
+    return out
+
+
+def training_npz_files(calchome) -> list:
+    """All NeuralIL parity ``.npz`` files across iterations (in order).
+
+    The NeuralIL trainer writes ``save_data`` npz bundles
+    (``e_obs``/``e_pred``/``f_obs``/``f_pred``) under each iteration's
+    ``training/results`` tree.
+    """
+    out = []
+    for it_dir in iteration_dirs(calchome):
+        out.extend(training_npz_for_iteration(it_dir))
+    return out
+
+
+def training_error_files(calchome) -> list:
+    """All NeuralIL ``error_*.txt`` training logs across iterations."""
+    out = []
+    for it_dir in iteration_dirs(calchome):
+        out.extend(training_error_for_iteration(it_dir))
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Single-iteration accessors.
+#
+# The multipage dashboard builds one board per AL iteration, so it needs the
+# artifacts of *one* iteration's working dir (``calchome/<i>``) rather than the
+# across-iterations collections above. These take an iteration dir and glob
+# defensively (missing -> None/empty), so a panel simply gets nothing when the
+# actor didn't run for that iteration.
+# ---------------------------------------------------------------------------
+
+
+def iteration_dir(calchome, index: int):
+    """Working dir of a single AL iteration (``calchome/<index>``)."""
+    return Path(calchome) / str(index)
+
+
+def ns_result_dir(it_dir, prefix: str = "ns"):
+    """Dir holding this iteration's jaxrens ``<prefix>.energies``, or None.
+
+    Returns the *containing* directory (what
+    ``jaxrens.postprocess.Monitor.from_directory`` expects), or ``None`` when
+    the NS run for this iteration produced no energies file.
+    """
+    base = Path(it_dir) / "ns_sampler" / "results"
+    if not base.exists():
+        return None
+    hits = sorted(base.rglob(f"{prefix}.energies"))
+    return hits[0].parent if hits else None
+
+
+def training_npz_for_iteration(it_dir) -> list:
+    """This iteration's NeuralIL parity ``.npz`` bundles (possibly empty)."""
+    base = Path(it_dir) / "training" / "results"
+    return sorted(base.rglob("*.npz")) if base.exists() else []
+
+
+def training_error_for_iteration(it_dir) -> list:
+    """This iteration's NeuralIL ``error_*.txt`` logs (possibly empty)."""
+    base = Path(it_dir) / "training" / "results"
+    return sorted(base.rglob("error_*.txt")) if base.exists() else []
