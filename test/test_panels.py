@@ -1,21 +1,25 @@
-"""Tests for the project panels and the data-driven dashboard assembly.
+"""Tests for the project panels' computation, each in isolation.
 
-Each panel's ``compute_data`` is exercised against synthesized run artifacts
+Every panel's ``compute_data`` is exercised against minimal synthesized inputs
 (no cluster, no real NS/training). The thermodynamics panel is tested through a
-seam (``_load_monitor``) so it needs neither jaxrens nor an HDF5 checkpoint.
-"""
+seam (``_load_monitor``) so it needs neither jaxrens nor an HDF5 checkpoint --
+the model for keeping heavy/optional deps out of unit tests.
 
-import json
-from pathlib import Path
+Dashboard *assembly* (which panels get registered, selection, layout) lives in
+test_dashboard.py; this file is only about the panels themselves.
+"""
 
 import numpy as np
 import pytest
 
 pytest.importorskip("alviz")
-import ase.io  # noqa: E402
 from alviz.panels import HeatmapData, ParityData  # noqa: E402
-from ase import Atoms  # noqa: E402
 
+from jaxrens_al.panels.progress import DatasetGrowthPanel  # noqa: E402
+from jaxrens_al.panels.quests import (  # noqa: E402
+    QuestsPCAPanel,
+    ResampledGridPanel,
+)
 from jaxrens_al.panels.sampling import NSSampledEnergyPanel  # noqa: E402
 from jaxrens_al.panels.thermodynamics import (  # noqa: E402
     NSThermodynamicsHeatmap,
@@ -25,103 +29,26 @@ from jaxrens_al.panels.training import (  # noqa: E402
     NeuralILTrainingCurve,
 )
 
-
-# --------------------------------------------------------------------------
-# Synthetic run-dir helpers
-# --------------------------------------------------------------------------
-def _write_configs(path, n, info_keys):
-    frames = []
-    rng = np.random.default_rng(0)
-    for i in range(n):
-        at = Atoms(
-            "Cu2O",
-            positions=rng.uniform(0, 3, (3, 3)),
-            cell=[6, 6, 6],
-            pbc=True,
-        )
-        for k, v in info_keys(i).items():
-            at.info[k] = v
-        at.arrays["REF_forces"] = rng.uniform(-1, 1, (3, 3))
-        frames.append(at)
-    ase.io.write(path, frames)
-
-
-def _make_calchome(tmp_path):
-    calchome = tmp_path / "calchome"
-    (calchome / "sampler_output").mkdir(parents=True)
-    (calchome / "evaluator_output").mkdir(parents=True)
-
-    progress = []
-    for it in range(2):
-        s = f"sampler_output/s{it}.extxyz"
-        e = f"evaluator_output/e{it}.extxyz"
-        _write_configs(
-            calchome / s,
-            5,
-            lambda i, it=it: {
-                "ns_energy": -10.0 - it + 0.1 * i,
-                "run_id": i % 2,
-            },
-        )
-        _write_configs(
-            calchome / e,
-            3,
-            lambda i, it=it: {"REF_energy": -9.0 - it + 0.1 * i},
-        )
-        progress.append(
-            {
-                "steps": [0, 0, 0],
-                "sampler_output": [s],
-                "evaluator_output": [e],
-            }
-        )
-
-        # NeuralIL training artifacts for this iteration. The NeuralIL trainer
-        # (remote_handler NeuralilILTrainer) writes under <calcdir>/training.
-        tdir = calchome / str(it) / "training" / "results"
-        tdir.mkdir(parents=True)
-        _write_npz(tdir / "val.npz")
-        _write_error_log(tdir / "error_0.txt")
-
-    (calchome / "AL_progress.json").write_text(json.dumps(progress))
-    return calchome
-
-
-def _write_npz(path):
-    rng = np.random.default_rng(1)
-    n = 8
-    e_obs = rng.uniform(-30, -20, n)
-    np.savez(
-        path,
-        e_obs=e_obs,
-        e_pred=e_obs + rng.normal(0, 0.1, n),
-        f_obs=rng.uniform(-1, 1, (n, 3, 3)),
-        f_pred=rng.uniform(-1, 1, (n, 3, 3)),
-        types=np.array([[0, 0, 1]] * n),  # 3 atoms each
-    )
-
-
-def _write_error_log(path):
-    path.write_text(
-        "i_epoch=0\n"
-        "Model #1:\n"
-        "F_RMSE = 0.50 eV/A. \n"
-        "E_RMSE = 0.20 eV. \n"
-        "Model #2:\n"
-        "F_RMSE = 0.60 eV/A. \n"
-        "E_RMSE = 0.30 eV. \n"
-        "i_epoch=10\n"
-        "Model #1:\n"
-        "F_RMSE = 0.10 eV/A. \n"
-        "E_RMSE = 0.05 eV. \n"
-    )
+pytestmark = pytest.mark.local
 
 
 # --------------------------------------------------------------------------
-# Panel compute tests
+# Dataset-growth panel: per-iteration and cumulative config counts
 # --------------------------------------------------------------------------
-def test_neuralil_parity_from_npz(tmp_path):
-    _write_npz(tmp_path / "val.npz")
+def test_dataset_growth_counts(make_calchome, tmp_path):
+    calchome = make_calchome(tmp_path, n_iter=2, n_evaluated=[3, 5])
+    (calchome / "dash").mkdir()
+    panel = DatasetGrowthPanel(calchome=calchome, datapath=calchome / "dash")
+    data = panel.compute_data({})
+    assert data["per_iteration"] == [3, 5]
+    assert data["cumulative"] == [3, 8]
+
+
+# --------------------------------------------------------------------------
+# Training panels
+# --------------------------------------------------------------------------
+def test_neuralil_parity_from_npz(tmp_path, write_npz):
+    write_npz(tmp_path / "val.npz")
     panel = NeuralILParityPanel(
         npz_files=[tmp_path / "val.npz"], datapath=tmp_path
     )
@@ -134,8 +61,8 @@ def test_neuralil_parity_from_npz(tmp_path):
     assert data.e_rmse >= 0
 
 
-def test_training_curve_parses_error_log(tmp_path):
-    _write_error_log(tmp_path / "error_0.txt")
+def test_training_curve_parses_error_log(tmp_path, write_error_log):
+    write_error_log(tmp_path / "error_0.txt")
     panel = NeuralILTrainingCurve(
         error_files=[tmp_path / "error_0.txt"], datapath=tmp_path
     )
@@ -147,8 +74,11 @@ def test_training_curve_parses_error_log(tmp_path):
     assert data["e_rmse"][1] == pytest.approx(0.05)
 
 
-def test_sampled_energy_panel(tmp_path):
-    calchome = _make_calchome(tmp_path)
+# --------------------------------------------------------------------------
+# Sampled-energy panel: cross-iteration vs single-iteration mode
+# --------------------------------------------------------------------------
+def test_sampled_energy_panel_cross_iteration(make_calchome, tmp_path):
+    calchome = make_calchome(tmp_path, n_iter=2)
     (calchome / "dash").mkdir()
     panel = NSSampledEnergyPanel(calchome=calchome, datapath=calchome / "dash")
     data = panel.compute_data({})
@@ -157,6 +87,33 @@ def test_sampled_energy_panel(tmp_path):
     assert all(len(e) == 5 for e in data["energies"])
 
 
+def test_sampled_energy_panel_single_iteration(make_calchome, tmp_path):
+    calchome = make_calchome(tmp_path, n_iter=2)
+    (calchome / "dash").mkdir()
+    files = [calchome / "sampler_output" / "s1.extxyz"]
+    panel = NSSampledEnergyPanel(
+        config_files=files,
+        iteration_index=1,
+        datapath=calchome / "dash",
+    )
+    data = panel.compute_data({})
+    # Single box, labelled with the iteration index it was built for.
+    assert data["iterations"] == [1]
+    assert len(data["energies"]) == 1 and len(data["energies"][0]) == 5
+
+
+def test_sampled_energy_panel_requires_exactly_one_source(tmp_path):
+    with pytest.raises(ValueError):
+        NSSampledEnergyPanel(datapath=tmp_path)  # neither source given
+    with pytest.raises(ValueError):
+        NSSampledEnergyPanel(
+            calchome=tmp_path, config_files=[], datapath=tmp_path
+        )  # both given
+
+
+# --------------------------------------------------------------------------
+# Thermodynamics panel (tested through the _load_monitor seam)
+# --------------------------------------------------------------------------
 class _FakeMonitor:
     """Stand-in for jaxrens Monitor with the two methods the panel calls."""
 
@@ -193,55 +150,27 @@ def test_thermodynamics_panel_empty_dirs_raises(tmp_path):
 
 
 # --------------------------------------------------------------------------
-# Dashboard assembly (data-driven): registers only panels with inputs
+# QUESTS resampling panels
 # --------------------------------------------------------------------------
-def test_build_dashboard_assembles_present_panels(tmp_path):
-    from jaxrens_al.dashboard import build_dashboard
-
-    calchome = _make_calchome(tmp_path)
-    board = build_dashboard(calchome, compute=True)
-
-    names = {e.name for e in board._entries}
-    # Present inputs -> these panels registered (no NS .energies -> no thermo).
-    assert {
-        "dataset_growth",
-        "sampled_energy_volume",
-        "sampled_ns_energy",
-        "neuralil_parity",
-        "neuralil_training_curve",
-    } <= names
-    assert "ns_thermodynamics" not in names
-    board.savefig(calchome / "dashboard.pdf")
-    assert (calchome / "dashboard.pdf").exists()
+def test_quests_pca_panel_reads_structures(make_calchome, tmp_path):
+    calchome = make_calchome(tmp_path, n_iter=1, with_resampling=True)
+    pca = calchome / "0" / "ns_sampler" / "results" / "quests_pca.json"
+    panel = QuestsPCAPanel(pca_json=pca, datapath=tmp_path)
+    data = panel.compute_data({})
+    # 6 candidates synthesized, first 2 selected.
+    assert len(data["pc1"]) == 6 and len(data["pc2"]) == 6
+    assert sum(data["selected"]) == 2
+    assert data["evr"] == [0.6, 0.25]
 
 
-# --------------------------------------------------------------------------
-# Per-iteration (multipage) assembly: one page per AL iteration
-# --------------------------------------------------------------------------
-def test_build_iteration_dashboard_present_panels(tmp_path):
-    from jaxrens_al.dashboard import build_iteration_dashboard
-
-    calchome = _make_calchome(tmp_path)
-    datapath = calchome / "dashboard" / "1"
-    datapath.mkdir(parents=True)
-
-    board = build_iteration_dashboard(
-        calchome, 1, datapath=datapath, compute=True
+def test_resampled_grid_panel_reads_selected(make_calchome, tmp_path):
+    calchome = make_calchome(tmp_path, n_iter=1, with_resampling=True)
+    prov = (
+        calchome / "0" / "ns_sampler" / "results"
+        / "resampled_provenance.json"
     )
-    names = {e.name for e in board._entries}
-    # Iteration 1 has evaluated + sampled + NeuralIL training artifacts, but no
-    # NS .energies -> no thermodynamics panel. Dataset growth is cumulative
-    # (summary-only), so it is intentionally absent from a per-iteration page.
-    assert {
-        "sampled_energy_volume",
-        "sampled_ns_energy",
-        "neuralil_parity",
-        "neuralil_training_curve",
-    } == names
-    assert "dataset_growth" not in names
-
-    # The single sampled-energy box is positioned at this iteration's index.
-    box_panel = next(
-        e for e in board._entries if e.name == "sampled_ns_energy"
-    )
-    assert box_panel.data["iterations"] == [1]
+    panel = ResampledGridPanel(provenance_json=prov, datapath=tmp_path)
+    data = panel.compute_data({})
+    # 2 selected: run_ids [0, 1], iters [0, 10].
+    assert data["run_ids"] == [0, 1]
+    assert data["iters"] == [0, 10]

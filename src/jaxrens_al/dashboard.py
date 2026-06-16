@@ -6,14 +6,23 @@ those paths into panels -- generic ``Extxyz*`` readers from ``alviz.panels``
 plus this project's own panels (``jaxrens_al.panels``). Neither alviz nor
 remote_handler knows about the other; this module is the only bridge.
 
-Panels are registered **only when their inputs exist**, so the same call
-produces a 2-panel summary for a fresh/stub run and a fuller board once NS
-postprocessing artifacts and NeuralIL training results are present. The grid
+The same logic serves two views:
+
+* the cross-iteration **summary** (:func:`build_dashboard`) -- one page whose
+  panels aggregate over the whole run;
+* one **per-iteration** page (:func:`build_iteration_dashboard`) fed only that
+  iteration's artifacts -- the CLI loops it into a multipage report.
+
+Both resolve a :class:`RunContext` (the one seam where "where the files live"
+meets "what the panels need"), then call the single :func:`assemble` builder.
+A panel is included **only when its inputs exist** in that context, so a
+fresh/stub run yields a small board and a full run a richer one; the grid
 auto-sizes to the panels that have data.
 """
 
-import math
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Optional
 
 from alviz import Dashboard
 from alviz.panels import ExtxyzSampledEnergyVolume
@@ -24,6 +33,8 @@ from jaxrens_al.panels import (
     NeuralILTrainingCurve,
     NSSampledEnergyPanel,
     NSThermodynamicsHeatmap,
+    QuestsPCAPanel,
+    ResampledGridPanel,
 )
 from jaxrens_al.run_layout import (
     evaluated_configs,
@@ -32,6 +43,8 @@ from jaxrens_al.run_layout import (
     load_progress,
     ns_result_dir,
     ns_result_dirs,
+    quests_pca_json,
+    resampled_provenance_json,
     sampled_configs,
     sampled_configs_per_iteration,
     training_error_files,
@@ -45,60 +58,180 @@ REF_ENERGY_KEY = "REF_energy"
 REF_FORCES_KEY = "REF_forces"
 
 
-def _assemble_entries(calchome, datapath, ns_prefix, ns_k_B):
-    """Build the list of panels whose inputs exist for this run."""
+# ---------------------------------------------------------------------------
+# Context: the resolved artifacts a board is built from. Filled two ways --
+# whole-run (summary) or one iteration -- so a single assembler serves both.
+# ---------------------------------------------------------------------------
+@dataclass
+class RunContext:
+    """Artifacts + settings one board is assembled from.
+
+    ``iteration is None`` marks the cross-iteration summary; otherwise it is
+    the index of the single AL iteration this page covers. The file lists are
+    whatever that view exposes (the whole run, or just this iteration), so the
+    same :func:`assemble` reads them uniformly.
+    """
+
+    calchome: Path
+    datapath: Path
+    eval_files: list = field(default_factory=list)
+    sampled_files: list = field(default_factory=list)
+    npz_files: list = field(default_factory=list)
+    error_files: list = field(default_factory=list)
+    ns_dirs: list = field(default_factory=list)
+    quests_pca: Optional[Path] = None
+    resampled_provenance: Optional[Path] = None
+    iteration: Optional[int] = None
+    ns_prefix: str = "ns"
+    ns_k_B: float = 1.0
+    force_recompute: bool = False
+
+    @property
+    def is_summary(self) -> bool:
+        return self.iteration is None
+
+    @property
+    def common(self) -> dict:
+        """Kwargs every panel shares (cache dir + recompute flag)."""
+        return dict(
+            datapath=self.datapath, force_recompute=self.force_recompute
+        )
+
+
+def summary_context(
+    calchome,
+    datapath,
+    *,
+    ns_prefix: str = "ns",
+    ns_k_B: float = 1.0,
+    force_recompute: bool = False,
+) -> RunContext:
+    """Whole-run context: every iteration's artifacts, aggregated."""
+    calchome = Path(calchome)
     progress = load_progress(calchome)
-    entries = []
+    return RunContext(
+        calchome=calchome,
+        datapath=Path(datapath),
+        eval_files=evaluated_configs(calchome, progress),
+        sampled_files=sampled_configs(calchome, progress),
+        npz_files=training_npz_files(calchome),
+        error_files=training_error_files(calchome),
+        ns_dirs=ns_result_dirs(calchome, prefix=ns_prefix),
+        iteration=None,
+        ns_prefix=ns_prefix,
+        ns_k_B=ns_k_B,
+        force_recompute=force_recompute,
+    )
 
-    # Project panel: training-set growth (always -- needs only AL_progress).
-    entries.append(DatasetGrowthPanel(calchome=calchome, datapath=datapath))
 
-    # Generic alviz panel: distribution of evaluated (DFT) energies/forces/
-    # volumes. Fed the producer's reference keys -- alviz stays neutral.
-    evald = evaluated_configs(calchome, progress)
-    if evald:
-        entries.append(
-            ExtxyzSampledEnergyVolume(
-                config_files=evald,
-                datapath=datapath,
-                energy_key=REF_ENERGY_KEY,
-                forces_key=REF_FORCES_KEY,
-            )
+def iteration_context(
+    calchome,
+    datapath,
+    index,
+    *,
+    eval_files=None,
+    sampled_files=None,
+    ns_prefix: str = "ns",
+    ns_k_B: float = 1.0,
+    force_recompute: bool = False,
+) -> RunContext:
+    """Single-iteration context (``calchome/<index>``'s artifacts).
+
+    ``eval_files`` / ``sampled_files`` may be passed in (the CLI already has
+    them per iteration) to avoid re-reading ``AL_progress.json`` each page.
+    """
+    calchome = Path(calchome)
+    it_dir = iteration_dir(calchome, index)
+    if eval_files is None:
+        eval_files = evaluated_configs_per_iteration(calchome)[index]
+    if sampled_files is None:
+        sampled_files = sampled_configs_per_iteration(calchome)[index]
+    ns_dir = ns_result_dir(it_dir, prefix=ns_prefix)
+    return RunContext(
+        calchome=calchome,
+        datapath=Path(datapath),
+        eval_files=eval_files,
+        sampled_files=sampled_files,
+        npz_files=training_npz_for_iteration(it_dir),
+        error_files=training_error_for_iteration(it_dir),
+        ns_dirs=[ns_dir] if ns_dir is not None else [],
+        quests_pca=quests_pca_json(it_dir),
+        resampled_provenance=resampled_provenance_json(it_dir),
+        iteration=index,
+        ns_prefix=ns_prefix,
+        ns_k_B=ns_k_B,
+        force_recompute=force_recompute,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Assemble + select: the one builder for both views.
+# ---------------------------------------------------------------------------
+def assemble(ctx: RunContext) -> list:
+    """Panels whose inputs exist in ``ctx`` (summary or single iteration).
+
+    Each entry is built only when its artifact is present; ``None`` entries are
+    dropped. ``dataset_growth`` is cumulative, so it is summary-only; the
+    sampled-energy panel reads the whole run in summary mode and one
+    iteration's configs per page.
+    """
+    c = ctx.common
+
+    if not ctx.sampled_files:
+        sampled_panel = None
+    elif ctx.is_summary:
+        sampled_panel = NSSampledEnergyPanel(calchome=ctx.calchome, **c)
+    else:
+        sampled_panel = NSSampledEnergyPanel(
+            config_files=ctx.sampled_files,
+            iteration_index=ctx.iteration,
+            **c,
         )
 
-    # Project panel: sampled NS-energy distribution across iterations.
-    if sampled_configs(calchome, progress):
-        entries.append(
-            NSSampledEnergyPanel(calchome=calchome, datapath=datapath)
+    panels = [
+        # Training-set growth -- cumulative, so summary-only.
+        DatasetGrowthPanel(calchome=ctx.calchome, **c)
+        if ctx.is_summary
+        else None,
+        # Evaluated (DFT) energy/forces/volume distribution.
+        ExtxyzSampledEnergyVolume(
+            config_files=ctx.eval_files,
+            energy_key=REF_ENERGY_KEY,
+            forces_key=REF_FORCES_KEY,
+            **c,
         )
-
-    # Project panel: NeuralIL parity from the trainer's .npz bundles.
-    npz = training_npz_files(calchome)
-    if npz:
-        entries.append(NeuralILParityPanel(npz_files=npz, datapath=datapath))
-
-    # Project panel: NeuralIL training-error curve from error_*.txt.
-    err = training_error_files(calchome)
-    if err:
-        entries.append(
-            NeuralILTrainingCurve(error_files=err, datapath=datapath)
+        if ctx.eval_files
+        else None,
+        # Sampled NS-energy distribution (built above; differs per view).
+        sampled_panel,
+        # QUESTS resampling map (per iteration; only when the selector ran).
+        QuestsPCAPanel(pca_json=ctx.quests_pca, **c)
+        if ctx.quests_pca
+        else None,
+        # Resampled configs on a (NS iteration, replica) grid.
+        ResampledGridPanel(provenance_json=ctx.resampled_provenance, **c)
+        if ctx.resampled_provenance
+        else None,
+        # NeuralIL parity from the trainer's .npz bundles.
+        NeuralILParityPanel(npz_files=ctx.npz_files, **c)
+        if ctx.npz_files
+        else None,
+        # NeuralIL training-error curve from error_*.txt.
+        NeuralILTrainingCurve(error_files=ctx.error_files, **c)
+        if ctx.error_files
+        else None,
+        # NS heat capacity vs T (needs .energies + .final.checkpoint.h5).
+        NSThermodynamicsHeatmap(
+            result_dirs=ctx.ns_dirs,
+            quantity="heat_capacity",
+            k_B=ctx.ns_k_B,
+            prefix=ctx.ns_prefix,
+            **c,
         )
-
-    # Project panel: NS heat capacity vs T (needs the run's .energies +
-    # .final.checkpoint.h5 collected back into the iteration dirs).
-    ns_dirs = ns_result_dirs(calchome, prefix=ns_prefix)
-    if ns_dirs:
-        entries.append(
-            NSThermodynamicsHeatmap(
-                result_dirs=ns_dirs,
-                quantity="heat_capacity",
-                k_B=ns_k_B,
-                prefix=ns_prefix,
-                datapath=datapath,
-            )
-        )
-
-    return entries
+        if ctx.ns_dirs
+        else None,
+    ]
+    return [p for p in panels if p is not None]
 
 
 def build_dashboard(
@@ -111,8 +244,11 @@ def build_dashboard(
     ns_prefix: str = "ns",
     ns_k_B: float = 1.0,
     compute: bool = True,
+    only=None,
+    exclude=None,
+    force_recompute: bool = False,
 ) -> Dashboard:
-    """Build a dashboard summarizing a remote_handler / jaxrens run.
+    """Build the cross-iteration summary board for a run.
 
     Args:
         calchome: Path to a run directory (holds ``AL_progress.json``).
@@ -124,6 +260,8 @@ def build_dashboard(
         ns_k_B: Boltzmann constant for the thermodynamics panel, in the energy
             units of the NS energies (1.0 reduced; 8.617e-5 eV with T in K).
         compute: If True, run the compute/plot lifecycle before returning.
+        only / exclude: Restrict the rendered panels by name.
+        force_recompute: Recompute panel data even if a JSON cache exists.
 
     Returns:
         The assembled :class:`alviz.Dashboard`.
@@ -132,93 +270,24 @@ def build_dashboard(
     datapath = Path(datapath) if datapath else calchome / "dashboard"
     datapath.mkdir(parents=True, exist_ok=True)
 
-    entries = _assemble_entries(calchome, datapath, ns_prefix, ns_k_B)
-
-    nrows = max(1, math.ceil(len(entries) / ncols))
-    board = Dashboard(nrows, ncols, width_per_panel, height_per_panel)
-    for idx, entry in enumerate(entries):
-        row, col = divmod(idx, ncols)
-        board.register_entry(entry, (str(row), str(col)))
-
+    ctx = summary_context(
+        calchome,
+        datapath,
+        ns_prefix=ns_prefix,
+        ns_k_B=ns_k_B,
+        force_recompute=force_recompute,
+    )
+    board = Dashboard.from_entries(
+        assemble(ctx),
+        ncols=ncols,
+        width_per_panel=width_per_panel,
+        height_per_panel=height_per_panel,
+        only=only,
+        exclude=exclude,
+    )
     if compute:
-        board.allocate_panels()
-        board.compute_data()
-        board.plot_panels()
-
+        board.render()
     return board
-
-
-# ---------------------------------------------------------------------------
-# Per-iteration (multipage) assembly.
-#
-# The CLI renders one dashboard page per AL iteration. Each page reuses the
-# same panels as the summary, but fed *only that iteration's* artifacts, so the
-# pages share a layout and read as a flip-book of the run. As above, a panel is
-# registered only when its inputs exist for that iteration -- early iterations
-# (no NS postprocess / no training results yet) get a smaller page.
-# ---------------------------------------------------------------------------
-
-
-def _assemble_iteration_entries(
-    calchome,
-    datapath,
-    index,
-    eval_files,
-    sampled_files,
-    ns_prefix,
-    ns_k_B,
-    force_recompute,
-):
-    """Panels for a single AL iteration whose inputs exist."""
-    it_dir = iteration_dir(calchome, index)
-    common = dict(datapath=datapath, force_recompute=force_recompute)
-    entries = []
-
-    # Evaluated (DFT) energy/volume distribution for this iteration.
-    if eval_files:
-        entries.append(
-            ExtxyzSampledEnergyVolume(
-                config_files=eval_files,
-                energy_key=REF_ENERGY_KEY,
-                forces_key=REF_FORCES_KEY,
-                **common,
-            )
-        )
-
-    # Sampled NS-energy distribution for this iteration (single box).
-    if sampled_files:
-        entries.append(
-            NSSampledEnergyPanel(
-                config_files=sampled_files,
-                iteration_index=index,
-                **common,
-            )
-        )
-
-    # NeuralIL parity from this iteration's training .npz bundles.
-    npz = training_npz_for_iteration(it_dir)
-    if npz:
-        entries.append(NeuralILParityPanel(npz_files=npz, **common))
-
-    # NeuralIL training-error curve from this iteration's error_*.txt.
-    err = training_error_for_iteration(it_dir)
-    if err:
-        entries.append(NeuralILTrainingCurve(error_files=err, **common))
-
-    # NS thermodynamics from this iteration's NS run.
-    ns_dir = ns_result_dir(it_dir, prefix=ns_prefix)
-    if ns_dir is not None:
-        entries.append(
-            NSThermodynamicsHeatmap(
-                result_dirs=[ns_dir],
-                quantity="heat_capacity",
-                k_B=ns_k_B,
-                prefix=ns_prefix,
-                **common,
-            )
-        )
-
-    return entries
 
 
 def build_iteration_dashboard(
@@ -234,6 +303,8 @@ def build_iteration_dashboard(
     ns_prefix: str = "ns",
     ns_k_B: float = 1.0,
     compute: bool = True,
+    only=None,
+    exclude=None,
     force_recompute: bool = False,
 ):
     """Build one dashboard page for a single AL iteration.
@@ -245,41 +316,33 @@ def build_iteration_dashboard(
             use a per-iteration subdir to avoid clobbering other pages).
         eval_files / sampled_files: This iteration's evaluated/sampled config
             files. If None, they are looked up from ``AL_progress.json``.
+        only / exclude: Restrict the rendered panels by name.
         force_recompute: Recompute panel data even if a JSON cache exists.
 
     Returns:
         The assembled :class:`alviz.Dashboard`, or ``None`` if this iteration
         has no panels with data.
     """
-    calchome = Path(calchome)
-    if eval_files is None:
-        eval_files = evaluated_configs_per_iteration(calchome)[index]
-    if sampled_files is None:
-        sampled_files = sampled_configs_per_iteration(calchome)[index]
-
-    entries = _assemble_iteration_entries(
+    ctx = iteration_context(
         calchome,
         Path(datapath),
         index,
-        eval_files,
-        sampled_files,
-        ns_prefix,
-        ns_k_B,
-        force_recompute,
+        eval_files=eval_files,
+        sampled_files=sampled_files,
+        ns_prefix=ns_prefix,
+        ns_k_B=ns_k_B,
+        force_recompute=force_recompute,
     )
-    if not entries:
+    board = Dashboard.from_entries(
+        assemble(ctx),
+        ncols=ncols,
+        width_per_panel=width_per_panel,
+        height_per_panel=height_per_panel,
+        only=only,
+        exclude=exclude,
+    )
+    if not board.entries:
         return None
-
-    nrows = max(1, math.ceil(len(entries) / ncols))
-    board = Dashboard(nrows, ncols, width_per_panel, height_per_panel)
-    for idx, entry in enumerate(entries):
-        row, col = divmod(idx, ncols)
-        board.register_entry(entry, (str(row), str(col)))
-
     if compute:
-        board.allocate_panels()
-        board.compute_data()
-        board.plot_panels()
-        board._fig.suptitle(f"AL iteration {index}")
-
+        board.render(suptitle=f"AL iteration {index}")
     return board

@@ -43,6 +43,10 @@ interface for `jaxrens` — it does *not* use `remote_handler`'s own deprecated
   - `DatasetGrowthPanel` — training-set size per iteration (`AL_progress`).
   - `NSSampledEnergyPanel` — per-iteration `ns_energy` distribution of the
     jaxrens-sampled configs.
+  - `QuestsPCAPanel` — QUESTS descriptor PCA map of one iteration's NS
+    candidates, highlighting the resampled ones (`quests_pca.json`).
+  - `ResampledGridPanel` — the resampled configs scattered on a (NS
+    iteration, replica/`run_id`) grid (`resampled_provenance.json`).
   - `NeuralILParityPanel` (← `ParityPanel`) — energy/force parity from the
     trainer's `save_data` `.npz` bundles.
   - `NeuralILTrainingCurve` — validation E/F RMSE vs epoch, parsed from the
@@ -100,6 +104,8 @@ for that iteration, so early iterations get a smaller page.
 jaxrens-al-dashboard path/to/calchome              # -> calchome/dashboard.pdf (+ plots/Iteration*.pdf)
 jaxrens-al-dashboard path/to/calchome -o out.pdf --force
 jaxrens-al-dashboard path/to/calchome --dry-run    # report per-iteration panel layout only
+jaxrens-al-dashboard path/to/calchome --only sampled_ns_energy neuralil_parity   # subset of panels
+jaxrens-al-dashboard path/to/calchome --exclude dataset_growth                   # all but these
 ```
 
 From a checkout without installing, the thin wrapper is equivalent:
@@ -118,7 +124,17 @@ still available as `jaxrens_al.build_dashboard(calchome)`.)
 
 ## Test
 
-The dashboard side is fully testable without a cluster (synthetic run dir):
+The dashboard side is fully testable without a cluster. The suite mirrors the
+code's layers — `test_run_layout.py` (artifact reading), `test_panels.py` (each
+panel's `compute_data`), `test_dashboard.py` (assembly/selection/layout),
+`test_cli.py` (CLI + multipage merge), `test_sampler.py` (the run-side sampler).
+All synthetic run dirs come from one `make_calchome` factory in `conftest.py`.
+
 ```bash
-pytest
+pytest                 # everything installed here runs
+pytest -m local        # dashboard side only (alviz + ase + pypdf; no producer)
+pytest -m integration  # run-side sampler (needs remote_handler)
 ```
+
+Dashboard-side files are marked `local`; `test_sampler.py` is `integration` and
+also self-skips (via `importorskip`) when `remote_handler` is absent.

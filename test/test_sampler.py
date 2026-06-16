@@ -18,6 +18,10 @@ from remote_handler.workflows.active_learning_base import Sampler  # noqa: E402
 from jaxrens_al.sampler import JaxrensNSSampler, _set_dotted  # noqa: E402
 from jaxrens_al.templates import template_dir  # noqa: E402
 
+# Run-side: needs the producer package (remote_handler), unlike the
+# dashboard-side suites which are all `local`.
+pytestmark = pytest.mark.integration
+
 
 @pytest.fixture
 def mock_remote_fs():
@@ -161,6 +165,119 @@ def test_stub_produces_sampled_configs(
         # separate downstream concern).
         assert "ns_energy" in at.info
         assert "run_id" in at.info
+
+
+def _dummy_atoms(n):
+    from ase import Atoms
+
+    return [
+        Atoms(
+            "Cu2O",
+            positions=[[0, 0, 0], [1, 1, 1], [2, 2, 2]],
+            cell=[6, 6, 6],
+            pbc=True,
+        )
+        for _ in range(n)
+    ]
+
+
+def test_reduce_uniform_thins_when_no_selector(
+    mock_remote_fs, mock_cluster_config, tmp_path
+):
+    cfg = _write_base_config(tmp_path / "ns.yaml")
+    sampler = JaxrensNSSampler(
+        remote_fs=mock_remote_fs,
+        cluster_config=mock_cluster_config,
+        config_file=cfg,
+        sample_size=3,
+        stub=True,
+    )
+    assert len(sampler._reduce(_dummy_atoms(10))) == 3  # uniform fallback
+
+
+def test_reduce_uses_selector_and_ignores_sample_size(
+    mock_remote_fs, mock_cluster_config, tmp_path
+):
+    # A selector owns the count; sample_size (here huge) must not apply.
+    from remote_handler.workflows.selectors import UniformSelector
+
+    cfg = _write_base_config(tmp_path / "ns.yaml")
+    sampler = JaxrensNSSampler(
+        remote_fs=mock_remote_fs,
+        cluster_config=mock_cluster_config,
+        config_file=cfg,
+        sample_size=999,
+        selector=UniformSelector(n_configs=4),
+        stub=True,
+    )
+    # Without the selector, _thin would return all 10 (10 <= 999).
+    assert len(sampler._reduce(_dummy_atoms(10))) == 4
+
+
+def test_update_points_selector_pca_output_per_iteration(
+    mock_remote_fs, mock_cluster_config, tmp_path
+):
+    # A QUESTSSelector's PCA map is redirected into the iteration's results
+    # dir, so each AL iteration keeps its own (constructing it needs no
+    # quests install).
+    from remote_handler.workflows.selectors import QUESTSSelector
+
+    cfg = _write_base_config(tmp_path / "ns.yaml")
+    selector = QUESTSSelector(n_configs=4, pca_output=tmp_path / "orig.json")
+    sampler = JaxrensNSSampler(
+        remote_fs=mock_remote_fs,
+        cluster_config=mock_cluster_config,
+        config_file=cfg,
+        selector=selector,
+        stub=True,
+    )
+    calcdir = tmp_path / "3"
+    calcdir.mkdir()
+    model_file = tmp_path / "model_3.pkl"
+    model_file.write_bytes(b"mock")
+
+    sampler.update(calcdir, model_file)
+    assert (
+        selector.pca_output
+        == calcdir / "ns_sampler" / "results" / "quests_pca.json"
+    )
+
+
+def test_write_provenance_records_run_id_and_iter(
+    mock_remote_fs, mock_cluster_config, tmp_path
+):
+    import json
+
+    from ase import Atoms
+
+    cfg = _write_base_config(tmp_path / "ns.yaml")
+    sampler = JaxrensNSSampler(
+        remote_fs=mock_remote_fs,
+        cluster_config=mock_cluster_config,
+        config_file=cfg,
+        stub=True,
+    )
+    sampler.results_dir = tmp_path / "results"
+
+    def _at(run_id, it):
+        a = Atoms("Cu", positions=[[0, 0, 0]], cell=[5, 5, 5], pbc=True)
+        a.info["run_id"] = run_id
+        a.info["iter"] = it
+        return a
+
+    candidates = [_at(0, 5), _at(0, 6), _at(1, 7)]
+    selected = [candidates[0], candidates[2]]  # indices 0 and 2
+    sampler._write_provenance(candidates, selected)
+
+    data = json.loads(
+        (sampler.results_dir / "resampled_provenance.json").read_text()
+    )
+    assert data["n_candidates"] == 3
+    assert data["n_selected"] == 2
+    assert data["selected"] == [
+        {"index": 0, "run_id": 0, "iter": 5},
+        {"index": 2, "run_id": 1, "iter": 7},
+    ]
 
 
 def test_body_template_is_shipped():

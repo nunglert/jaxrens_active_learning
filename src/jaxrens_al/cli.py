@@ -69,6 +69,21 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Assemble and report the panel layout without "
         "computing/plotting or writing a PDF.",
     )
+    parser.add_argument(
+        "--only",
+        nargs="+",
+        default=None,
+        metavar="PANEL",
+        help="Render only these panels (by name), e.g. --only "
+        "sampled_energy_volume neuralil_parity.",
+    )
+    parser.add_argument(
+        "--exclude",
+        nargs="+",
+        default=None,
+        metavar="PANEL",
+        help="Skip these panels (by name).",
+    )
     return parser
 
 
@@ -128,6 +143,8 @@ def main(argv: list[str] | None = None) -> int:
             height_per_panel=args.height,
             compute=compute,
             force_recompute=args.force,
+            only=args.only,
+            exclude=args.exclude,
         )
 
     if args.dry_run:

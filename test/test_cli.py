@@ -1,8 +1,9 @@
 """Tests for the standalone dashboard CLI (jaxrens_al.cli).
 
-The guard paths below return before any alviz import, so they run without the
-dashboard stack. The multipage build is exercised separately (and skips when
-the dashboard stack / pypdf is unavailable).
+CLI concerns only: exit-code guard paths, the skip-if-exists behaviour, and the
+multipage build (one page + one file per iteration, merged). The guard paths
+return before any alviz import, so they run without the dashboard stack; the
+multipage test imports it (and pypdf) and self-skips if unavailable.
 """
 
 import json
@@ -11,6 +12,8 @@ import pytest
 
 from jaxrens_al.cli import main
 
+pytestmark = pytest.mark.local
+
 
 def test_missing_path_returns_error(capsys):
     rc = main(["/no/such/path"])
@@ -18,7 +21,7 @@ def test_missing_path_returns_error(capsys):
     assert "does not exist" in capsys.readouterr().err.lower() or rc == 1
 
 
-def test_not_a_calchome_returns_error(tmp_path, capsys):
+def test_not_a_calchome_returns_error(tmp_path):
     # Dir exists but has no AL_progress.json.
     rc = main([str(tmp_path)])
     assert rc == 1
@@ -34,51 +37,36 @@ def test_existing_output_skips_without_force(tmp_path):
     assert out.read_bytes() == b"%PDF-stub"  # untouched
 
 
-@pytest.mark.local
-def test_multipage_build_one_page_per_iteration(tmp_path):
+def test_multipage_build_one_page_per_iteration(make_calchome, tmp_path):
     """Full build: one page (and one file) per iteration, then merged."""
     pytest.importorskip("alviz")
     pdf = pytest.importorskip("pypdf")
-    import ase.io
-    import numpy as np
-    from ase import Atoms
 
-    calchome = tmp_path / "calchome"
-    (calchome / "sampler_output").mkdir(parents=True)
-    (calchome / "evaluator_output").mkdir(parents=True)
-
-    rng = np.random.default_rng(0)
-
-    def _write(path, n, info):
-        frames = []
-        for i in range(n):
-            at = Atoms(
-                "Cu2O", positions=rng.uniform(0, 3, (3, 3)), cell=[6, 6, 6]
-            )
-            at.info.update(info(i))
-            frames.append(at)
-        ase.io.write(path, frames)
-
-    n_iter = 3
-    progress = []
-    for it in range(n_iter):
-        s = f"sampler_output/s{it}.extxyz"
-        e = f"evaluator_output/e{it}.extxyz"
-        _write(calchome / s, 5, lambda i, it=it: {"ns_energy": -10.0 - it + i})
-        _write(calchome / e, 3, lambda i, it=it: {"REF_energy": -9.0 - it + i})
-        progress.append(
-            {"steps": [0], "sampler_output": [s], "evaluator_output": [e]}
-        )
-    (calchome / "AL_progress.json").write_text(json.dumps(progress))
+    calchome = make_calchome(tmp_path, n_iter=3)
 
     rc = main([str(calchome), "--force"])
     assert rc == 0
 
     # One individual page file per iteration ...
-    for it in range(n_iter):
+    for it in range(3):
         assert (calchome / "plots" / f"Iteration{it}.pdf").exists()
 
     # ... merged into a single combined multipage PDF.
     combined = calchome / "dashboard.pdf"
     assert combined.exists()
-    assert len(pdf.PdfReader(str(combined)).pages) == n_iter
+    assert len(pdf.PdfReader(str(combined)).pages) == 3
+
+
+def test_only_flag_restricts_panels(make_calchome, tmp_path):
+    """--only keeps just the named panel; an empty iteration is skipped."""
+    pytest.importorskip("alviz")
+    pdf = pytest.importorskip("pypdf")
+
+    # Iteration 0 has no sampler output, so --only sampled_ns_energy leaves it
+    # empty -> 2 pages (iters 1, 2), not 3.
+    calchome = make_calchome(tmp_path, n_iter=3, n_sampled=[0, 5, 5])
+
+    rc = main([str(calchome), "--force", "--only", "sampled_ns_energy"])
+    assert rc == 0
+    assert not (calchome / "plots" / "Iteration0.pdf").exists()
+    assert len(pdf.PdfReader(str(calchome / "dashboard.pdf")).pages) == 2

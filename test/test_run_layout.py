@@ -1,0 +1,135 @@
+"""Tests for the run-layout bridge (jaxrens_al.run_layout).
+
+This layer only *reads* a run's on-disk artifacts (AL_progress.json + the
+calchome tree); it imports neither alviz nor remote_handler. Tests assert the
+path resolution and the remote_handler/NeuralIL directory conventions, plus the
+defensive globbing (missing dirs -> empty, not an error).
+"""
+
+import json
+
+import pytest
+
+from jaxrens_al.run_layout import (
+    evaluated_configs,
+    evaluated_configs_per_iteration,
+    iteration_dir,
+    iteration_dirs,
+    load_progress,
+    ns_result_dir,
+    ns_result_dirs,
+    sampled_configs,
+    sampled_configs_per_iteration,
+    training_error_for_iteration,
+    training_npz_files,
+    training_npz_for_iteration,
+)
+
+pytestmark = pytest.mark.local
+
+
+def test_load_progress_returns_iteration_list(make_calchome, tmp_path):
+    calchome = make_calchome(tmp_path, n_iter=2)
+    progress = load_progress(calchome)
+    assert isinstance(progress, list)
+    assert len(progress) == 2
+
+
+def test_load_progress_missing_file_raises(tmp_path):
+    with pytest.raises(FileNotFoundError):
+        load_progress(tmp_path)
+
+
+def test_load_progress_tolerates_dict_keyed_by_iteration(tmp_path):
+    calchome = tmp_path / "calchome"
+    calchome.mkdir()
+    # A dict keyed by iteration index must normalize to an ordered list.
+    (calchome / "AL_progress.json").write_text(
+        json.dumps({"1": {"steps": [1]}, "0": {"steps": [0]}})
+    )
+    progress = load_progress(calchome)
+    assert [p["steps"] for p in progress] == [[0], [1]]
+
+
+def test_evaluated_and_sampled_configs_in_order(make_calchome, tmp_path):
+    calchome = make_calchome(tmp_path, n_iter=3)
+    evald = evaluated_configs(calchome)
+    sampled = sampled_configs(calchome)
+    assert len(evald) == 3 and len(sampled) == 3
+    assert all(p.is_absolute() and p.exists() for p in evald + sampled)
+    # Order follows AL_progress (iteration 0, 1, 2).
+    assert [p.parent.name for p in evald] == ["evaluator_output"] * 3
+
+
+def test_per_iteration_accessors_align_with_progress(make_calchome, tmp_path):
+    # Iteration 0 has no sampler output; both have evaluated configs.
+    calchome = make_calchome(tmp_path, n_iter=2, n_sampled=[0, 5])
+    ev = evaluated_configs_per_iteration(calchome)
+    sa = sampled_configs_per_iteration(calchome)
+    assert [len(x) for x in ev] == [1, 1]
+    assert [len(x) for x in sa] == [0, 1]  # iter 0 produced no samples
+
+
+def test_training_accessors_use_training_results_convention(
+    make_calchome, tmp_path
+):
+    # The NeuralIL trainer writes under <calcdir>/training/results.
+    calchome = make_calchome(tmp_path, n_iter=2, with_training=True)
+    npz = training_npz_files(calchome)
+    assert len(npz) == 2
+    assert all(p.match("*/training/results/*.npz") for p in npz)
+
+    it1 = iteration_dir(calchome, 1)
+    assert len(training_npz_for_iteration(it1)) == 1
+    assert len(training_error_for_iteration(it1)) == 1
+
+
+def test_training_accessors_empty_when_no_artifacts(make_calchome, tmp_path):
+    calchome = make_calchome(tmp_path, n_iter=2, with_training=False)
+    assert training_npz_files(calchome) == []
+    assert training_npz_for_iteration(iteration_dir(calchome, 0)) == []
+
+
+def test_resampling_artifacts_none_when_absent(make_calchome, tmp_path):
+    from jaxrens_al.run_layout import (
+        quests_pca_json,
+        resampled_provenance_json,
+    )
+
+    calchome = make_calchome(tmp_path, n_iter=1)
+    it0 = iteration_dir(calchome, 0)
+    assert quests_pca_json(it0) is None
+    assert resampled_provenance_json(it0) is None
+
+
+def test_resampling_artifacts_found_when_present(make_calchome, tmp_path):
+    from jaxrens_al.run_layout import (
+        quests_pca_json,
+        resampled_provenance_json,
+    )
+
+    calchome = make_calchome(tmp_path, n_iter=1)
+    results = iteration_dir(calchome, 0) / "ns_sampler" / "results"
+    results.mkdir(parents=True)
+    (results / "quests_pca.json").write_text("{}")
+    (results / "resampled_provenance.json").write_text("{}")
+
+    it0 = iteration_dir(calchome, 0)
+    assert quests_pca_json(it0) == results / "quests_pca.json"
+    assert (
+        resampled_provenance_json(it0)
+        == results / "resampled_provenance.json"
+    )
+
+
+def test_ns_result_dir_none_without_energies(make_calchome, tmp_path):
+    # No jaxrens .energies were written, so there is no NS result dir.
+    calchome = make_calchome(tmp_path, n_iter=2)
+    assert ns_result_dir(iteration_dir(calchome, 0)) is None
+    assert ns_result_dirs(calchome) == []
+
+
+def test_iteration_dirs_numeric_sorted(make_calchome, tmp_path):
+    calchome = make_calchome(tmp_path, n_iter=2, with_training=True)
+    dirs = iteration_dirs(calchome)
+    assert [d.name for d in dirs] == ["0", "1"]

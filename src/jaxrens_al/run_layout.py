@@ -189,6 +189,27 @@ def ns_result_dir(it_dir, prefix: str = "ns"):
     return hits[0].parent if hits else None
 
 
+def quests_pca_json(it_dir):
+    """This iteration's QUESTS PCA map (``quests_pca.json``), or None.
+
+    Written by a ``QUESTSSelector`` (via ``JaxrensNSSampler``): per-candidate
+    PCA coords + a ``selected`` flag. Join to :func:`resampled_provenance_json`
+    on ``index`` for the ``(run_id, iter)`` of each selected config.
+    """
+    p = Path(it_dir) / "ns_sampler" / "results" / "quests_pca.json"
+    return p if p.exists() else None
+
+
+def resampled_provenance_json(it_dir):
+    """This iteration's resampling provenance (``resampled_provenance.json``).
+
+    Lists the selected dead points as ``{index, run_id, iter}``. Returns the
+    path, or None if the sampler did not write one (e.g. stub runs).
+    """
+    p = Path(it_dir) / "ns_sampler" / "results" / "resampled_provenance.json"
+    return p if p.exists() else None
+
+
 def training_npz_for_iteration(it_dir) -> list:
     """This iteration's NeuralIL parity ``.npz`` bundles (possibly empty)."""
     base = Path(it_dir) / "training" / "results"

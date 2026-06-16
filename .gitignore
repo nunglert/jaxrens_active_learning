@@ -15,5 +15,8 @@ venv/
 calchome/
 experiments
 
+# Inspectable test render output (hermetic tests keep data in tmp_path)
+test/data/temp/
+
 .claude
 CLAUDE.md
