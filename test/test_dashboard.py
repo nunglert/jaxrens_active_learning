@@ -64,17 +64,25 @@ def test_summary_assembles_all_panels(make_calchome, tmp_path):
     }
 
 
-def test_iteration_assembles_all_panels(make_calchome, tmp_path):
+def test_iteration_assembles_all_panels(
+    make_calchome, eos_reference, tmp_path
+):
     calchome = make_calchome(
         tmp_path,
         n_iter=2,
         with_training=True,
         with_resampling=True,
         with_ns=True,
+        with_acc_rates=True,
+        with_re_stats=True,
+        with_model=True,
     )
+    ref = eos_reference(tmp_path / "eos.extxyz")
     dp = calchome / "dashboard" / "1"
     dp.mkdir(parents=True)
-    board = build_iteration_dashboard(calchome, 1, datapath=dp, compute=False)
+    board = build_iteration_dashboard(
+        calchome, 1, datapath=dp, compute=False, eos_reference=[ref]
+    )
     names = {e.name for e in board.entries}
     # dataset_growth is cumulative (summary-only); everything else appears.
     assert names == {
@@ -82,9 +90,13 @@ def test_iteration_assembles_all_panels(make_calchome, tmp_path):
         "sampled_ns_energy",
         "quests_pca",
         "resampled_grid",
+        "atomic_envs",
+        "eos",
         "neuralil_parity",
         "neuralil_training_curve",
         "ns_thermodynamics",
+        "acceptance_rates",
+        "re_swap_rates",
     }
 
 
@@ -100,12 +112,19 @@ def test_summary_end_to_end_writes_pdf_and_caches(make_calchome, tmp_path):
     assert (calchome / "dashboard" / "dataset_growth.json").exists()
 
 
-def test_grid_auto_sizes_to_panel_count(make_calchome, tmp_path):
+def test_grid_auto_sizes_to_hold_all_panels(make_calchome, tmp_path):
     calchome = make_calchome(tmp_path, n_iter=2, with_training=True)
     board = build_dashboard(calchome, ncols=2, compute=False)
-    n = len(board.entries)
+    # Panels may span multiple cells (colspan/rowspan), so assert the grid is
+    # two columns wide and has enough cells for their total area. Exact packing
+    # is alviz's concern (tested there); here we just check it fits.
+    total_cells = sum(
+        getattr(e, "rowspan", 1) * getattr(e, "colspan", 1)
+        for e in board.entries
+    )
     assert board._ncols == 2
-    assert board._nrows == (n + 1) // 2  # ceil(n / 2)
+    assert board._nrows >= 1
+    assert board._nrows * board._ncols >= total_cells
 
 
 # --------------------------------------------------------------------------
@@ -120,9 +139,11 @@ def test_iteration_assembles_present_panels(make_calchome, tmp_path):
     names = {e.name for e in board.entries}
     # Iteration 1 has evaluated + sampled + training, no NS .energies. Dataset
     # growth is cumulative (summary-only), so it is absent per-iteration.
+    # atomic_envs registers whenever sampled configs exist.
     assert names == {
         "sampled_energy_volume",
         "sampled_ns_energy",
+        "atomic_envs",
         "neuralil_parity",
         "neuralil_training_curve",
     }
@@ -202,17 +223,29 @@ def test_context_factories_set_view_flag(make_calchome, tmp_path):
 # assertions only confirm a non-empty PDF was produced; *look at* the files.
 # --------------------------------------------------------------------------
 def test_render_layouts_for_inspection(
-    make_calchome, artifact_dir, tmp_path, fake_ns_monitor
+    make_calchome,
+    eos_reference,
+    artifact_dir,
+    tmp_path,
+    fake_ns_monitor,
+    fake_acc_log,
+    fake_re_log,
+    fake_quests_descriptors,
+    fake_eos_eval,
 ):
-    # Every artifact present (+ fake monitor for the thermodynamics panel), so
-    # the rendered PDFs exercise every panel.
+    # Every artifact present (+ fakes for the panels whose compute needs
+    # jaxrens), so the rendered PDFs exercise every panel.
     calchome = make_calchome(
         tmp_path,
         n_iter=2,
         with_training=True,
         with_resampling=True,
         with_ns=True,
+        with_acc_rates=True,
+        with_re_stats=True,
+        with_model=True,
     )
+    ref = eos_reference(tmp_path / "eos.extxyz")
 
     summary = build_dashboard(calchome)
     summary_pdf = artifact_dir / "summary.pdf"
@@ -220,7 +253,9 @@ def test_render_layouts_for_inspection(
 
     it_datapath = tmp_path / "it1"
     it_datapath.mkdir()
-    page = build_iteration_dashboard(calchome, 1, datapath=it_datapath)
+    page = build_iteration_dashboard(
+        calchome, 1, datapath=it_datapath, eos_reference=[ref]
+    )
     iteration_pdf = artifact_dir / "iteration_1.pdf"
     page.savefig(iteration_pdf)
 

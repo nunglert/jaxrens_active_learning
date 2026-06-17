@@ -145,6 +145,9 @@ def _make_calchome(
     with_training=False,
     with_resampling=False,
     with_ns=False,
+    with_acc_rates=False,
+    with_re_stats=False,
+    with_model=False,
 ):
     """Build a remote_handler-style run dir under ``tmp_path``.
 
@@ -159,6 +162,13 @@ def _make_calchome(
     ``<i>/ns_sampler/results``. ``with_ns`` drops a stub ``ns.energies`` there
     so the thermodynamics panel is discovered (its compute still needs jaxrens
     -- patch it with the ``fake_ns_monitor`` fixture to render).
+    ``with_acc_rates`` drops a stub ``ns.acc_rates.h5`` there so the move-
+    acceptance panel is discovered (compute needs jaxrens -- patch it with the
+    ``fake_acc_log`` fixture to render). ``with_re_stats`` drops a stub
+    ``ns.re_stats.h5`` for the RE-swap panel (render with ``fake_re_log``).
+    ``with_model`` drops a stub
+    ``neuralil_model.pkl`` under ``<i>/training/results`` so the EOS panel
+    finds a model (compute needs jaxrens -- patch ``fake_eos_eval`` to render).
     """
 
     def _per_iter(x):
@@ -217,6 +227,21 @@ def _make_calchome(
             nsres.mkdir(parents=True, exist_ok=True)
             (nsres / "ns.energies").write_text("# stub NS energies\n")
 
+        if with_acc_rates:
+            nsres = calchome / str(it) / "ns_sampler" / "results"
+            nsres.mkdir(parents=True, exist_ok=True)
+            (nsres / "ns.acc_rates.h5").write_bytes(b"")  # stub for discovery
+
+        if with_re_stats:
+            nsres = calchome / str(it) / "ns_sampler" / "results"
+            nsres.mkdir(parents=True, exist_ok=True)
+            (nsres / "ns.re_stats.h5").write_bytes(b"")  # stub for discovery
+
+        if with_model:
+            tdir = calchome / str(it) / "training" / "results"
+            tdir.mkdir(parents=True, exist_ok=True)
+            (tdir / "neuralil_model.pkl").write_bytes(b"")  # stub: discovery
+
         progress.append(entry)
 
     (calchome / "AL_progress.json").write_text(json.dumps(progress))
@@ -247,6 +272,37 @@ def make_calchome():
 
 
 @pytest.fixture
+def eos_reference():
+    """Factory: write an EOS volume scan (one phase) with REF_energy.
+
+    Energies follow a Birch-Murnaghan curve so the panel's fit converges; the
+    9 lattice constants give enough points for the 4-parameter fit.
+    """
+
+    def _make(path):
+        from jaxrens_al.panels.eos import _birch_murnaghan
+
+        frames = []
+        for a in np.linspace(5.4, 6.6, 9):
+            at = Atoms(
+                "Cu2O",
+                positions=[[0, 0, 0], [1, 1, 1], [2, 2, 2]],
+                cell=[a, a, a],
+                pbc=True,
+            )
+            v = at.get_volume() / len(at)  # per atom
+            # BM(E0=-4, V0=24, B0=0.5 eV/A^3, B0'=4), total energy.
+            at.info["REF_energy"] = float(
+                _birch_murnaghan(v, -4.0, 24.0, 0.5, 4.0) * len(at)
+            )
+            frames.append(at)
+        ase.io.write(path, frames)
+        return path
+
+    return _make
+
+
+@pytest.fixture
 def fake_ns_monitor(monkeypatch):
     """Patch the thermodynamics panel's jaxrens seam with a fake monitor.
 
@@ -271,6 +327,100 @@ def fake_ns_monitor(monkeypatch):
         "_load_monitor",
         lambda self, result_dir: _FakeMonitor(),
     )
+
+
+@pytest.fixture
+def fake_acc_log(monkeypatch):
+    """Patch the acceptance panel's jaxrens reader with a fake log.
+
+    Lets the move-acceptance panel compute/render from a stub
+    ``.acc_rates.h5`` without jaxrens or h5py.
+    """
+    from jaxrens_al.panels.acceptance import MoveAcceptancePanel
+
+    class _FakeAccLog:
+        iterations = np.array([0, 10, 20])
+        move_names = ["gmc", "swap"]
+
+        @property
+        def acceptance_rates(self):
+            # (n_entries, n_runs, n_moves)
+            return np.array(
+                [
+                    [[0.8, 0.5]],
+                    [[0.7, 0.45]],
+                    [[0.6, 0.4]],
+                ],
+                dtype=float,
+            )
+
+    monkeypatch.setattr(
+        MoveAcceptancePanel, "_load_log", lambda self, path: _FakeAccLog()
+    )
+
+
+@pytest.fixture
+def fake_re_log(monkeypatch):
+    """Patch the RE-swap panel's jaxrens reader with a fake RE log."""
+    from jaxrens_al.panels.acceptance import RESwapAcceptancePanel
+
+    class _FakeRELog:
+        iterations = np.array([0, 100, 200])
+        n_pairs = 2
+        flavor = "pressure"
+
+        @property
+        def acceptance_rates(self):
+            # (n_entries, n_pairs)
+            return np.array(
+                [[0.4, 0.3], [0.45, 0.35], [0.5, 0.38]], dtype=float
+            )
+
+    monkeypatch.setattr(
+        RESwapAcceptancePanel, "_load_log", lambda self, path: _FakeRELog()
+    )
+
+
+@pytest.fixture
+def fake_quests_descriptors(monkeypatch):
+    """Patch the atomic-envs panel's descriptor seam (no ``quests`` needed).
+
+    Returns one fake per-atom descriptor row per atom, so PCA + plotting run
+    without the ``quests`` package installed.
+    """
+    from jaxrens_al.panels.environments import AtomicEnvsPanel
+
+    rng = np.random.default_rng(3)
+
+    def _fake(self, atoms_list):
+        n_atoms = sum(len(at) for at in atoms_list)
+        return rng.normal(size=(n_atoms, 8))
+
+    monkeypatch.setattr(AtomicEnvsPanel, "_descriptors", _fake)
+
+
+@pytest.fixture
+def fake_eos_eval(monkeypatch):
+    """Patch the EOS panel's model-evaluation seam (no jaxrens / model needed).
+
+    Returns a smooth synthetic energy per structure (quadratic in volume), so
+    the panel computes/renders without loading a real model.
+    """
+    from jaxrens_al.panels.eos import EquationOfStatePanel, _birch_murnaghan
+
+    def _fake(self, model_file, atoms_list):
+        # BM curve (slightly off the DFT one) so the model fit also converges.
+        return [
+            float(
+                _birch_murnaghan(
+                    at.get_volume() / len(at), -3.9, 23.5, 0.55, 4.0
+                )
+                * len(at)
+            )
+            for at in atoms_list
+        ]
+
+    monkeypatch.setattr(EquationOfStatePanel, "_evaluate", _fake)
 
 
 @pytest.fixture

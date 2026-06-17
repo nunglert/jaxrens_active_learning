@@ -32,6 +32,8 @@ dependencies = [
     # alviz: dashboard engine + generic panels (private; GitLab, madsen group)
     "alviz @ git+https://gitlab.tuwien.ac.at/e165-03-1_theoretische_materialchemie/madsen-s-research-group/alviz.git@main",
     "ase",
+    # PCA for the atomic-environments panel (QUESTS descriptors -> 2D).
+    "scikit-learn",
 ]
 readme = "README.md"
 
@@ -44,6 +46,12 @@ run = [
     # sampling method (private; GitHub)
     "jaxrens @ git+https://github.com/nunglert/jaxrens.git@main",
 ]
+# Materials Project fetch for jaxrens_al.reference_db (starting-database
+# builder). Not needed to run a loop or build dashboards; install on demand.
+refdb = [
+    "mp_api",
+    "pymatgen",
+]
 dev = [
     "pytest",
     "pytest-cov",
@@ -53,6 +61,8 @@ dev = [
 [project.scripts]
 # Standalone dashboard CLI: turn a finished AL run (calchome) into a PDF.
 jaxrens-al-dashboard = "jaxrens_al.cli:main"
+# Starting-database builder: Materials Project phases -> rattled extxyz.
+jaxrens-al-refdb = "jaxrens_al.reference_db:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

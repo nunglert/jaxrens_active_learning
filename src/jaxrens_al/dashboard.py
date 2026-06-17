@@ -28,15 +28,20 @@ from alviz import Dashboard
 from alviz.panels import ExtxyzSampledEnergyVolume
 
 from jaxrens_al.panels import (
+    AtomicEnvsPanel,
     DatasetGrowthPanel,
+    EquationOfStatePanel,
+    MoveAcceptancePanel,
     NeuralILParityPanel,
     NeuralILTrainingCurve,
     NSSampledEnergyPanel,
     NSThermodynamicsHeatmap,
     QuestsPCAPanel,
     ResampledGridPanel,
+    RESwapAcceptancePanel,
 )
 from jaxrens_al.run_layout import (
+    acc_rates_file,
     evaluated_configs,
     evaluated_configs_per_iteration,
     iteration_dir,
@@ -44,9 +49,11 @@ from jaxrens_al.run_layout import (
     ns_result_dir,
     ns_result_dirs,
     quests_pca_json,
+    re_stats_file,
     resampled_provenance_json,
     sampled_configs,
     sampled_configs_per_iteration,
+    trained_model_for_iteration,
     training_error_files,
     training_error_for_iteration,
     training_npz_files,
@@ -79,8 +86,13 @@ class RunContext:
     npz_files: list = field(default_factory=list)
     error_files: list = field(default_factory=list)
     ns_dirs: list = field(default_factory=list)
+    acc_rates: Optional[Path] = None
+    re_stats: Optional[Path] = None
     quests_pca: Optional[Path] = None
     resampled_provenance: Optional[Path] = None
+    eos_reference: Optional[list] = None  # phase reference files
+    model_file: Optional[Path] = None
+    eos_backend: str = "neuralil"
     iteration: Optional[int] = None
     ns_prefix: str = "ns"
     ns_k_B: float = 1.0
@@ -131,6 +143,8 @@ def iteration_context(
     *,
     eval_files=None,
     sampled_files=None,
+    eos_reference=None,
+    eos_backend: str = "neuralil",
     ns_prefix: str = "ns",
     ns_k_B: float = 1.0,
     force_recompute: bool = False,
@@ -155,8 +169,15 @@ def iteration_context(
         npz_files=training_npz_for_iteration(it_dir),
         error_files=training_error_for_iteration(it_dir),
         ns_dirs=[ns_dir] if ns_dir is not None else [],
+        acc_rates=acc_rates_file(it_dir, prefix=ns_prefix),
+        re_stats=re_stats_file(it_dir, prefix=ns_prefix),
         quests_pca=quests_pca_json(it_dir),
         resampled_provenance=resampled_provenance_json(it_dir),
+        eos_reference=(
+            [Path(p) for p in eos_reference] if eos_reference else None
+        ),
+        model_file=trained_model_for_iteration(it_dir),
+        eos_backend=eos_backend,
         iteration=index,
         ns_prefix=ns_prefix,
         ns_k_B=ns_k_B,
@@ -211,6 +232,27 @@ def assemble(ctx: RunContext) -> list:
         # Resampled configs on a (NS iteration, replica) grid.
         ResampledGridPanel(provenance_json=ctx.resampled_provenance, **c)
         if ctx.resampled_provenance
+        else None,
+        # Per-move MCMC acceptance rates over the NS run.
+        MoveAcceptancePanel(acc_rates_file=ctx.acc_rates, **c)
+        if ctx.acc_rates
+        else None,
+        # Inter-replica-exchange swap acceptance, per replica pair.
+        RESwapAcceptancePanel(re_stats_file=ctx.re_stats, **c)
+        if ctx.re_stats
+        else None,
+        # Per-atom environment PCA of this iteration's sampled configs.
+        AtomicEnvsPanel(config_files=ctx.sampled_files, **c)
+        if (ctx.sampled_files and not ctx.is_summary)
+        else None,
+        # Equation of state: this iteration's model on reference phase scans.
+        EquationOfStatePanel(
+            references=ctx.eos_reference,
+            model_file=ctx.model_file,
+            backend_type=ctx.eos_backend,
+            **c,
+        )
+        if (ctx.eos_reference and ctx.model_file)
         else None,
         # NeuralIL parity from the trainer's .npz bundles.
         NeuralILParityPanel(npz_files=ctx.npz_files, **c)
@@ -297,7 +339,9 @@ def build_iteration_dashboard(
     datapath,
     eval_files=None,
     sampled_files=None,
-    ncols: int = 2,
+    eos_reference=None,
+    eos_backend: str = "neuralil",
+    ncols: int = 3,
     width_per_panel: float = 4.0,
     height_per_panel: float = 4.0,
     ns_prefix: str = "ns",
@@ -329,6 +373,8 @@ def build_iteration_dashboard(
         index,
         eval_files=eval_files,
         sampled_files=sampled_files,
+        eos_reference=eos_reference,
+        eos_backend=eos_backend,
         ns_prefix=ns_prefix,
         ns_k_B=ns_k_B,
         force_recompute=force_recompute,

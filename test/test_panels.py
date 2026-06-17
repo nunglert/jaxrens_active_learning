@@ -163,11 +163,71 @@ def test_quests_pca_panel_reads_structures(make_calchome, tmp_path):
     assert data["evr"] == [0.6, 0.25]
 
 
+def test_eos_panel_multi_phase(eos_reference, tmp_path):
+    from jaxrens_al.panels.eos import EquationOfStatePanel, _birch_murnaghan
+
+    # Two phases (same scan here) -> two fitted curves.
+    ref_a = eos_reference(tmp_path / "phase_a.extxyz")
+    ref_b = eos_reference(tmp_path / "phase_b.extxyz")
+    panel = EquationOfStatePanel(
+        references=[ref_a, ref_b], model_file="m.pkl", datapath=tmp_path
+    )
+    # Seam: model energies follow a (shifted) BM curve so the fit converges.
+    panel._evaluate = lambda mf, al: [
+        float(_birch_murnaghan(a.get_volume() / len(a), -3.9, 23.5, 0.55, 4.0))
+        for a in al
+    ]
+    data = panel.compute_data({})
+    assert data["labels"] == ["phase_a", "phase_b"]
+    assert len(data["phases"]) == 2
+    ph = data["phases"][0]
+    assert len(ph["volumes"]) == 9 and len(ph["e_dft"]) == 9
+    # Enthalpies are interpolated onto the shared pressure grid.
+    assert len(ph["h_dft"]) == len(data["p_grid"])
+    assert len(ph["h_nnff"]) == len(data["p_grid"])
+
+
+def test_atomic_envs_panel_pca(
+    make_calchome, tmp_path, fake_quests_descriptors
+):
+    from jaxrens_al.panels.environments import AtomicEnvsPanel
+
+    calchome = make_calchome(tmp_path, n_iter=1)
+    sampled = calchome / "sampler_output" / "s0.extxyz"
+    panel = AtomicEnvsPanel(config_files=[sampled], datapath=tmp_path)
+    data = panel.compute_data({})
+    # 5 Cu2O configs -> 15 atoms -> 15 projected points, each with a species.
+    assert len(data["pc1"]) == 15 and len(data["pc2"]) == 15
+    assert set(data["species"]) == {"Cu", "O"}
+
+
+def test_move_acceptance_panel_reads_log(tmp_path, fake_acc_log):
+    from jaxrens_al.panels.acceptance import MoveAcceptancePanel
+
+    panel = MoveAcceptancePanel(acc_rates_file="x.h5", datapath=tmp_path)
+    data = panel.compute_data({})
+    assert data["move_names"] == ["gmc", "swap"]
+    assert data["iterations"] == [0, 10, 20]
+    # 3 iterations x 2 moves, averaged over the single run.
+    assert np.shape(data["rates"]) == (3, 2)
+    assert data["rates"][0] == [0.8, 0.5]
+
+
+def test_re_swap_panel_reads_log(tmp_path, fake_re_log):
+    from jaxrens_al.panels.acceptance import RESwapAcceptancePanel
+
+    panel = RESwapAcceptancePanel(re_stats_file="x.h5", datapath=tmp_path)
+    data = panel.compute_data({})
+    assert data["n_pairs"] == 2
+    assert data["iterations"] == [0, 100, 200]
+    assert np.shape(data["rates"]) == (3, 2)
+    assert data["flavor"] == "pressure"
+
+
 def test_resampled_grid_panel_reads_selected(make_calchome, tmp_path):
     calchome = make_calchome(tmp_path, n_iter=1, with_resampling=True)
     prov = (
-        calchome / "0" / "ns_sampler" / "results"
-        / "resampled_provenance.json"
+        calchome / "0" / "ns_sampler" / "results" / "resampled_provenance.json"
     )
     panel = ResampledGridPanel(provenance_json=prov, datapath=tmp_path)
     data = panel.compute_data({})

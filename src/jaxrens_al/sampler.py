@@ -263,8 +263,10 @@ class JaxrensNSSampler(Sampler):
         )
 
         # Ship the model (and start structure) and point the config at the
-        # resulting remote paths.
-        model_remote = str(self.ns_task.copy_file(self.model_file))
+        # resulting remote paths. ``copy_path`` (not ``copy_file``) so a
+        # mace-jax model *bundle directory* ships recursively, not just a
+        # single-file checkpoint.
+        model_remote = str(self.ns_task.copy_path(self.model_file))
         start_remote = None
         if self.start_config_file is not None:
             start_remote = str(self.ns_task.copy_file(self.start_config_file))

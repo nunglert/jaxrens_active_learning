@@ -152,15 +152,42 @@ def main(calchome: str = "calchome"):
     )
 
     # --- SAMPLER SCHEDULE: ramp NS settings across iterations ------------
-    # kwargs are dotted jaxrens keys (JaxrensNSSampler applies them like
-    # ``jaxrens run --set run.n_live=...``).
+    # A remote_handler ``Schedule`` returns per-iteration kwargs that the
+    # handler feeds to ``Sampler.update``. For JaxrensNSSampler the kwargs are
+    # dotted jaxrens keys, applied as ``jaxrens run --set run.n_live=...``
+    # overrides on the base ns.yaml.
+    #
+    # Legacy cumulative-threshold style (see experiments/al_loop.py): later
+    # ``if`` blocks override earlier ones, so each stage is "the settings from
+    # this iteration onward". Every stage MUST return the SAME keys --
+    # ``Schedule.check()`` (run in __init__) rejects a schedule that doesn't.
     class SamplerSchedule(active_learning_base.Schedule):
         def get_kwargs(self, iteration_idx):
-            if iteration_idx < 3:
-                return {"run.n_live": 400, "run.n_mcmc_steps": 20}
-            return {"run.n_live": 200, "run.n_mcmc_steps": 30}
+            # Warm-up: many live points + short walks -> cheap, broad coverage
+            # while the model is still crude.
+            kwargs = {"run.n_live": 400, "run.n_mcmc_steps": 20}
+            if iteration_idx > 3:
+                # Model improving: decorrelate harder (longer MCMC walks).
+                kwargs = {"run.n_live": 300, "run.n_mcmc_steps": 30}
+            if iteration_idx > 7:
+                # Refine: fewer live points, longest walks for accuracy.
+                kwargs = {"run.n_live": 200, "run.n_mcmc_steps": 40}
+            return kwargs
 
     sampler_schedule = SamplerSchedule(NUM_ITERATIONS)
+
+    # Pre-flight the schedule before committing to a long run (legacy pattern):
+    #   * visualize() prints the ramp table so you can eyeball it;
+    #   * test() trial-applies EVERY iteration's kwargs to the base config via
+    #     the sampler's own config assembly, so a bad override (e.g. a dotted
+    #     key that doesn't fit the YAML) fails HERE, not mid-run on the cluster.
+    # This is pure dict work -- no cluster, no jaxrens needed.
+    sampler_schedule.visualize()
+    sampler_schedule.test(
+        lambda kwargs: sampler._build_config(
+            model_remote="PLACEHOLDER", start_remote=None, overrides=kwargs
+        )
+    )
 
     # --- orchestrate ------------------------------------------------------
     handler = active_learning_base.ActiveLearningHandler(

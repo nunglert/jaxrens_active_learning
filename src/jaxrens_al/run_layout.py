@@ -189,6 +189,24 @@ def ns_result_dir(it_dir, prefix: str = "ns"):
     return hits[0].parent if hits else None
 
 
+def acc_rates_file(it_dir, prefix: str = "ns"):
+    """This iteration's jaxrens ``<prefix>.acc_rates.h5`` log, or None."""
+    base = Path(it_dir) / "ns_sampler" / "results"
+    if not base.exists():
+        return None
+    hits = sorted(base.rglob(f"{prefix}.acc_rates.h5"))
+    return hits[0] if hits else None
+
+
+def re_stats_file(it_dir, prefix: str = "ns"):
+    """This iteration's jaxrens ``<prefix>.re_stats.h5`` swap log, or None."""
+    base = Path(it_dir) / "ns_sampler" / "results"
+    if not base.exists():
+        return None
+    hits = sorted(base.rglob(f"{prefix}.re_stats.h5"))
+    return hits[0] if hits else None
+
+
 def quests_pca_json(it_dir):
     """This iteration's QUESTS PCA map (``quests_pca.json``), or None.
 
@@ -214,6 +232,17 @@ def training_npz_for_iteration(it_dir) -> list:
     """This iteration's NeuralIL parity ``.npz`` bundles (possibly empty)."""
     base = Path(it_dir) / "training" / "results"
     return sorted(base.rglob("*.npz")) if base.exists() else []
+
+
+def trained_model_for_iteration(it_dir):
+    """This iteration's trained-model bundle (a ``.pkl`` under
+    ``training/results``), or None. Used by the EOS panel to evaluate the
+    model. Returns the first match if several are present."""
+    base = Path(it_dir) / "training" / "results"
+    if not base.exists():
+        return None
+    hits = sorted(base.rglob("*.pkl"))
+    return hits[0] if hits else None
 
 
 def training_error_for_iteration(it_dir) -> list:

@@ -47,6 +47,15 @@ interface for `jaxrens` — it does *not* use `remote_handler`'s own deprecated
     candidates, highlighting the resampled ones (`quests_pca.json`).
   - `ResampledGridPanel` — the resampled configs scattered on a (NS
     iteration, replica/`run_id`) grid (`resampled_provenance.json`).
+  - `MoveAcceptancePanel` — per-move MCMC acceptance rate vs NS iteration,
+    from jaxrens' `<prefix>.acc_rates.h5` (read via its own reader).
+  - `RESwapAcceptancePanel` — inter-replica-exchange swap acceptance per
+    replica pair vs iteration, from jaxrens' `<prefix>.re_stats.h5`.
+  - `AtomicEnvsPanel` — per-atom QUESTS-descriptor PCA of an iteration's
+    sampled configs, coloured by species (quests + scikit-learn PCA).
+  - `EquationOfStatePanel` — multi-phase EOS (3 sub-panels: E(V), H(P),
+    ΔH(P)) with Birch-Murnaghan fits, comparing the iteration's model
+    (jaxrens backend) against DFT `REF_energy`; one reference scan per phase.
   - `NeuralILParityPanel` (← `ParityPanel`) — energy/force parity from the
     trainer's `save_data` `.npz` bundles.
   - `NeuralILTrainingCurve` — validation E/F RMSE vs epoch, parsed from the
@@ -55,6 +64,13 @@ interface for `jaxrens` — it does *not* use `remote_handler`'s own deprecated
     volume vs temperature, via `jaxrens.postprocess.Monitor` on the NS
     `.energies` + `.final.checkpoint.h5` (NumPy postprocess — no JAX needed
     to build the dashboard).
+- `jaxrens_al.reference_db` — builds a **starting/reference structure
+  database** for iteration zero: fetch an element's experimentally observed
+  phases from the Materials Project (`fetch_mp_elemental`), expand each into a
+  cloud of rattled, volume-scaled supercells (`rattle_atoms`), and write an
+  `extxyz` (`build_reference_database`, or the `jaxrens-al-refdb` CLI). The
+  Materials Project query needs the `[refdb]` extra (`mp_api` + `pymatgen`);
+  the rattling half is pure numpy + ase.
 - `examples/run_al.py` — concrete wiring of the AL loop (jaxrens sampler +
   VASP evaluator + NeuralIL trainer + dashboard); needs the `[run]` extra + a
   configured cluster. Run it with `STUB = True` first to exercise the wiring
@@ -69,6 +85,9 @@ The private dependencies are pinned in `pyproject.toml` as git URLs:
 | `alviz` | GitLab (madsen group) | base |
 | `remote_handler` | GitLab (madsen group) | `[run]` |
 | `jaxrens` | GitHub (`nunglert/jaxrens`) | `[run]` |
+
+An extra `[refdb]` (`mp_api` + `pymatgen`) is needed only to fetch starting
+structures from the Materials Project via `jaxrens_al.reference_db`.
 
 **Local dev** — the git URLs aren't all reachable locally (alviz isn't
 pushed yet, and they need auth), so install the sibling checkouts editable
@@ -85,6 +104,28 @@ pip install -e ".[dev]" --no-deps       # this project (deps already present)
 `before_script`: `CI_JOB_TOKEN` (via `git config insteadOf`) for the GitLab
 deps, and a masked `GH_TOKEN` for the GitHub one. The dashboard job needs
 only `alviz`; the run job adds `remote_handler` + `jaxrens`.
+
+## Build a starting database
+
+Before the first AL iteration you need seed structures. `reference_db` turns an
+element into a rattled, volume-scaled `extxyz` drawn from its Materials Project
+phases (needs the `[refdb]` extra and an `MP_API_KEY`):
+
+```bash
+export MP_API_KEY=...
+jaxrens-al-refdb Si si_start.extxyz --target-cutoff 3 \
+    --rattle-strengths 0.0 0.2 --n-vol 20 --vol-min 0.9 --vol-max 1.1
+```
+
+or programmatically:
+
+```python
+from jaxrens_al.reference_db import build_reference_database
+
+configs = build_reference_database(
+    "Si", target_cutoff=3.0, output="si_start.extxyz"
+)
+```
 
 ## Visualize a run
 

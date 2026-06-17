@@ -84,6 +84,21 @@ def _build_parser() -> argparse.ArgumentParser:
         metavar="PANEL",
         help="Skip these panels (by name).",
     )
+    parser.add_argument(
+        "--eos-reference",
+        nargs="+",
+        default=None,
+        metavar="EXTXYZ",
+        help="Reference volume-scan file(s) for the equation-of-state panel, "
+        "one per phase; each iteration's model is evaluated on them.",
+    )
+    parser.add_argument(
+        "--eos-backend",
+        type=str,
+        default="neuralil",
+        help="jaxrens backend used to load the model for the EOS panel "
+        "(default: neuralil).",
+    )
     return parser
 
 
@@ -145,6 +160,8 @@ def main(argv: list[str] | None = None) -> int:
             force_recompute=args.force,
             only=args.only,
             exclude=args.exclude,
+            eos_reference=args.eos_reference,
+            eos_backend=args.eos_backend,
         )
 
     if args.dry_run:
