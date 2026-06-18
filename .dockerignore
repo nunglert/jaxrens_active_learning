@@ -1,0 +1,36 @@
+# Keep the build context lean: only what `pip install .` and the verification
+# probe need land in the image. Anything below is excluded from `COPY .` and
+# from the implicit context sent to the daemon.
+
+.git/
+.gitignore
+.gitlab-ci.yml
+.pre-commit-config.yaml
+.dockerignore
+Dockerfile
+CLAUDE.md
+
+# Python artifacts.
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+build/
+dist/
+
+# Test scratch + caches (the test/ tree itself IS copied -- only the
+# generated artifacts under it are excluded).
+test/data/temp/
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# Local virtualenvs.
+.venv/
+venv/
+
+# Sample run wirings and any local experiment scratch -- not part of the
+# install verification path, would only inflate the build context.
+examples/
+experiments/
