@@ -35,14 +35,16 @@ test:
   stage: test
   image: python:3.13
   before_script:
-    # Inject per-host auth for the private git dependencies (tokenless URLs in
-    # pyproject get rewritten with credentials at clone time).
+    # The private deps are pinned as SSH URLs in pyproject (so humans with SSH
+    # keys -- dev machines, clusters -- install with zero config). CI has no SSH
+    # key, so it rewrites those SSH URLs to authenticated HTTPS at clone time:
+    # CI_JOB_TOKEN for the GitLab deps, a masked GH_TOKEN for the GitHub one.
     - git config --global
         url."https://gitlab-ci-token:${CI_JOB_TOKEN}@gitlab.tuwien.ac.at/".insteadOf
-        "https://gitlab.tuwien.ac.at/"
+        "ssh://git@gitlab.tuwien.ac.at/"
     - git config --global
         url."https://x-access-token:${GH_TOKEN}@github.com/".insteadOf
-        "https://github.com/"
+        "ssh://git@github.com/"
     - python -V
     - pip install --upgrade pip
     # Full install: alviz + remote_handler (GitLab) + jaxrens (GitHub) + dev.

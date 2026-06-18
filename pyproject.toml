@@ -30,7 +30,7 @@ classifiers = [
 # them via CI_JOB_TOKEN (git+https or the package registry).
 dependencies = [
     # alviz: dashboard engine + generic panels (private; GitLab, madsen group)
-    "alviz @ git+https://gitlab.tuwien.ac.at/e165-03-1_theoretische_materialchemie/madsen-s-research-group/alviz.git@main",
+    "alviz @ git+ssh://git@gitlab.tuwien.ac.at/e165-03-1_theoretische_materialchemie/madsen-s-research-group/alviz.git@main",
     "ase",
     # PCA for the atomic-environments panel (QUESTS descriptors -> 2D).
     "scikit-learn",
@@ -42,9 +42,9 @@ readme = "README.md"
 # not to build dashboards from an existing run.
 run = [
     # orchestration (private; GitLab, madsen group)
-    "remote_handler @ git+https://gitlab.tuwien.ac.at/e165-03-1_theoretische_materialchemie/madsen-s-research-group/remote_handler.git@jaxrens",
+    "remote_handler @ git+ssh://git@gitlab.tuwien.ac.at/e165-03-1_theoretische_materialchemie/madsen-s-research-group/remote_handler.git@jaxrens",
     # sampling method (private; GitHub)
-    "jaxrens @ git+https://github.com/nunglert/jaxrens.git@main",
+    "jaxrens @ git+ssh://git@github.com/nunglert/jaxrens.git@main",
 ]
 # Materials Project fetch for jaxrens_al.reference_db (starting-database
 # builder). Not needed to run a loop or build dashboards; install on demand.

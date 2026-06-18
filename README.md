@@ -78,7 +78,7 @@ interface for `jaxrens` — it does *not* use `remote_handler`'s own deprecated
 
 ## Install
 
-The private dependencies are pinned in `pyproject.toml` as git URLs:
+The private dependencies are pinned in `pyproject.toml` as **SSH** git URLs:
 
 | dep | host | extra |
 |-----|------|-------|
@@ -89,10 +89,20 @@ The private dependencies are pinned in `pyproject.toml` as git URLs:
 An extra `[refdb]` (`mp_api` + `pymatgen`) is needed only to fetch starting
 structures from the Materials Project via `jaxrens_al.reference_db`.
 
-**Local dev** — the git URLs aren't all reachable locally (alviz isn't
-pushed yet, and they need auth), so install the sibling checkouts editable
-and then the project itself with `--no-deps` so pip doesn't try to fetch the
-URLs:
+**Normal install (SSH keys)** — on any machine whose SSH keys are registered
+with GitLab (and GitHub, for `jaxrens`) — your laptop, a cluster like musica —
+the URLs resolve with zero config:
+```bash
+pip install -e ".[run,dev,refdb]"
+```
+SSH is the default precisely because humans have SSH keys; only CI is special
+(below). Caveat: this pulls `alviz@main` (etc.) from the remote, so it reflects
+what's **pushed** — if you have unpushed alviz work, use the editable sibling
+for it (next).
+
+**Local dev (editable siblings)** — to work against unpushed/local changes in
+the siblings (or offline), install the checkouts editable and then this project
+with `--no-deps` so pip doesn't fetch the URLs at all:
 ```bash
 pip install -e ../alviz
 pip install -e ../remote_handler        # only for the [run] extra
@@ -100,10 +110,13 @@ pip install -e ../jaxrens               # only for the [run] extra
 pip install -e ".[dev]" --no-deps       # this project (deps already present)
 ```
 
-**CI / GitLab** — let pip resolve the git URLs, injecting per-host auth in
-`before_script`: `CI_JOB_TOKEN` (via `git config insteadOf`) for the GitLab
-deps, and a masked `GH_TOKEN` for the GitHub one. The dashboard job needs
-only `alviz`; the run job adds `remote_handler` + `jaxrens`.
+**CI / GitLab** — the runners have no SSH key, so `before_script` rewrites the
+SSH URLs to authenticated HTTPS at clone time via `git config insteadOf`:
+`CI_JOB_TOKEN` for the GitLab deps, a masked `GH_TOKEN` for the GitHub one.
+
+The design: `pyproject.toml` holds SSH URLs (the common case — humans/clusters
+with SSH keys install with no setup), and the **one** environment without an SSH
+key, CI, rewrites them to HTTPS+token. The file is never touched per-machine.
 
 ## Build a starting database
 
