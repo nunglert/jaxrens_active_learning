@@ -23,9 +23,14 @@ stages:
 variables:
   PIP_DISABLE_PIP_VERSION_CHECK: "1"
 
-# Run on branch pushes and merge requests, without duplicate pipelines.
+# Run on branch pushes, merge requests, and scheduled pipelines (the weekly
+# cron defined in Build -> Pipeline schedules) -- without duplicate pipelines.
+# Scheduled runs are the safety net against silent API drift in the private
+# deps (alviz / remote_handler / jaxrens): nothing changed here, but a sibling
+# package's main may have moved.
 workflow:
   rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
     - if: '$CI_COMMIT_BRANCH && $CI_OPEN_MERGE_REQUESTS'
       when: never
@@ -57,5 +62,6 @@ test:
     reports:
       junit: report.xml
   rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
     - if: '$CI_COMMIT_BRANCH'

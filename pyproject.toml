@@ -44,7 +44,7 @@ run = [
     # orchestration (private; GitLab, madsen group)
     "remote_handler @ git+ssh://git@gitlab.tuwien.ac.at/e165-03-1_theoretische_materialchemie/madsen-s-research-group/remote_handler.git@jaxrens",
     # sampling method (private; GitHub)
-    "jaxrens @ git+ssh://git@github.com/nunglert/jaxrens.git@main",
+    "jaxrens[mace,neuralil,nequix,jaxmd] @ git+ssh://git@github.com/nunglert/jaxrens.git@refinement",
 ]
 # Materials Project fetch for jaxrens_al.reference_db (starting-database
 # builder). Not needed to run a loop or build dashboards; install on demand.
