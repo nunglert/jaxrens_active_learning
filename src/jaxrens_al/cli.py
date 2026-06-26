@@ -99,6 +99,12 @@ def _build_parser() -> argparse.ArgumentParser:
         help="jaxrens backend used to load the model for the EOS panel "
         "(default: neuralil).",
     )
+    parser.add_argument(
+        "--swap-pt",
+        action="store_true",
+        help="Thermodynamics heatmap: put pressure on the x-axis and "
+        "temperature on the y-axis (default is T on x, P on y).",
+    )
     return parser
 
 
@@ -162,6 +168,7 @@ def main(argv: list[str] | None = None) -> int:
             exclude=args.exclude,
             eos_reference=args.eos_reference,
             eos_backend=args.eos_backend,
+            ns_swap_axes=args.swap_pt,
         )
 
     if args.dry_run:

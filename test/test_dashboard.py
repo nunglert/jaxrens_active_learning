@@ -74,6 +74,7 @@ def test_iteration_assembles_all_panels(
         with_resampling=True,
         with_ns=True,
         with_acc_rates=True,
+        with_adaptation=True,
         with_re_stats=True,
         with_model=True,
     )
@@ -96,6 +97,9 @@ def test_iteration_assembles_all_panels(
         "neuralil_training_curve",
         "ns_thermodynamics",
         "acceptance_rates",
+        "step_sizes",
+        "adaptation_acceptance",
+        "ns_energy_trace",
         "re_swap_rates",
     }
 
@@ -228,7 +232,9 @@ def test_render_layouts_for_inspection(
     artifact_dir,
     tmp_path,
     fake_ns_monitor,
+    fake_ns_traces,
     fake_acc_log,
+    fake_adaptation_log,
     fake_re_log,
     fake_quests_descriptors,
     fake_eos_eval,
@@ -242,6 +248,7 @@ def test_render_layouts_for_inspection(
         with_resampling=True,
         with_ns=True,
         with_acc_rates=True,
+        with_adaptation=True,
         with_re_stats=True,
         with_model=True,
     )

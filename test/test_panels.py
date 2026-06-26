@@ -112,7 +112,7 @@ def test_sampled_energy_panel_requires_exactly_one_source(tmp_path):
 
 
 # --------------------------------------------------------------------------
-# Thermodynamics panel (tested through the _load_monitor seam)
+# Thermodynamics panel (tested through the _load_monitors seam)
 # --------------------------------------------------------------------------
 class _FakeMonitor:
     """Stand-in for jaxrens Monitor with the two methods the panel calls."""
@@ -127,18 +127,19 @@ class _FakeMonitor:
         return np.asarray(T, dtype=float) * 0 + float(np.mean(obs))
 
 
-def test_thermodynamics_panel_with_fake_monitor(tmp_path):
+def test_thermodynamics_panel_rows_per_replica(tmp_path):
+    # Multi-run is the only loader: one heatmap row per replica, not per dir.
     panel = NSThermodynamicsHeatmap(
-        result_dirs=[tmp_path / "run0", tmp_path / "run1"],
+        result_dirs=[tmp_path / "run0"],
         quantity="heat_capacity",
         n_T=12,
         datapath=tmp_path,
     )
-    panel._load_monitor = lambda d: _FakeMonitor(12)
+    panel._load_monitors = lambda d: [_FakeMonitor(12) for _ in range(3)]
     data = panel.compute_data({})
     assert isinstance(data, HeatmapData)
     assert len(data.t) == 12
-    assert len(data.obs) == 2  # one row per result dir
+    assert len(data.obs) == 3  # one row per replica
     assert len(data.obs[0]) == 12
     assert data.quantity == "heat_capacity"
 
@@ -147,6 +148,77 @@ def test_thermodynamics_panel_empty_dirs_raises(tmp_path):
     panel = NSThermodynamicsHeatmap(result_dirs=[], datapath=tmp_path)
     with pytest.raises(RuntimeError):
         panel.compute_data({})
+
+
+def test_thermodynamics_swap_axes_orientation(tmp_path):
+    import matplotlib.pyplot as plt
+    from alviz.panels import HeatmapData
+
+    data = HeatmapData(
+        t=[1.0, 2.0, 3.0],
+        p=[0.0, 1.0],
+        obs=[[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]],
+        quantity="heat_capacity",
+    )
+
+    # Default: temperature on x, pressure on y.
+    p0 = NSThermodynamicsHeatmap(result_dirs=["x"], datapath=tmp_path)
+    p0.data = data
+    fig, p0.ax = plt.subplots()
+    p0.plot_data()
+    assert "T" in p0.ax.get_xlabel() and "P" in p0.ax.get_ylabel()
+    plt.close(fig)
+
+    # Swapped: pressure on x, temperature on y.
+    p1 = NSThermodynamicsHeatmap(
+        result_dirs=["x"], datapath=tmp_path, swap_axes=True
+    )
+    p1.data = data
+    fig, p1.ax = plt.subplots()
+    p1.plot_data()
+    assert "P" in p1.ax.get_xlabel() and "T" in p1.ax.get_ylabel()
+    plt.close(fig)
+
+
+# --------------------------------------------------------------------------
+# Adaptation-trace panels + energy trace (tested through their seams)
+# --------------------------------------------------------------------------
+def test_step_size_panel_reads_adaptation(tmp_path, fake_adaptation_log):
+    from jaxrens_al.panels.adaptation import StepSizePanel
+
+    panel = StepSizePanel(adaptation_file="x.h5", datapath=tmp_path)
+    data = panel.compute_data({})
+    assert data["move_names"] == ["gmc", "swap"]
+    assert data["iterations"] == [0, 10, 20]
+    # (n_records, n_runs, n_moves).
+    assert np.shape(data["step_sizes"]) == (3, 2, 2)
+    assert data["n_runs"] == 2 and data["n_moves"] == 2
+
+
+def test_adaptation_acceptance_panel_reads_adaptation(
+    tmp_path, fake_adaptation_log
+):
+    from jaxrens_al.panels.adaptation import AdaptationAcceptancePanel
+
+    panel = AdaptationAcceptancePanel(
+        adaptation_file="x.h5", datapath=tmp_path
+    )
+    data = panel.compute_data({})
+    assert np.shape(data["acceptance_rates"]) == (3, 2, 2)
+    assert data["acceptance_rates"][0][0] == [0.5, 0.5]
+
+
+def test_energy_trace_panel_per_replica(tmp_path, fake_ns_traces):
+    from jaxrens_al.panels.traces import NSEnergyTracePanel
+
+    panel = NSEnergyTracePanel(
+        result_dirs=[tmp_path / "out"], prefix="ns", datapath=tmp_path
+    )
+    data = panel.compute_data({})
+    assert len(data["traces"]) == 2  # one per replica
+    tr = data["traces"][0]
+    assert tr["label"] == "run0"
+    assert len(tr["iterations"]) == len(tr["energies"]) == 20
 
 
 # --------------------------------------------------------------------------

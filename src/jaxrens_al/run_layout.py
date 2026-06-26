@@ -176,17 +176,30 @@ def iteration_dir(calchome, index: int):
 
 
 def ns_result_dir(it_dir, prefix: str = "ns"):
-    """Dir holding this iteration's jaxrens ``<prefix>.energies``, or None.
+    """Dir holding this iteration's jaxrens NS energies, or None.
 
     Returns the *containing* directory (what
-    ``jaxrens.postprocess.Monitor.from_directory`` expects), or ``None`` when
-    the NS run for this iteration produced no energies file.
+    ``MonitorCollection.from_multi_run_directory`` expects), or ``None`` when
+    the NS run for this iteration produced no energies file. Matches both the
+    multi-run layout (``<prefix>.runNN.energies``) and a bare single-run
+    ``<prefix>.energies`` (the one-replica edge case).
     """
     base = Path(it_dir) / "ns_sampler" / "results"
     if not base.exists():
         return None
-    hits = sorted(base.rglob(f"{prefix}.energies"))
+    hits = sorted(base.rglob(f"{prefix}.run*.energies")) or sorted(
+        base.rglob(f"{prefix}.energies")
+    )
     return hits[0].parent if hits else None
+
+
+def adaptation_file(it_dir, prefix: str = "ns"):
+    """This iteration's jaxrens ``<prefix>.adaptation.h5`` log, or None."""
+    base = Path(it_dir) / "ns_sampler" / "results"
+    if not base.exists():
+        return None
+    hits = sorted(base.rglob(f"{prefix}.adaptation.h5"))
+    return hits[0] if hits else None
 
 
 def acc_rates_file(it_dir, prefix: str = "ns"):

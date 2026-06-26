@@ -10,22 +10,29 @@ from jaxrens_al.panels.acceptance import (
     MoveAcceptancePanel,
     RESwapAcceptancePanel,
 )
+from jaxrens_al.panels.adaptation import (
+    AdaptationAcceptancePanel,
+    StepSizePanel,
+)
 from jaxrens_al.panels.environments import AtomicEnvsPanel
 from jaxrens_al.panels.eos import EquationOfStatePanel
 from jaxrens_al.panels.progress import DatasetGrowthPanel
 from jaxrens_al.panels.quests import QuestsPCAPanel, ResampledGridPanel
 from jaxrens_al.panels.sampling import NSSampledEnergyPanel
 from jaxrens_al.panels.thermodynamics import NSThermodynamicsHeatmap
+from jaxrens_al.panels.traces import NSEnergyTracePanel
 from jaxrens_al.panels.training import (
     NeuralILParityPanel,
     NeuralILTrainingCurve,
 )
 
 __all__ = [
+    "AdaptationAcceptancePanel",
     "AtomicEnvsPanel",
     "DatasetGrowthPanel",
     "EquationOfStatePanel",
     "MoveAcceptancePanel",
+    "NSEnergyTracePanel",
     "NSSampledEnergyPanel",
     "QuestsPCAPanel",
     "RESwapAcceptancePanel",
@@ -33,4 +40,5 @@ __all__ = [
     "NeuralILParityPanel",
     "NeuralILTrainingCurve",
     "NSThermodynamicsHeatmap",
+    "StepSizePanel",
 ]

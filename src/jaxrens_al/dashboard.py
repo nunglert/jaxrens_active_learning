@@ -28,20 +28,24 @@ from alviz import Dashboard
 from alviz.panels import ExtxyzSampledEnergyVolume
 
 from jaxrens_al.panels import (
+    AdaptationAcceptancePanel,
     AtomicEnvsPanel,
     DatasetGrowthPanel,
     EquationOfStatePanel,
     MoveAcceptancePanel,
     NeuralILParityPanel,
     NeuralILTrainingCurve,
+    NSEnergyTracePanel,
     NSSampledEnergyPanel,
     NSThermodynamicsHeatmap,
     QuestsPCAPanel,
     ResampledGridPanel,
     RESwapAcceptancePanel,
+    StepSizePanel,
 )
 from jaxrens_al.run_layout import (
     acc_rates_file,
+    adaptation_file,
     evaluated_configs,
     evaluated_configs_per_iteration,
     iteration_dir,
@@ -87,6 +91,7 @@ class RunContext:
     error_files: list = field(default_factory=list)
     ns_dirs: list = field(default_factory=list)
     acc_rates: Optional[Path] = None
+    adaptation: Optional[Path] = None
     re_stats: Optional[Path] = None
     quests_pca: Optional[Path] = None
     resampled_provenance: Optional[Path] = None
@@ -96,6 +101,7 @@ class RunContext:
     iteration: Optional[int] = None
     ns_prefix: str = "ns"
     ns_k_B: float = 1.0
+    ns_swap_axes: bool = False
     force_recompute: bool = False
 
     @property
@@ -116,6 +122,7 @@ def summary_context(
     *,
     ns_prefix: str = "ns",
     ns_k_B: float = 1.0,
+    ns_swap_axes: bool = False,
     force_recompute: bool = False,
 ) -> RunContext:
     """Whole-run context: every iteration's artifacts, aggregated."""
@@ -132,6 +139,7 @@ def summary_context(
         iteration=None,
         ns_prefix=ns_prefix,
         ns_k_B=ns_k_B,
+        ns_swap_axes=ns_swap_axes,
         force_recompute=force_recompute,
     )
 
@@ -147,6 +155,7 @@ def iteration_context(
     eos_backend: str = "neuralil",
     ns_prefix: str = "ns",
     ns_k_B: float = 1.0,
+    ns_swap_axes: bool = False,
     force_recompute: bool = False,
 ) -> RunContext:
     """Single-iteration context (``calchome/<index>``'s artifacts).
@@ -170,6 +179,7 @@ def iteration_context(
         error_files=training_error_for_iteration(it_dir),
         ns_dirs=[ns_dir] if ns_dir is not None else [],
         acc_rates=acc_rates_file(it_dir, prefix=ns_prefix),
+        adaptation=adaptation_file(it_dir, prefix=ns_prefix),
         re_stats=re_stats_file(it_dir, prefix=ns_prefix),
         quests_pca=quests_pca_json(it_dir),
         resampled_provenance=resampled_provenance_json(it_dir),
@@ -181,6 +191,7 @@ def iteration_context(
         iteration=index,
         ns_prefix=ns_prefix,
         ns_k_B=ns_k_B,
+        ns_swap_axes=ns_swap_axes,
         force_recompute=force_recompute,
     )
 
@@ -233,9 +244,20 @@ def assemble(ctx: RunContext) -> list:
         ResampledGridPanel(provenance_json=ctx.resampled_provenance, **c)
         if ctx.resampled_provenance
         else None,
-        # Per-move MCMC acceptance rates over the NS run.
+        # Per-move MCMC acceptance rates over the NS run (.acc_rates.h5).
         MoveAcceptancePanel(acc_rates_file=ctx.acc_rates, **c)
         if ctx.acc_rates
+        else None,
+        # Adaptive step size + its acceptance, from the .adaptation.h5 trace.
+        StepSizePanel(adaptation_file=ctx.adaptation, **c)
+        if ctx.adaptation
+        else None,
+        AdaptationAcceptancePanel(adaptation_file=ctx.adaptation, **c)
+        if ctx.adaptation
+        else None,
+        # Dead-point energy vs iteration, one line per replica (per page).
+        NSEnergyTracePanel(result_dirs=ctx.ns_dirs, prefix=ctx.ns_prefix, **c)
+        if (ctx.ns_dirs and not ctx.is_summary)
         else None,
         # Inter-replica-exchange swap acceptance, per replica pair.
         RESwapAcceptancePanel(re_stats_file=ctx.re_stats, **c)
@@ -268,6 +290,7 @@ def assemble(ctx: RunContext) -> list:
             quantity="heat_capacity",
             k_B=ctx.ns_k_B,
             prefix=ctx.ns_prefix,
+            swap_axes=ctx.ns_swap_axes,
             **c,
         )
         if ctx.ns_dirs
@@ -285,6 +308,7 @@ def build_dashboard(
     height_per_panel: float = 4.0,
     ns_prefix: str = "ns",
     ns_k_B: float = 1.0,
+    ns_swap_axes: bool = False,
     compute: bool = True,
     only=None,
     exclude=None,
@@ -317,6 +341,7 @@ def build_dashboard(
         datapath,
         ns_prefix=ns_prefix,
         ns_k_B=ns_k_B,
+        ns_swap_axes=ns_swap_axes,
         force_recompute=force_recompute,
     )
     board = Dashboard.from_entries(
@@ -346,6 +371,7 @@ def build_iteration_dashboard(
     height_per_panel: float = 4.0,
     ns_prefix: str = "ns",
     ns_k_B: float = 1.0,
+    ns_swap_axes: bool = False,
     compute: bool = True,
     only=None,
     exclude=None,
@@ -377,6 +403,7 @@ def build_iteration_dashboard(
         eos_backend=eos_backend,
         ns_prefix=ns_prefix,
         ns_k_B=ns_k_B,
+        ns_swap_axes=ns_swap_axes,
         force_recompute=force_recompute,
     )
     board = Dashboard.from_entries(

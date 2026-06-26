@@ -69,8 +69,9 @@ class RESwapAcceptancePanel(Entry):
 
     Reads jaxrens' ``<prefix>.re_stats.h5`` (per swap *fire*, per adjacent
     replica pair: accepted/attempted counts) via its own reader, and renders it
-    with jaxrens' own ``plot_re_acceptance`` so the figure matches what
-    ``jaxrens plot`` produces -- a read on whether the replica ladder is
+    with jaxrens' own ``plot_re_acceptance_stacked`` -- the per-pair *stacked*
+    view (one vertically offset band per pair, so curves don't overlap),
+    matching ``jaxrens plot``. A read on whether the replica ladder is
     exchanging well (too-low rates mean the pressures/temperatures are spaced
     too far apart).
 
@@ -113,9 +114,9 @@ class RESwapAcceptancePanel(Entry):
 
         # Plot exactly the way jaxrens does: rebuild an RELog from the cached
         # rates (n_attempted=1 so RELog.acceptance_rates returns them as-is)
-        # and hand it to jaxrens' own per-pair plotter.
+        # and hand it to jaxrens' own stacked per-pair plotter.
         from jaxrens.io.re_stats_log import RELog
-        from jaxrens.postprocess.plotting import plot_re_acceptance
+        from jaxrens.postprocess.plotting import plot_re_acceptance_stacked
 
         rates = np.asarray(self.data["rates"], dtype=float)
         re_log = RELog(
@@ -125,6 +126,6 @@ class RESwapAcceptancePanel(Entry):
             n_pairs=int(self.data["n_pairs"]),
             flavor=flavor,
         )
-        plot_re_acceptance(re_log, ax=self.ax, per_pair=True)
+        plot_re_acceptance_stacked(re_log, ax=self.ax)
         self.ax.grid(alpha=0.3)
-        self.ax.set_title(f"RE swap acceptance ({flavor})")
+        self.ax.set_title(f"RE swap acceptance ({flavor}, stacked)")

@@ -146,6 +146,7 @@ def _make_calchome(
     with_resampling=False,
     with_ns=False,
     with_acc_rates=False,
+    with_adaptation=False,
     with_re_stats=False,
     with_model=False,
 ):
@@ -164,7 +165,9 @@ def _make_calchome(
     -- patch it with the ``fake_ns_monitor`` fixture to render).
     ``with_acc_rates`` drops a stub ``ns.acc_rates.h5`` there so the move-
     acceptance panel is discovered (compute needs jaxrens -- patch it with the
-    ``fake_acc_log`` fixture to render). ``with_re_stats`` drops a stub
+    ``fake_acc_log`` fixture to render). ``with_adaptation`` drops a stub
+    ``ns.adaptation.h5`` for the step-size / adaptation-acceptance panels
+    (render with ``fake_adaptation_log``). ``with_re_stats`` drops a stub
     ``ns.re_stats.h5`` for the RE-swap panel (render with ``fake_re_log``).
     ``with_model`` drops a stub
     ``neuralil_model.pkl`` under ``<i>/training/results`` so the EOS panel
@@ -231,6 +234,11 @@ def _make_calchome(
             nsres = calchome / str(it) / "ns_sampler" / "results"
             nsres.mkdir(parents=True, exist_ok=True)
             (nsres / "ns.acc_rates.h5").write_bytes(b"")  # stub for discovery
+
+        if with_adaptation:
+            nsres = calchome / str(it) / "ns_sampler" / "results"
+            nsres.mkdir(parents=True, exist_ok=True)
+            (nsres / "ns.adaptation.h5").write_bytes(b"")  # stub: discovery
 
         if with_re_stats:
             nsres = calchome / str(it) / "ns_sampler" / "results"
@@ -304,11 +312,12 @@ def eos_reference():
 
 @pytest.fixture
 def fake_ns_monitor(monkeypatch):
-    """Patch the thermodynamics panel's jaxrens seam with a fake monitor.
+    """Patch the thermodynamics panel's jaxrens seam with fake monitors.
 
-    The NS thermodynamics panel computes via ``jaxrens.postprocess.Monitor``;
-    patching its ``_load_monitor`` seam lets a full-dashboard render include it
-    without jaxrens or a real ``.energies``/``.checkpoint``.
+    The NS thermodynamics panel computes via
+    ``MonitorCollection.from_multi_run_directory``; patching its
+    ``_load_monitors`` seam (one Monitor per replica) lets a full-dashboard
+    render include it without jaxrens or a real ``.energies``/``.checkpoint``.
     """
     from jaxrens_al.panels.thermodynamics import NSThermodynamicsHeatmap
 
@@ -324,8 +333,55 @@ def fake_ns_monitor(monkeypatch):
 
     monkeypatch.setattr(
         NSThermodynamicsHeatmap,
-        "_load_monitor",
-        lambda self, result_dir: _FakeMonitor(),
+        "_load_monitors",
+        lambda self, result_dir: [_FakeMonitor()],
+    )
+
+
+@pytest.fixture
+def fake_ns_traces(monkeypatch):
+    """Patch the energy-trace panel's jaxrens seam with fake replicas.
+
+    Two fake Monitors carrying ``iteration_trace`` / ``energy_trace`` so the
+    per-replica energy-vs-iteration panel renders without jaxrens.
+    """
+    from jaxrens_al.panels.traces import NSEnergyTracePanel
+
+    class _FakeTraceMonitor:
+        def __init__(self, label):
+            self.label = label
+            self.iteration_trace = np.arange(20)
+            self.energy_trace = -np.arange(20, dtype=float)
+
+    monkeypatch.setattr(
+        NSEnergyTracePanel,
+        "_load_monitors",
+        lambda self, d: [_FakeTraceMonitor("run0"), _FakeTraceMonitor("run1")],
+    )
+
+
+@pytest.fixture
+def fake_adaptation_log(monkeypatch):
+    """Patch the adaptation panels' jaxrens reader with a fake log.
+
+    Lets the step-size and adaptation-acceptance panels compute/render from a
+    stub ``.adaptation.h5`` without h5py. Shapes match the real
+    ``AdaptationLog``: ``(n_records, n_runs, n_moves)``.
+    """
+    from jaxrens_al.panels.adaptation import _AdaptationTracePanel
+
+    class _FakeAdaptLog:
+        iterations = np.array([0, 10, 20])
+        move_names = ["gmc", "swap"]
+        n_runs = 2
+        n_moves = 2
+        step_sizes = np.full((3, 2, 2), 0.1)
+        acceptance_rates = np.full((3, 2, 2), 0.5)
+
+    monkeypatch.setattr(
+        _AdaptationTracePanel,
+        "_load_log",
+        lambda self, path: _FakeAdaptLog(),
     )
 
 
