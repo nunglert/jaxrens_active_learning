@@ -92,6 +92,25 @@ def _write_error_log(path):
     return path
 
 
+def _write_mace_train_log(path):
+    """A MACE ``*_train.txt`` JSON-lines log: a baseline + two eval epochs.
+
+    Interleaves ``mode == "opt"`` rows (which the panel must skip) and the
+    ``epoch: null`` baseline eval (also skipped) with two real eval epochs.
+    """
+    path.write_text(
+        '{"loss": 9.0, "rmse_e_per_atom": 20.0, "rmse_f": 3.0, '
+        '"mode": "eval", "epoch": null, "head": "Default"}\n'
+        '{"loss": 5.0, "mode": "opt", "epoch": 0}\n'
+        '{"loss": 4.0, "rmse_e_per_atom": 12.0, "rmse_f": 2.0, '
+        '"mode": "eval", "epoch": 0, "head": "Default"}\n'
+        '{"loss": 2.0, "mode": "opt", "epoch": 1}\n'
+        '{"loss": 1.0, "rmse_e_per_atom": 6.0, "rmse_f": 1.0, '
+        '"mode": "eval", "epoch": 1, "head": "Default"}\n'
+    )
+    return path
+
+
 def _write_resampling_artifacts(results_dir, n_total=6, n_selected=2):
     """Write a quests_pca.json + resampled_provenance.json pair (synthetic)."""
     rng = np.random.default_rng(2)
@@ -143,12 +162,15 @@ def _make_calchome(
     n_sampled=5,
     with_forces=True,
     with_training=False,
+    with_mace_training=False,
+    eval_with_surrogate=False,
     with_resampling=False,
     with_ns=False,
     with_acc_rates=False,
     with_adaptation=False,
     with_re_stats=False,
     with_model=False,
+    staged=False,
 ):
     """Build a remote_handler-style run dir under ``tmp_path``.
 
@@ -157,6 +179,10 @@ def _make_calchome(
     panel simply gets no input). Evaluated (DFT) configs carry ``REF_forces``
     by default (the evaluated-energy/volume panel reads them), like real
     evaluator output; sampled configs carry ``ns_energy`` + ``run_id``.
+    ``eval_with_surrogate`` adds an ``ns_energy`` (sampler surrogate) key to
+    the evaluated configs, so the surrogate-vs-DFT parity/error panels appear.
+    ``with_mace_training`` drops a MACE ``*_train.txt`` JSON-lines log under
+    ``<i>/training/results`` so the ``mace_training_curve`` panel is found.
     ``with_training`` adds NeuralIL parity/error artifacts under
     ``<i>/training/results``. ``with_resampling`` adds QUESTS
     ``quests_pca.json`` + ``resampled_provenance.json`` under
@@ -172,6 +198,9 @@ def _make_calchome(
     ``with_model`` drops a stub
     ``neuralil_model.pkl`` under ``<i>/training/results`` so the EOS panel
     finds a model (compute needs jaxrens -- patch ``fake_eos_eval`` to render).
+    ``staged`` serializes ``AL_progress.json`` in the ``StagedActiveLearning
+    Handler`` schema (``{outputs: {stage: {iter: [rel]}}}``) instead of the
+    classic per-iteration list; the on-disk artifacts are identical either way.
     """
 
     def _per_iter(x):
@@ -194,10 +223,19 @@ def _make_calchome(
 
         if ev_counts[it]:
             e = f"evaluator_output/e{it}.extxyz"
+
+            def _ev_info(i, it=it):
+                info = {"REF_energy": -9.0 - it + 0.1 * i}
+                if eval_with_surrogate:
+                    # Surrogate (sampler) energy preserved through the
+                    # evaluator, so a surrogate-vs-DFT parity is available.
+                    info["ns_energy"] = -9.0 - it + 0.1 * i + 0.05
+                return info
+
             _write_configs(
                 calchome / e,
                 ev_counts[it],
-                lambda i, it=it: {"REF_energy": -9.0 - it + 0.1 * i},
+                _ev_info,
                 with_forces=with_forces,
             )
             entry["evaluator_output"] = [e]
@@ -219,6 +257,11 @@ def _make_calchome(
             tdir.mkdir(parents=True)
             _write_npz(tdir / "val.npz")
             _write_error_log(tdir / "error_0.txt")
+
+        if with_mace_training:
+            tdir = calchome / str(it) / "training" / "results"
+            tdir.mkdir(parents=True, exist_ok=True)
+            _write_mace_train_log(tdir / "mace_run-0_train.txt")
 
         if with_resampling:
             _write_resampling_artifacts(
@@ -252,8 +295,37 @@ def _make_calchome(
 
         progress.append(entry)
 
+    if staged:
+        progress = _classic_to_staged(progress)
     (calchome / "AL_progress.json").write_text(json.dumps(progress))
     return calchome
+
+
+def _classic_to_staged(progress):
+    """Rewrite a classic per-iteration list as the staged ``outputs`` schema.
+
+    The inverse of ``run_layout._normalize_staged`` -- used to exercise the
+    dashboard/CLI against a ``StagedActiveLearningHandler``-style file.
+    """
+    stage_key = {
+        "sampler": "sampler_output",
+        "selector": "selector_output",
+        "evaluator": "evaluator_output",
+        "trainer": "trainer_output",
+    }
+    outputs = {}
+    for i, entry in enumerate(progress):
+        for stage, key in stage_key.items():
+            rels = entry.get(key, []) or []
+            if rels:
+                outputs.setdefault(stage, {})[str(i)] = rels
+    return {
+        "stages": list(stage_key),
+        "entry_index": 0,
+        "exit_index": len(stage_key) - 1,
+        "num_iterations": len(progress),
+        "outputs": outputs,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -272,6 +344,11 @@ def write_npz():
 @pytest.fixture
 def write_error_log():
     return _write_error_log
+
+
+@pytest.fixture
+def write_mace_train_log():
+    return _write_mace_train_log
 
 
 @pytest.fixture
@@ -477,6 +554,35 @@ def fake_eos_eval(monkeypatch):
         ]
 
     monkeypatch.setattr(EquationOfStatePanel, "_evaluate", _fake)
+
+
+@pytest.fixture
+def fake_model_parity_eval(monkeypatch):
+    """Patch the model-parity panel's re-scoring seam (no jaxrens / model).
+
+    Returns predicted (energies, forces) per config -- the reference values
+    slightly perturbed -- so the panel computes/renders a non-trivial parity
+    without loading a real model.
+    """
+    from jaxrens_al.panels.training import ModelParityPanel
+
+    def _fake(self, model_file, atoms_list):
+        energies = [
+            float(at.info.get("REF_energy", 0.0)) + 0.1 for at in atoms_list
+        ]
+        forces = None
+        if self._show_forces:
+            forces = [
+                (
+                    np.asarray(at.arrays["REF_forces"], dtype=float) + 0.01
+                    if "REF_forces" in at.arrays
+                    else np.zeros((len(at), 3))
+                )
+                for at in atoms_list
+            ]
+        return energies, forces
+
+    monkeypatch.setattr(ModelParityPanel, "_evaluate", _fake)
 
 
 @pytest.fixture

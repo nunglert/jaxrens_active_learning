@@ -25,6 +25,8 @@ from jaxrens_al.panels.thermodynamics import (  # noqa: E402
     NSThermodynamicsHeatmap,
 )
 from jaxrens_al.panels.training import (  # noqa: E402
+    MaceTrainingCurve,
+    ModelParityPanel,
     NeuralILParityPanel,
     NeuralILTrainingCurve,
 )
@@ -61,6 +63,57 @@ def test_neuralil_parity_from_npz(tmp_path, write_npz):
     assert data.e_rmse >= 0
 
 
+def test_model_parity_rescores_reference(tmp_path, write_configs):
+    # ModelParityPanel loads no real model: patch the _evaluate seam so it
+    # returns predicted (energy, forces) per config, then check it pairs them
+    # against the REF_energy/REF_forces of the same configs.
+    cfg = tmp_path / "db_val.extxyz"
+    write_configs(
+        cfg,
+        4,
+        lambda i: {"REF_energy": -9.0 + 0.1 * i},
+        with_forces=True,
+    )
+    panel = ModelParityPanel(
+        config_files=[cfg],
+        model_file=tmp_path / "model.pkl",
+        backend_type="mace",
+        datapath=tmp_path,
+    )
+    # Predicted total = REF total + 0.3; configs are 3-atom, so per-atom the
+    # prediction sits 0.1 eV/atom above the reference (a constant offset).
+    panel._evaluate = lambda mf, frames: (
+        [float(at.info["REF_energy"]) + 0.3 for at in frames],
+        [np.asarray(at.arrays["REF_forces"]) + 0.02 for at in frames],
+    )
+    data = panel.compute_data({})
+    assert isinstance(data, ParityData)
+    assert len(data.e_obs) == 4 and len(data.e_pred) == 4
+    assert data.e_pred[0] == pytest.approx(data.e_obs[0] + 0.1)
+    assert data.f_obs is not None and len(data.f_obs) == 4 * 3 * 3
+    assert data.e_rmse == pytest.approx(0.1, abs=1e-6)
+
+
+def test_model_parity_energy_only(tmp_path, write_configs):
+    cfg = tmp_path / "db_val.extxyz"
+    write_configs(
+        cfg, 3, lambda i: {"REF_energy": -9.0 + 0.1 * i}, with_forces=True
+    )
+    panel = ModelParityPanel(
+        config_files=[cfg],
+        model_file=tmp_path / "model.pkl",
+        show_forces=False,
+        datapath=tmp_path,
+    )
+    panel._evaluate = lambda mf, frames: (
+        [float(at.info["REF_energy"]) * len(at) for at in frames],
+        None,
+    )
+    data = panel.compute_data({})
+    assert data.f_obs is None and data.f_rmse is None
+    assert len(data.e_pred) == 3
+
+
 def test_training_curve_parses_error_log(tmp_path, write_error_log):
     write_error_log(tmp_path / "error_0.txt")
     panel = NeuralILTrainingCurve(
@@ -72,6 +125,19 @@ def test_training_curve_parses_error_log(tmp_path, write_error_log):
     assert data["e_rmse"][0] == pytest.approx(0.25)
     assert data["f_rmse"][0] == pytest.approx(0.55)
     assert data["e_rmse"][1] == pytest.approx(0.05)
+
+
+def test_mace_training_curve_parses_eval_rows(tmp_path, write_mace_train_log):
+    write_mace_train_log(tmp_path / "Model_train.txt")
+    panel = MaceTrainingCurve(
+        train_logs=[tmp_path / "Model_train.txt"], datapath=tmp_path
+    )
+    data = panel.compute_data({})
+    # opt rows and the epoch=null baseline eval are skipped; two epochs remain.
+    assert data["epoch"] == [0, 1]
+    assert data["e_err"] == pytest.approx([12.0, 6.0])
+    assert data["f_err"] == pytest.approx([2.0, 1.0])
+    assert data["energy_metric"] == "rmse_e_per_atom"
 
 
 # --------------------------------------------------------------------------
@@ -271,6 +337,152 @@ def test_atomic_envs_panel_pca(
     # 5 Cu2O configs -> 15 atoms -> 15 projected points, each with a species.
     assert len(data["pc1"]) == 15 and len(data["pc2"]) == 15
     assert set(data["species"]) == {"Cu", "O"}
+    assert data["n_total"] == 5 and data["n_used"] == 5  # under the cap
+
+
+def test_atomic_envs_panel_subsamples_large_pool(
+    make_calchome, tmp_path, fake_quests_descriptors
+):
+    # The sampler is a pure producer: a big pool must be thinned before the
+    # (expensive) descriptor step, not mapped in full.
+    from jaxrens_al.panels.environments import AtomicEnvsPanel
+
+    calchome = make_calchome(tmp_path, n_iter=1, n_sampled=40)
+    sampled = calchome / "sampler_output" / "s0.extxyz"
+    panel = AtomicEnvsPanel(
+        config_files=[sampled], datapath=tmp_path, max_configs=10
+    )
+    data = panel.compute_data({})
+    assert data["n_total"] == 40 and data["n_used"] == 10
+    # 10 Cu2O configs kept -> 30 per-atom points.
+    assert len(data["pc1"]) == 30
+
+
+def _write_annotated(src, dest, l_values, seed=0):
+    """Write a synthetic Steinhardt-annotated extxyz (test-only stand-in for
+    the remote processor's output).
+
+    Attaches the same per-atom ``q<l>``/``w<l>`` arrays + per-frame
+    ``q<l>_mean``/``w<l>_mean`` layout the real
+    :class:`jaxrens_al.processors.steinhardt.SteinhardtProcessor` produces, so
+    the pure reader panels can be exercised with no jaxrens/cluster. ``q_l`` is
+    drawn from a two-cluster mixture in [0, 1]; ``w_l`` is a small signed value.
+    """
+    import ase.io
+
+    rng = np.random.default_rng(seed)
+    frames = ase.io.read(str(src), index=":")
+    for at in frames:
+        n = len(at)
+        for l in l_values:
+            centers = rng.choice([0.2, 0.55], size=n)
+            q = np.clip(centers + rng.normal(0, 0.05, n), 0.0, 1.0)
+            w = rng.normal(-0.05, 0.03, n)
+            at.new_array(f"q{l}", q)
+            at.new_array(f"w{l}", w)
+            at.info[f"q{l}_mean"] = float(q.mean())
+            at.info[f"w{l}_mean"] = float(w.mean())
+    ase.io.write(str(dest), frames)
+    return dest
+
+
+def test_steinhardt_distribution_panel_reads_annotation(
+    make_calchome, tmp_path
+):
+    """Distribution panel reads an annotated artifact."""
+    from jaxrens_al.panels.steinhardt import SteinhardtDistributionPanel
+
+    calchome = make_calchome(tmp_path, n_iter=1)
+    sampled = calchome / "sampler_output" / "s0.extxyz"
+    annotated = _write_annotated(sampled, tmp_path / "ann.extxyz", (4, 6))
+    panel = SteinhardtDistributionPanel(
+        annotated_file=annotated,
+        l_values=(4, 6),
+        datapath=tmp_path,
+    )
+    data = panel.compute_data({})
+    # 5 Cu2O configs -> 15 atoms -> one q/w value per atom per l.
+    assert data["l_values"] == [4, 6]
+    assert len(data["q"]["4"]) == 15 and len(data["w"]["6"]) == 15
+    assert all(0.0 <= v <= 1.0 for v in data["q"]["6"])
+    assert set(data["species"]) == {"Cu", "O"}
+
+
+def test_steinhardt_heatmap_panel_reads_same_artifact(make_calchome, tmp_path):
+    """The heatmap reads the SAME annotated file as the distribution panel.
+
+    One processor run -> one annotated file -> handed to both panels: that is
+    how a single computation is shared.
+    """
+    from alviz.panels import HeatmapData
+
+    from jaxrens_al.panels.steinhardt import (
+        SteinhardtDistributionPanel,
+        SteinhardtHeatmapPanel,
+    )
+
+    calchome = make_calchome(tmp_path, n_iter=1)
+    sampled = calchome / "sampler_output" / "s0.extxyz"
+    annotated = _write_annotated(sampled, tmp_path / "ann.extxyz", (6,))
+
+    dist = SteinhardtDistributionPanel(
+        annotated_file=annotated, l_values=(6,), datapath=tmp_path
+    )
+    dist.compute_data({})
+
+    heat = SteinhardtHeatmapPanel(
+        annotated_file=annotated,
+        l=6,
+        x_key="volume_per_atom",
+        y_key="ns_energy",
+        n_bins=4,
+        datapath=tmp_path,
+    )
+    data = heat.compute_data({})
+    assert isinstance(data, HeatmapData)
+    assert data.quantity == "<q6>"
+    assert len(data.obs) == len(data.p) and len(data.obs[0]) == len(data.t)
+    assert np.isfinite(np.asarray(data.obs, float)).any()
+
+
+def test_steinhardt_distribution_joint_scatter_renders(
+    make_calchome, tmp_path
+):
+    import matplotlib.pyplot as plt
+
+    from jaxrens_al.panels.steinhardt import SteinhardtDistributionPanel
+
+    calchome = make_calchome(tmp_path, n_iter=1)
+    sampled = calchome / "sampler_output" / "s0.extxyz"
+    annotated = _write_annotated(sampled, tmp_path / "ann.extxyz", (4, 6))
+    panel = SteinhardtDistributionPanel(
+        annotated_file=annotated,
+        l_values=(4, 6),
+        datapath=tmp_path,
+    )
+    panel.data = panel.compute_data({})
+
+    fig = plt.figure()
+    panel.subspec = fig.add_gridspec(1, 1)[0, 0]
+    panel.allocate_panels(fig)
+    panel.plot_data()
+    assert panel.colspan == 1 and len(panel.axes) == 1
+    assert "q_{4}" in panel.axes[0].get_xlabel()
+    assert "q_{6}" in panel.axes[0].get_ylabel()
+    plt.close(fig)
+
+
+def test_steinhardt_panel_missing_array_errors(make_calchome, tmp_path):
+    """A plain (un-annotated) trajectory trips the helpful read-back error."""
+    from jaxrens_al.panels.steinhardt import SteinhardtDistributionPanel
+
+    calchome = make_calchome(tmp_path, n_iter=1)
+    sampled = calchome / "sampler_output" / "s0.extxyz"
+    panel = SteinhardtDistributionPanel(
+        annotated_file=sampled, l_values=(6,), datapath=tmp_path
+    )
+    with pytest.raises(ValueError, match="'q6'"):
+        panel.compute_data({})
 
 
 def test_move_acceptance_panel_reads_log(tmp_path, fake_acc_log):

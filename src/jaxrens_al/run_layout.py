@@ -9,23 +9,53 @@ remote_handler: the dashboard side is coupled to the orchestrator's output
 *format*, not its code. ``AL_progress.json`` is the source of truth -- the
 recorded output paths are used rather than hard-coded directory names.
 
-Layout (from remote_handler's ActiveLearningHandler)::
+Two on-disk schemas are supported and normalized to one internal shape (an
+ordered per-iteration list of ``{<stage>_output: [rel, ...]}`` dicts):
+
+* **classic** (``ActiveLearningHandler``) -- a list of per-iteration dicts::
+
+      [ {steps, sampler_output, evaluator_output, trainer_output}, ... ]
+
+* **staged** (``StagedActiveLearningHandler``: sampler -> selector ->
+  evaluator -> trainer) -- one object whose ``outputs`` is keyed by stage then
+  iteration::
+
+      { stages, entry_index, exit_index, num_iterations,
+        outputs: { <stage>: { <iter>: [rel, ...] } } }
+
+  Stage names (``sampler`` / ``selector`` / ``evaluator`` / ``trainer``) map to
+  the classic ``<stage>_output`` keys, so every accessor below is schema-blind.
+
+Layout::
 
     calchome/
     ├── 0/  1/  ...                 # per-iteration actor working dirs
+    ├── sampler_output/             # full NS dead-point pool (pure producer)
+    ├── selector_output/            # candidate configs the selector chose
     ├── evaluator_output/           # DFT-labelled configs (REF_energy/REF_forces)
-    ├── sampler_output/             # candidate configs
     ├── trainer_output/             # trained models
-    └── AL_progress.json            # [ {steps, sampler_output,
-                                    #     evaluator_output, trainer_output}, ... ]
+    └── AL_progress.json            # classic list OR staged outputs (above)
 """
 
 import json
 from pathlib import Path
 
+# Staged-schema stage names -> the classic per-iteration ``<stage>_output`` key
+# the rest of this module (and the panels) already understand.
+_STAGE_TO_OUTPUT_KEY = {
+    "sampler": "sampler_output",
+    "selector": "selector_output",
+    "evaluator": "evaluator_output",
+    "trainer": "trainer_output",
+}
+
 
 def load_progress(calchome) -> list:
-    """Load ``AL_progress.json`` as a per-iteration list of dicts."""
+    """Load ``AL_progress.json`` as a per-iteration list of dicts.
+
+    Accepts either the classic or the staged schema (see the module docstring)
+    and returns the same normalized per-iteration list either way.
+    """
     calchome = Path(calchome)
     progress_file = calchome / "AL_progress.json"
     if not progress_file.exists():
@@ -39,10 +69,37 @@ def load_progress(calchome) -> list:
 
 
 def _as_iteration_list(progress) -> list:
-    """Normalize to an ordered list (tolerate a dict keyed by iteration)."""
+    """Normalize any supported schema to an ordered per-iteration list."""
     if isinstance(progress, dict):
+        if "outputs" in progress:  # staged schema
+            return _normalize_staged(progress)
+        # A bare dict keyed by iteration index (a tolerated classic variant).
         return [progress[k] for k in sorted(progress, key=lambda x: int(x))]
     return list(progress)
+
+
+def _normalize_staged(progress) -> list:
+    """Turn the staged ``outputs`` map into a per-iteration list of dicts.
+
+    ``outputs`` is ``{stage: {iter: [rel, ...]}}``; this pivots it to one dict
+    per iteration keyed by the classic ``<stage>_output`` names, covering
+    iterations ``0..max`` that any stage recorded (partial/in-flight runs stop
+    at the last completed iteration rather than padding to ``num_iterations``).
+    """
+    outputs = progress.get("outputs", {}) or {}
+    max_iter = -1
+    for stage_map in outputs.values():
+        for it in stage_map or {}:
+            max_iter = max(max_iter, int(it))
+
+    result = []
+    for i in range(max_iter + 1):
+        entry = {}
+        for stage, key in _STAGE_TO_OUTPUT_KEY.items():
+            stage_map = outputs.get(stage, {}) or {}
+            entry[key] = stage_map.get(str(i), stage_map.get(i, [])) or []
+        result.append(entry)
+    return result
 
 
 def _collect(calchome, progress, key) -> list:
@@ -66,6 +123,17 @@ def sampled_configs(calchome, progress=None) -> list:
     if progress is None:
         progress = load_progress(calchome)
     return _collect(calchome, progress, "sampler_output")
+
+
+def selected_configs(calchome, progress=None) -> list:
+    """Absolute paths to all selector-chosen candidate files, in order.
+
+    The selector stage (staged schema only) thins the sampler's full NS pool
+    down to the configs actually sent for evaluation; empty for a classic run.
+    """
+    if progress is None:
+        progress = load_progress(calchome)
+    return _collect(calchome, progress, "selector_output")
 
 
 def trained_models(calchome, progress=None) -> list:
@@ -95,6 +163,18 @@ def sampled_configs_per_iteration(calchome, progress=None) -> list:
     out = []
     for iteration in progress:
         rels = iteration.get("sampler_output", []) or []
+        out.append([(calchome / rel).resolve() for rel in rels])
+    return out
+
+
+def selected_configs_per_iteration(calchome, progress=None) -> list:
+    """List (per iteration) of the selector-chosen paths for that iteration."""
+    calchome = Path(calchome)
+    if progress is None:
+        progress = load_progress(calchome)
+    out = []
+    for iteration in progress:
+        rels = iteration.get("selector_output", []) or []
         out.append([(calchome / rel).resolve() for rel in rels])
     return out
 
@@ -156,6 +236,18 @@ def training_error_files(calchome) -> list:
     out = []
     for it_dir in iteration_dirs(calchome):
         out.extend(training_error_for_iteration(it_dir))
+    return out
+
+
+def training_mace_logs(calchome) -> list:
+    """All MACE ``*_train.txt`` JSON-lines logs across iterations (in order).
+
+    A MACE(-finetuning) trainer writes one per training run; the
+    ``MaceTrainingCurve`` panel parses the ``mode == "eval"`` rows out of them.
+    """
+    out = []
+    for it_dir in iteration_dirs(calchome):
+        out.extend(training_mace_for_iteration(it_dir))
     return out
 
 
@@ -262,3 +354,9 @@ def training_error_for_iteration(it_dir) -> list:
     """This iteration's NeuralIL ``error_*.txt`` logs (possibly empty)."""
     base = Path(it_dir) / "training" / "results"
     return sorted(base.rglob("error_*.txt")) if base.exists() else []
+
+
+def training_mace_for_iteration(it_dir) -> list:
+    """This iteration's MACE ``*_train.txt`` logs (possibly empty)."""
+    base = Path(it_dir) / "training" / "results"
+    return sorted(base.rglob("*_train.txt")) if base.exists() else []

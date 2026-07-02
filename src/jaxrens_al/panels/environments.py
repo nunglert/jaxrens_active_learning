@@ -7,10 +7,15 @@ Reads a set of configs, computes *per-atom* structural descriptors with the
 ones); this is per-*atom* environment coverage and is computed independently of
 whether a QUESTS selector ran.
 
-Heavy work (descriptors) runs in ``compute_data`` and alviz caches the result
-as JSON, so later renders just reload it. The descriptor call sits behind the
-``_descriptors`` seam so unit tests need neither ``quests`` nor the full
-compute.
+The sampler is now a pure producer (its output is the *full* NS dead-point
+pool), so descriptors over every config would be enormous. The panel therefore
+evenly **subsamples** the configs down to ``max_configs`` before computing
+descriptors -- the visualization analogue of the stride the old sampler applied
+itself, kept here (not routed through the selector, whose choice would bias the
+picture). Heavy work (descriptors) runs in ``compute_data`` and alviz caches
+the result as JSON, so later renders just reload it. The descriptor call sits
+behind the ``_descriptors`` seam so unit tests need neither ``quests`` nor the
+full compute.
 """
 
 import numpy as np
@@ -41,17 +46,27 @@ class AtomicEnvsPanel(Entry):
         config_files: extxyz files whose atomic environments are mapped.
         k: QUESTS descriptor neighbour count.
         cutoff: QUESTS descriptor cutoff radius (Angstrom).
+        max_configs: Cap on how many configs are descriptor-mapped; if the
+            input has more, they are evenly subsampled down to this many
+            (``None`` disables the cap). Bounds the cost on the full NS pool.
     """
 
     name = "atomic_envs"
 
     def __init__(
-        self, config_files, *args, k: int = 32, cutoff: float = 5.0, **kwargs
+        self,
+        config_files,
+        *args,
+        k: int = 32,
+        cutoff: float = 5.0,
+        max_configs: int = 500,
+        **kwargs,
     ):
         super().__init__(*args, **kwargs)
         self._config_files = [str(p) for p in config_files]
         self._k = k
         self._cutoff = cutoff
+        self._max_configs = max_configs
 
     def _descriptors(self, atoms_list):
         """Per-atom QUESTS descriptors (seam for testing)."""
@@ -71,6 +86,9 @@ class AtomicEnvsPanel(Entry):
         for path in self._config_files:
             atoms_list.extend(ase.io.read(path, index=":"))
 
+        n_total = len(atoms_list)
+        atoms_list = self._subsample(atoms_list)
+
         desc = np.asarray(self._descriptors(atoms_list), dtype=float)
         symbols = [s for at in atoms_list for s in at.get_chemical_symbols()]
         coords = _pca_2d(desc)
@@ -78,7 +96,19 @@ class AtomicEnvsPanel(Entry):
             pc1=coords[:, 0].tolist(),
             pc2=coords[:, 1].tolist(),
             species=symbols,
+            n_total=n_total,
+            n_used=len(atoms_list),
         )
+
+    def _subsample(self, atoms_list):
+        """Evenly thin ``atoms_list`` to at most ``max_configs`` entries."""
+        n = len(atoms_list)
+        if not self._max_configs or n <= self._max_configs:
+            return atoms_list
+        idx = np.unique(
+            np.linspace(0, n - 1, self._max_configs).round().astype(int)
+        )
+        return [atoms_list[i] for i in idx]
 
     def plot_data(self):
         pc1 = np.asarray(self.data["pc1"], dtype=float)
@@ -91,4 +121,11 @@ class AtomicEnvsPanel(Entry):
             self.ax.legend(title="species", fontsize="small", loc="best")
         self.ax.set_xlabel("PC1")
         self.ax.set_ylabel("PC2")
-        self.ax.set_title("Atomic environments")
+        n_used = self.data.get("n_used")
+        n_total = self.data.get("n_total")
+        if n_used is not None and n_total is not None and n_used < n_total:
+            self.ax.set_title(
+                f"Atomic environments ({n_used} of {n_total} configs)"
+            )
+        else:
+            self.ax.set_title("Atomic environments")

@@ -104,6 +104,74 @@ def test_iteration_assembles_all_panels(
     }
 
 
+# --------------------------------------------------------------------------
+# Combination of ns/dft/train dashboards: the panels the standalone scripts
+# show but which only register given the right artifacts.
+# --------------------------------------------------------------------------
+def test_surrogate_parity_registers_when_eval_has_ns_energy(
+    make_calchome, tmp_path
+):
+    # dft_dashboard's surrogate-vs-DFT parity/error: only when the evaluated
+    # configs carry the sampler's ns_energy too.
+    calchome = make_calchome(tmp_path, n_iter=2, eval_with_surrogate=True)
+    names = {e.name for e in build_dashboard(calchome, compute=False).entries}
+    assert {"parity", "energy_error"} <= names
+
+
+def test_surrogate_parity_absent_without_ns_energy(make_calchome, tmp_path):
+    # Plain evaluated configs (REF_energy only) -> no surrogate parity panels.
+    calchome = make_calchome(tmp_path, n_iter=2)
+    names = {e.name for e in build_dashboard(calchome, compute=False).entries}
+    assert "parity" not in names and "energy_error" not in names
+
+
+def test_mace_training_curve_registers_when_log_present(
+    make_calchome, tmp_path
+):
+    calchome = make_calchome(tmp_path, n_iter=2, with_mace_training=True)
+    names = {e.name for e in build_dashboard(calchome, compute=False).entries}
+    assert "mace_training_curve" in names
+
+
+def test_model_parity_registers_for_mace_iteration(make_calchome, tmp_path):
+    # A MACE-style iteration: a model bundle + evaluated configs but no .npz
+    # -> the model-rescored parity panel registers (per-iteration only).
+    calchome = make_calchome(
+        tmp_path, n_iter=2, with_mace_training=True, with_model=True
+    )
+    dp = calchome / "dashboard" / "1"
+    dp.mkdir(parents=True)
+    board = build_iteration_dashboard(calchome, 1, datapath=dp, compute=False)
+    assert "model_parity" in {e.name for e in board.entries}
+
+
+def test_model_parity_absent_when_npz_present(make_calchome, tmp_path):
+    # NeuralIL writes a .npz parity bundle, so the re-scoring panel is skipped
+    # in favour of the cheaper neuralil_parity reader.
+    calchome = make_calchome(
+        tmp_path, n_iter=2, with_training=True, with_model=True
+    )
+    dp = calchome / "dashboard" / "1"
+    dp.mkdir(parents=True)
+    board = build_iteration_dashboard(calchome, 1, datapath=dp, compute=False)
+    names = {e.name for e in board.entries}
+    assert "model_parity" not in names and "neuralil_parity" in names
+
+
+def test_model_parity_renders_via_seam(
+    make_calchome, tmp_path, fake_model_parity_eval
+):
+    # Compute+plot the MACE model-parity panel end to end (model load faked).
+    calchome = make_calchome(
+        tmp_path, n_iter=2, with_mace_training=True, with_model=True
+    )
+    dp = calchome / "dashboard" / "1"
+    dp.mkdir(parents=True)
+    board = build_iteration_dashboard(calchome, 1, datapath=dp, compute=True)
+    assert "model_parity" in {e.name for e in board.entries}
+    assert (dp / "model_parity.json").exists()
+
+
 def test_summary_end_to_end_writes_pdf_and_caches(make_calchome, tmp_path):
     calchome = make_calchome(tmp_path, n_iter=2)
     board = build_dashboard(calchome)

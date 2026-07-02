@@ -57,6 +57,21 @@ def test_multipage_build_one_page_per_iteration(make_calchome, tmp_path):
     assert len(pdf.PdfReader(str(combined)).pages) == 3
 
 
+def test_multipage_build_reads_staged_schema(make_calchome, tmp_path):
+    """The CLI builds the same multipage report from the staged schema."""
+    pytest.importorskip("alviz")
+    pdf = pytest.importorskip("pypdf")
+
+    calchome = make_calchome(tmp_path, n_iter=3, staged=True)
+
+    rc = main([str(calchome), "--force"])
+    assert rc == 0
+    for it in range(3):
+        assert (calchome / "plots" / f"Iteration{it}.pdf").exists()
+    combined = calchome / "dashboard.pdf"
+    assert len(pdf.PdfReader(str(combined)).pages) == 3
+
+
 def test_only_flag_restricts_panels(make_calchome, tmp_path):
     """--only keeps just the named panel; an empty iteration is skipped."""
     pytest.importorskip("alviz")

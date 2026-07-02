@@ -66,7 +66,6 @@ def test_jaxrens_sampler_is_a_sampler(
         cluster_config=mock_cluster_config,
         config_file=cfg,
         n_gpu_parallel=4,
-        sample_size=100,
         stub=True,
     )
 
@@ -74,7 +73,6 @@ def test_jaxrens_sampler_is_a_sampler(
     assert isinstance(sampler, Sampler)
     # ...with real (not delegated) attributes.
     assert sampler.stub is True
-    assert sampler.sample_size == 100
     assert sampler.n_gpu_parallel == 4
 
 
@@ -150,7 +148,7 @@ def test_stub_produces_sampled_configs(
         cluster_config=mock_cluster_config,
         config_file=cfg,
         n_gpu_parallel=4,
-        sample_size=80,
+        stub_n_dead=80,
         stub=True,
     )
 
@@ -159,6 +157,8 @@ def test_stub_produces_sampled_configs(
 
     assert sampled.exists()
     atoms = ase.io.read(sampled, index=":")
+    # Pure producer: emits ALL dead points (no subsampling). Selection of a
+    # subset is a downstream selector stage's job, not the sampler's.
     assert len(atoms) == 80
     for at in atoms:
         # jaxrens trajectory info keys (NOT uncertainty -- selection is a
@@ -167,117 +167,24 @@ def test_stub_produces_sampled_configs(
         assert "run_id" in at.info
 
 
-def _dummy_atoms(n):
-    from ase import Atoms
+def test_uniform_selector_thins_the_pool_downstream():
+    """The thinning that used to live in the sampler is now a selector.
 
-    return [
+    The sampler emits the full pool; a ``UniformSelector`` stage reduces it.
+    """
+    from ase import Atoms
+    from remote_handler.workflows.selectors import UniformSelector
+
+    pool = [
         Atoms(
             "Cu2O",
             positions=[[0, 0, 0], [1, 1, 1], [2, 2, 2]],
             cell=[6, 6, 6],
             pbc=True,
         )
-        for _ in range(n)
+        for _ in range(10)
     ]
-
-
-def test_reduce_uniform_thins_when_no_selector(
-    mock_remote_fs, mock_cluster_config, tmp_path
-):
-    cfg = _write_base_config(tmp_path / "ns.yaml")
-    sampler = JaxrensNSSampler(
-        remote_fs=mock_remote_fs,
-        cluster_config=mock_cluster_config,
-        config_file=cfg,
-        sample_size=3,
-        stub=True,
-    )
-    assert len(sampler._reduce(_dummy_atoms(10))) == 3  # uniform fallback
-
-
-def test_reduce_uses_selector_and_ignores_sample_size(
-    mock_remote_fs, mock_cluster_config, tmp_path
-):
-    # A selector owns the count; sample_size (here huge) must not apply.
-    from remote_handler.workflows.selectors import UniformSelector
-
-    cfg = _write_base_config(tmp_path / "ns.yaml")
-    sampler = JaxrensNSSampler(
-        remote_fs=mock_remote_fs,
-        cluster_config=mock_cluster_config,
-        config_file=cfg,
-        sample_size=999,
-        selector=UniformSelector(n_configs=4),
-        stub=True,
-    )
-    # Without the selector, _thin would return all 10 (10 <= 999).
-    assert len(sampler._reduce(_dummy_atoms(10))) == 4
-
-
-def test_update_points_selector_pca_output_per_iteration(
-    mock_remote_fs, mock_cluster_config, tmp_path
-):
-    # A QUESTSSelector's PCA map is redirected into the iteration's results
-    # dir, so each AL iteration keeps its own (constructing it needs no
-    # quests install).
-    from remote_handler.workflows.selectors import QUESTSSelector
-
-    cfg = _write_base_config(tmp_path / "ns.yaml")
-    selector = QUESTSSelector(n_configs=4, pca_output=tmp_path / "orig.json")
-    sampler = JaxrensNSSampler(
-        remote_fs=mock_remote_fs,
-        cluster_config=mock_cluster_config,
-        config_file=cfg,
-        selector=selector,
-        stub=True,
-    )
-    calcdir = tmp_path / "3"
-    calcdir.mkdir()
-    model_file = tmp_path / "model_3.pkl"
-    model_file.write_bytes(b"mock")
-
-    sampler.update(calcdir, model_file)
-    assert (
-        selector.pca_output
-        == calcdir / "ns_sampler" / "results" / "quests_pca.json"
-    )
-
-
-def test_write_provenance_records_run_id_and_iter(
-    mock_remote_fs, mock_cluster_config, tmp_path
-):
-    import json
-
-    from ase import Atoms
-
-    cfg = _write_base_config(tmp_path / "ns.yaml")
-    sampler = JaxrensNSSampler(
-        remote_fs=mock_remote_fs,
-        cluster_config=mock_cluster_config,
-        config_file=cfg,
-        stub=True,
-    )
-    sampler.results_dir = tmp_path / "results"
-
-    def _at(run_id, it):
-        a = Atoms("Cu", positions=[[0, 0, 0]], cell=[5, 5, 5], pbc=True)
-        a.info["run_id"] = run_id
-        a.info["iter"] = it
-        return a
-
-    candidates = [_at(0, 5), _at(0, 6), _at(1, 7)]
-    selected = [candidates[0], candidates[2]]  # indices 0 and 2
-    sampler._write_provenance(candidates, selected)
-
-    data = json.loads(
-        (sampler.results_dir / "resampled_provenance.json").read_text()
-    )
-    assert data["n_candidates"] == 3
-    assert data["n_selected"] == 2
-    assert data["selected"] == [
-        {"index": 0, "run_id": 0, "iter": 5},
-        {"index": 2, "run_id": 1, "iter": 7},
-    ]
+    assert len(UniformSelector(n_configs=3).select(pool)) == 3
 
 
 def test_body_template_is_shipped():

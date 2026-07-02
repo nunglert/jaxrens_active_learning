@@ -19,9 +19,16 @@ from jaxrens_al.panels.eos import EquationOfStatePanel
 from jaxrens_al.panels.progress import DatasetGrowthPanel
 from jaxrens_al.panels.quests import QuestsPCAPanel, ResampledGridPanel
 from jaxrens_al.panels.sampling import NSSampledEnergyPanel
+from jaxrens_al.panels.steinhardt import (
+    SteinhardtDistributionPanel,
+    SteinhardtHeatmapPanel,
+    SteinhardtPanel,
+)
 from jaxrens_al.panels.thermodynamics import NSThermodynamicsHeatmap
 from jaxrens_al.panels.traces import NSEnergyTracePanel
 from jaxrens_al.panels.training import (
+    MaceTrainingCurve,
+    ModelParityPanel,
     NeuralILParityPanel,
     NeuralILTrainingCurve,
 )
@@ -31,12 +38,17 @@ __all__ = [
     "AtomicEnvsPanel",
     "DatasetGrowthPanel",
     "EquationOfStatePanel",
+    "MaceTrainingCurve",
+    "ModelParityPanel",
     "MoveAcceptancePanel",
     "NSEnergyTracePanel",
     "NSSampledEnergyPanel",
     "QuestsPCAPanel",
     "RESwapAcceptancePanel",
     "ResampledGridPanel",
+    "SteinhardtDistributionPanel",
+    "SteinhardtHeatmapPanel",
+    "SteinhardtPanel",
     "NeuralILParityPanel",
     "NeuralILTrainingCurve",
     "NSThermodynamicsHeatmap",

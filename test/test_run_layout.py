@@ -51,6 +51,61 @@ def test_load_progress_tolerates_dict_keyed_by_iteration(tmp_path):
     assert [p["steps"] for p in progress] == [[0], [1]]
 
 
+def test_load_progress_normalizes_staged_schema(make_calchome, tmp_path):
+    # The staged StagedActiveLearningHandler schema normalizes to the same
+    # ordered per-iteration list as the classic one.
+    calchome = make_calchome(tmp_path, n_iter=2, n_sampled=[0, 5], staged=True)
+    progress = load_progress(calchome)
+    assert isinstance(progress, list) and len(progress) == 2
+    # iter 0 had no sampler output; both iters have an evaluator output.
+    assert progress[0]["sampler_output"] == []
+    assert len(progress[1]["sampler_output"]) == 1
+    assert all(len(p["evaluator_output"]) == 1 for p in progress)
+
+
+def test_staged_and_classic_accessors_agree(make_calchome, tmp_path):
+    # Same run, both schemas -> identical resolved paths (rel. to calchome).
+    classic = make_calchome(tmp_path / "c", n_iter=2, n_sampled=[0, 5])
+    staged = make_calchome(
+        tmp_path / "s", n_iter=2, n_sampled=[0, 5], staged=True
+    )
+
+    def rels(paths, root):
+        return [p.relative_to(root.resolve()) for p in paths]
+
+    assert rels(evaluated_configs(classic), classic) == rels(
+        evaluated_configs(staged), staged
+    )
+    assert rels(sampled_configs(classic), classic) == rels(
+        sampled_configs(staged), staged
+    )
+
+
+def test_selected_configs_reads_selector_stage(tmp_path):
+    from jaxrens_al.run_layout import (
+        selected_configs,
+        selected_configs_per_iteration,
+    )
+
+    calchome = tmp_path / "calchome"
+    (calchome / "selector_output").mkdir(parents=True)
+    (calchome / "selector_output" / "sel0.extxyz").write_text("")
+    (calchome / "AL_progress.json").write_text(
+        json.dumps(
+            {
+                "stages": ["sampler", "selector", "evaluator", "trainer"],
+                "num_iterations": 1,
+                "outputs": {
+                    "selector": {"0": ["selector_output/sel0.extxyz"]}
+                },
+            }
+        )
+    )
+    sel = selected_configs(calchome)
+    assert len(sel) == 1 and sel[0].name == "sel0.extxyz"
+    assert [len(x) for x in selected_configs_per_iteration(calchome)] == [1]
+
+
 def test_evaluated_and_sampled_configs_in_order(make_calchome, tmp_path):
     calchome = make_calchome(tmp_path, n_iter=3)
     evald = evaluated_configs(calchome)
@@ -117,8 +172,7 @@ def test_resampling_artifacts_found_when_present(make_calchome, tmp_path):
     it0 = iteration_dir(calchome, 0)
     assert quests_pca_json(it0) == results / "quests_pca.json"
     assert (
-        resampled_provenance_json(it0)
-        == results / "resampled_provenance.json"
+        resampled_provenance_json(it0) == results / "resampled_provenance.json"
     )
 
 

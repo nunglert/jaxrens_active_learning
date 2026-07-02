@@ -25,13 +25,19 @@ from pathlib import Path
 from typing import Optional
 
 from alviz import Dashboard
-from alviz.panels import ExtxyzSampledEnergyVolume
+from alviz.panels import (
+    ExtxyzEnergyErrorPanel,
+    ExtxyzParityPanel,
+    ExtxyzSampledEnergyVolume,
+)
 
 from jaxrens_al.panels import (
     AdaptationAcceptancePanel,
     AtomicEnvsPanel,
     DatasetGrowthPanel,
     EquationOfStatePanel,
+    MaceTrainingCurve,
+    ModelParityPanel,
     MoveAcceptancePanel,
     NeuralILParityPanel,
     NeuralILTrainingCurve,
@@ -60,6 +66,8 @@ from jaxrens_al.run_layout import (
     trained_model_for_iteration,
     training_error_files,
     training_error_for_iteration,
+    training_mace_for_iteration,
+    training_mace_logs,
     training_npz_files,
     training_npz_for_iteration,
 )
@@ -67,6 +75,27 @@ from jaxrens_al.run_layout import (
 # remote_handler labels ground-truth energies/forces with these keys.
 REF_ENERGY_KEY = "REF_energy"
 REF_FORCES_KEY = "REF_forces"
+# jaxrens trajectories carry the sampler's surrogate energy under this key; it
+# is preserved through the evaluator, so evaluated (DFT) configs carry *both*
+# the reference and this surrogate -> a "how far off was the sampler" parity.
+SURROGATE_ENERGY_KEY = "ns_energy"
+
+
+def _first_has_info_key(files, key) -> bool:
+    """True if the first config of ``files`` carries ``key`` in its info.
+
+    A cheap header-peek so :func:`assemble` only registers the surrogate-vs-DFT
+    parity panels when the surrogate key is actually present (a panel that read
+    a missing key would raise at compute time). Any read error -> False.
+    """
+    if not files:
+        return False
+    try:
+        from ase.io import read
+
+        return key in read(str(files[0]), index=0).info
+    except Exception:
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -89,6 +118,7 @@ class RunContext:
     sampled_files: list = field(default_factory=list)
     npz_files: list = field(default_factory=list)
     error_files: list = field(default_factory=list)
+    mace_logs: list = field(default_factory=list)
     ns_dirs: list = field(default_factory=list)
     acc_rates: Optional[Path] = None
     adaptation: Optional[Path] = None
@@ -98,6 +128,7 @@ class RunContext:
     eos_reference: Optional[list] = None  # phase reference files
     model_file: Optional[Path] = None
     eos_backend: str = "neuralil"
+    surrogate_energy_key: str = SURROGATE_ENERGY_KEY
     iteration: Optional[int] = None
     ns_prefix: str = "ns"
     ns_k_B: float = 1.0
@@ -135,6 +166,7 @@ def summary_context(
         sampled_files=sampled_configs(calchome, progress),
         npz_files=training_npz_files(calchome),
         error_files=training_error_files(calchome),
+        mace_logs=training_mace_logs(calchome),
         ns_dirs=ns_result_dirs(calchome, prefix=ns_prefix),
         iteration=None,
         ns_prefix=ns_prefix,
@@ -177,6 +209,7 @@ def iteration_context(
         sampled_files=sampled_files,
         npz_files=training_npz_for_iteration(it_dir),
         error_files=training_error_for_iteration(it_dir),
+        mace_logs=training_mace_for_iteration(it_dir),
         ns_dirs=[ns_dir] if ns_dir is not None else [],
         acc_rates=acc_rates_file(it_dir, prefix=ns_prefix),
         adaptation=adaptation_file(it_dir, prefix=ns_prefix),
@@ -209,6 +242,12 @@ def assemble(ctx: RunContext) -> list:
     """
     c = ctx.common
 
+    # The surrogate-vs-DFT parity/error panels (from dft_dashboard) only apply
+    # when the evaluated configs carry the sampler's surrogate energy too.
+    has_surrogate = _first_has_info_key(
+        ctx.eval_files, ctx.surrogate_energy_key
+    )
+
     if not ctx.sampled_files:
         sampled_panel = None
     elif ctx.is_summary:
@@ -233,6 +272,26 @@ def assemble(ctx: RunContext) -> list:
             **c,
         )
         if ctx.eval_files
+        else None,
+        # Surrogate (sampler) energy vs DFT reference on the evaluated configs
+        # -- "how far off was the sampler's model" (from dft_dashboard). Only
+        # when the surrogate energy survived into the evaluator output.
+        ExtxyzParityPanel(
+            config_files=ctx.eval_files,
+            energy_ref_key=REF_ENERGY_KEY,
+            energy_pred_key=ctx.surrogate_energy_key,
+            show_forces=False,
+            **c,
+        )
+        if has_surrogate
+        else None,
+        ExtxyzEnergyErrorPanel(
+            config_files=ctx.eval_files,
+            energy_ref_key=REF_ENERGY_KEY,
+            energy_pred_key=ctx.surrogate_energy_key,
+            **c,
+        )
+        if has_surrogate
         else None,
         # Sampled NS-energy distribution (built above; differs per view).
         sampled_panel,
@@ -280,9 +339,26 @@ def assemble(ctx: RunContext) -> list:
         NeuralILParityPanel(npz_files=ctx.npz_files, **c)
         if ctx.npz_files
         else None,
+        # Trained-model parity by re-scoring this iteration's DFT-labelled
+        # configs -- for a trainer with no .npz bundle (MACE). Needs a model,
+        # so per-iteration only (like EOS); backend from --eos-backend.
+        ModelParityPanel(
+            config_files=ctx.eval_files,
+            model_file=ctx.model_file,
+            backend_type=ctx.eos_backend,
+            energy_ref_key=REF_ENERGY_KEY,
+            forces_ref_key=REF_FORCES_KEY,
+            **c,
+        )
+        if (ctx.model_file and ctx.eval_files and not ctx.npz_files)
+        else None,
         # NeuralIL training-error curve from error_*.txt.
         NeuralILTrainingCurve(error_files=ctx.error_files, **c)
         if ctx.error_files
+        else None,
+        # MACE(-finetuning) validation-error curve from *_train.txt logs.
+        MaceTrainingCurve(train_logs=ctx.mace_logs, **c)
+        if ctx.mace_logs
         else None,
         # NS heat capacity vs T (needs .energies + .final.checkpoint.h5).
         NSThermodynamicsHeatmap(

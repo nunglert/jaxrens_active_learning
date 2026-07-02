@@ -20,16 +20,18 @@ template that no longer ships) and is on its way out. Instead this sampler:
        cluster via a ``SingleScriptTask`` (body template
        ``body_jaxrens.sh.j2``, shipped by :func:`jaxrens_al.template_dir`);
     3. reads the resulting ``<prefix>.traj.extxyz`` trajectories back as
-       ``ase.Atoms`` and thins them to ``sample_size`` candidate configs.
+       ``ase.Atoms`` and emits **all** dead points, tagged with their replica
+       ``run_id``.
 
-How the dead points are reduced to ``sample_size`` candidates is pluggable.
-By default they are thinned uniformly. Pass a ``remote_handler``
-``ConfigSelector`` (e.g. ``QUESTSSelector`` for descriptor-based
-diversity/novelty) to select instead -- applied host-side after the
-trajectories are collected, the same way ``TorchSimSampler``/``SSPDSampler``
-use selectors. Descriptor-based selectors (QUESTS) work today; *uncertainty*-
-based selection additionally needs ``jaxrens`` to write per-config uncertainty
-into the trajectory (it currently emits only ``ns_energy``).
+This sampler is a **pure producer**: it does no candidate selection or
+subsampling. Reducing the dead-point pool to the configs worth labelling is a
+*selector* concern, modelled as its own stage in
+``remote_handler.workflows.StagedActiveLearningHandler`` (a
+``SelectorActor`` wrapping a ``ConfigSelector``). Use ``UniformSelector`` for
+plain uniform thinning, ``QUESTSSelector`` for descriptor diversity/novelty, or
+``UncertaintySelector`` for committee variance -- inserted between this sampler
+and the evaluator via ``from_actors(selector=...)``. Keeping selection out of
+the sampler is what lets the same NS run feed any selection strategy unchanged.
 
 Requires the ``[run]`` extra (``pip install ".[run]"`` -> remote_handler +
 jaxrens). ``jaxrens`` itself only runs on the cluster; the host side needs just
@@ -38,7 +40,6 @@ jaxrens). ``jaxrens`` itself only runs on the cluster; the host side needs just
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 from pathlib import Path
@@ -53,7 +54,6 @@ from remote_handler.core.file_handler import FileSystemHandlerBase
 from remote_handler.core.tasks import SingleScriptTask
 from remote_handler.exceptions import FileSystemError, WorkflowError
 from remote_handler.workflows.active_learning_base import Sampler
-from remote_handler.workflows.selectors import ConfigSelector
 
 from jaxrens_al.templates import template_dir
 
@@ -87,19 +87,15 @@ def _set_dotted(config: dict, dotted_key: str, value) -> None:
 class JaxrensNSSampler(Sampler):
     """Native jaxrens nested-sampling Sampler (``remote_handler.Sampler``).
 
+    A pure producer: runs NS and returns *all* dead points. Candidate
+    selection is a downstream *selector* stage (see the module docstring).
+
     Args:
         remote_fs: FileSystemHandlerBase for the machine where jaxrens runs.
         cluster_config: ClusterConfig (partition, conda env, header template).
         config_file: Base jaxrens YAML config. Owns the NS settings; this
             sampler only overwrites ``backend.checkpoint_path`` and the
             ``output`` block per iteration.
-        sample_size: Number of candidate configs to return. Used as the
-            uniform-thinning target when no ``selector`` is given (a selector
-            owns its own count, e.g. ``QUESTSSelector(n_configs=...)``).
-        selector: Optional ``remote_handler`` ``ConfigSelector`` applied to the
-            collected dead points to choose which to return (e.g.
-            ``QUESTSSelector`` for structural diversity/novelty). If None, the
-            dead points are thinned uniformly to ``sample_size``.
         n_gpu_parallel: GPUs requested per job (``--n-gpus`` and the header's
             ``--gres=gpu:`` count). Multi-replica runs (one trajectory per
             replica) are driven by the jaxrens config itself, not by this flag.
@@ -118,7 +114,8 @@ class JaxrensNSSampler(Sampler):
         job_type_template: SLURM body template (default ``body_jaxrens.sh.j2``,
             shipped by jaxrens_al -- must be on ``remote_handler``'s template
             search path).
-        stub: Dry-run without a cluster; emit mock NS configs for testing.
+        stub: Dry-run without a cluster; emit mock NS dead points for testing.
+        stub_n_dead: Number of mock dead points to emit in ``stub`` mode.
     """
 
     def __init__(
@@ -126,8 +123,6 @@ class JaxrensNSSampler(Sampler):
         remote_fs: FileSystemHandlerBase,
         cluster_config: ClusterConfig,
         config_file: os.PathLike,
-        sample_size: int = 100,
-        selector: Optional[ConfigSelector] = None,
         n_gpu_parallel: int = 1,
         backend_type: Optional[str] = None,
         start_config_file: Optional[os.PathLike] = None,
@@ -137,13 +132,12 @@ class JaxrensNSSampler(Sampler):
         loop_time: float = 30.0,
         job_type_template: str = "body_jaxrens.sh.j2",
         stub: bool = False,
+        stub_n_dead: int = 64,
     ):
         super().__init__()
         self.remote_fs = remote_fs
         self.cluster_config = cluster_config
         self.config_file = Path(config_file)
-        self.sample_size = sample_size
-        self.selector = selector
         self.n_gpu_parallel = n_gpu_parallel
         self.backend_type = backend_type
         self.start_config_file = (
@@ -157,6 +151,7 @@ class JaxrensNSSampler(Sampler):
         self.loop_time = loop_time
         self.job_type_template = job_type_template
         self.stub = stub
+        self.stub_n_dead = stub_n_dead
 
         if backend_type is not None and backend_type not in _BACKEND_TYPES:
             raise WorkflowError(
@@ -231,11 +226,6 @@ class JaxrensNSSampler(Sampler):
         self.results_dir = self.ns_dir / "results"
         os.makedirs(self.ns_dir, exist_ok=True)
 
-        # If the selector emits a PCA map (QUESTS), keep one per AL iteration
-        # by pointing it at this iteration's results dir.
-        if hasattr(self.selector, "pca_output"):
-            self.selector.pca_output = self.results_dir / "quests_pca.json"
-
         model_file = sampler_input
         if isinstance(model_file, (list, tuple)):
             model_file = model_file[-1]
@@ -281,80 +271,26 @@ class JaxrensNSSampler(Sampler):
         self.ns_task.allocate_data()
 
     def get_sampled_configs(self) -> Path:
-        """Run jaxrens, collect trajectories, reduce them, and write extxyz.
+        """Run jaxrens, collect every dead point, and write them to extxyz.
 
         Returns:
-            Path to ``sampled_configs.extxyz`` for the GroundTruthEvaluator.
+            Path to ``sampled_configs.extxyz`` (the full dead-point pool) for
+            the next stage -- a selector, or the evaluator directly.
         """
         if self.stub:
-            logger.info("stub mode -- creating mock NS samples")
+            logger.info("stub mode -- creating mock NS dead points")
             all_ats = self._create_stub_outputs()
         else:
             self.ns_task.run()
-            candidates = self._read_trajectories()
-            all_ats = self._reduce(candidates)
-            self._write_provenance(candidates, all_ats)
+            all_ats = self._read_trajectories()
 
         os.makedirs(self.results_dir, exist_ok=True)
         output_file = self.results_dir / "sampled_configs.extxyz"
         ase.io.write(output_file, all_ats)
-        logger.info(f"Wrote {len(all_ats)} sampled configs to {output_file}")
+        logger.info(f"Wrote {len(all_ats)} NS dead points to {output_file}")
         return output_file
 
     # -- helpers ----------------------------------------------------------
-
-    def _reduce(self, all_ats: list[Atoms]) -> list[Atoms]:
-        """Cut all dead points down to the candidates to label.
-
-        Uses the configured ``selector`` if any (e.g. QUESTS diversity /
-        novelty), else falls back to uniform thinning to ``sample_size``.
-        """
-        if self.selector is not None:
-            selected = self.selector.select(all_ats)
-            logger.info(
-                f"{type(self.selector).__name__} selected {len(selected)} "
-                f"of {len(all_ats)} NS configs."
-            )
-            return selected
-        return self._thin(all_ats)
-
-    def _write_provenance(self, candidates: list, selected: list) -> None:
-        """Record which dead points were resampled, with their provenance.
-
-        For each selected config writes its ``run_id`` (the jaxrens replica,
-        tagged by this sampler) and ``iter`` (the NS dead-point iteration,
-        written by jaxrens), plus its ``index`` in the candidate pool -- the
-        same index a ``QUESTSSelector`` PCA map uses, so the two join. Written
-        to ``<results>/resampled_provenance.json``.
-        """
-        sel_ids = {id(at) for at in selected}
-
-        def _int(at, key):
-            v = at.info.get(key)
-            return int(v) if v is not None else None
-
-        records = [
-            {
-                "index": i,
-                "run_id": _int(at, "run_id"),
-                "iter": _int(at, "iter"),
-            }
-            for i, at in enumerate(candidates)
-            if id(at) in sel_ids
-        ]
-        self.results_dir.mkdir(parents=True, exist_ok=True)
-        out = self.results_dir / "resampled_provenance.json"
-        with open(out, "w") as f:
-            json.dump(
-                {
-                    "n_candidates": len(candidates),
-                    "n_selected": len(records),
-                    "selected": records,
-                },
-                f,
-                indent=2,
-            )
-        logger.info(f"Wrote resampling provenance to {out}")
 
     def _read_trajectories(self) -> list[Atoms]:
         """Read jaxrens ``.traj.extxyz`` outputs, tagging each with run_id."""
@@ -383,31 +319,15 @@ class JaxrensNSSampler(Sampler):
             )
         return all_ats
 
-    def _thin(self, all_ats: list[Atoms]) -> list[Atoms]:
-        """Uniformly thin all dead points down to ``sample_size`` configs."""
-        n = len(all_ats)
-        if n <= self.sample_size:
-            logger.warning(
-                f"NS produced {n} configs <= sample_size="
-                f"{self.sample_size}; returning all."
-            )
-            return all_ats
-        every = n // self.sample_size
-        thinned = all_ats[::every][: self.sample_size]
-        logger.info(
-            f"Thinned {n} NS configs to {len(thinned)} (every {every})."
-        )
-        return thinned
-
     def _create_stub_outputs(self) -> list[Atoms]:
         """Mock NS dead points for stub-mode testing (jaxrens info keys)."""
-        logger.info(f"Creating {self.sample_size} stub NS samples")
+        logger.info(f"Creating {self.stub_n_dead} stub NS dead points")
         n_runs = max(1, min(self.n_gpu_parallel, 4))
         all_ats: list[Atoms] = []
         for run_id in range(n_runs):
-            per_run = self.sample_size // n_runs
+            per_run = self.stub_n_dead // n_runs
             if run_id == n_runs - 1:  # last run mops up the remainder
-                per_run = self.sample_size - per_run * (n_runs - 1)
+                per_run = self.stub_n_dead - per_run * (n_runs - 1)
             for i in range(per_run):
                 symbols = ["Cu"] * 16 + ["O"] * 4
                 positions = np.random.uniform(0, 8, (len(symbols), 3))

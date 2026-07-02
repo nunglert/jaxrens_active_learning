@@ -8,7 +8,8 @@ Sampler -> Evaluator -> Trainer loop and the *sampler* is this project's own
     jaxrens-al-dashboard <calchome>/phase1_mace
     jaxrens-al-dashboard <calchome>/phase2_neuralil
 
-The run is split into two phases, each its own ``ActiveLearningHandler`` and
+The run is split into two phases, each its own ``StagedActiveLearningHandler``
+(sampler -> selector -> evaluator -> trainer) and
 ``calchome`` subdir:
 
   PHASE 1 -- foundation-model bootstrap (~3 iters)
@@ -43,7 +44,12 @@ from pathlib import Path
 
 from remote_handler.core.cluster_handler import ClusterConfig
 from remote_handler.core.file_handler import RemoteFileSystem
-from remote_handler.workflows import active_learning_base, evaluators, trainers
+from remote_handler.workflows import (
+    StagedActiveLearningHandler,
+    active_learning_base,
+    evaluators,
+    trainers,
+)
 from remote_handler.workflows.selectors import (
     QUESTSSelector,
     UncertaintySelector,
@@ -84,20 +90,20 @@ MACE_TRAIN_RUNNER = Path("/home/you/code/mace/mace/cli/run_train.py")
 def collect_evaluated_outputs(calchome: Path) -> list[Path]:
     """All DFT-labelled config files a finished phase wrote, from its progress.
 
-    The handler records each iteration's ``evaluator_output`` (paths relative
-    to its calchome) in ``AL_progress.json``. Phase 2 is seeded with these so
-    it trains on everything phase 1 collected.
+    Reads the ``StagedActiveLearningHandler`` progress schema: the evaluator
+    stage's per-iteration outputs live under
+    ``outputs["evaluator"] = {iter: [rel, ...]}`` (paths relative to calchome).
+    Phase 2 is seeded with these so it trains on everything phase 1 collected.
     """
     progress_file = calchome / "AL_progress.json"
     with open(progress_file, "r") as f:
         progress = json.load(f)
 
     outputs: list[Path] = []
-    for entry in progress:
-        out = entry.get("evaluator_output")
-        if out is None:
-            continue
-        for rel in out if isinstance(out, list) else [out]:
+    evaluator_iters = progress.get("outputs", {}).get("evaluator", {})
+    by_iter = sorted(evaluator_iters.items(), key=lambda kv: int(kv[0]))
+    for _it, rels in by_iter:
+        for rel in rels:
             outputs.append(calchome / rel)
     return outputs
 
@@ -150,14 +156,12 @@ def preflight(schedule, sampler):
 # PHASE 1 -- MACE foundation bootstrap.
 # ==========================================================================
 def run_phase1(calchome: Path, gpu_cluster, dft_cluster, gpu_fs, dft_fs):
-    # SAMPLER: jaxrens NS on the MACE (mace-jax) model; QUESTS *diversity*
-    # selection (no uncertainty in this phase).
+    # SAMPLER: jaxrens NS on the MACE (mace-jax) model -- a pure producer that
+    # emits all dead points. QUESTS *diversity* selection is the stage below.
     sampler = JaxrensNSSampler(
         remote_fs=gpu_fs,
         cluster_config=gpu_cluster,
         config_file=INPUTS / "ns_mace.yaml",
-        sample_size=SAMPLE_SIZE,
-        selector=QUESTSSelector(n_configs=SAMPLE_SIZE, method="msc"),
         n_gpu_parallel=N_GPU_PARALLEL,
         backend_type="mace",
         out_file_prefix="mace_sn16",
@@ -189,6 +193,10 @@ def run_phase1(calchome: Path, gpu_cluster, dft_cluster, gpu_fs, dft_fs):
         remote_mace_train_runner=MACE_TRAIN_RUNNER,
         num_models=1,
         convert_to_jax=True,
+        # mace-jax bundle DIR (config.json + params.msgpack) -- the format the
+        # mace backend loads. The staged handler copytree's it into the next
+        # iteration's input (the classic handler's shutil.copy could not).
+        jax_output_format="bundle",
         stub=STUB,
         loop_time=LOOP_TIME,
         remote_savepath=gpu_cluster.savepath,
@@ -197,12 +205,14 @@ def run_phase1(calchome: Path, gpu_cluster, dft_cluster, gpu_fs, dft_fs):
     schedule = Phase1SamplerSchedule(PHASE1_ITERS)
     preflight(schedule, sampler)
 
-    handler = active_learning_base.ActiveLearningHandler(
+    # Staged: sampler -> selector (QUESTS diversity) -> evaluator -> trainer.
+    handler = StagedActiveLearningHandler.from_actors(
         sampler=sampler,
         evaluator=evaluator,
         trainer=trainer,
-        sampler_schedule=schedule,
         calchome=str(calchome),
+        selector=QUESTSSelector(n_configs=SAMPLE_SIZE, method="msc"),
+        sampler_schedule=schedule,
         # Enter at the sampler with the foundation model (as mace-jax) so the
         # very first RENS run is foundation-driven; each later iteration's
         # sampler uses the freshly finetuned model.
@@ -210,6 +220,7 @@ def run_phase1(calchome: Path, gpu_cluster, dft_cluster, gpu_fs, dft_fs):
         initial_trainer_out=[FOUNDATION_MODEL_JAX],
         combine_evaluator_outputs=True,  # finetune on the growing dataset
         num_iterations=PHASE1_ITERS,
+        trainer_output_extension="bundle",  # mace-jax bundle dir, not a file
     )
     handler.run()
 
@@ -227,14 +238,6 @@ def run_phase2(
         remote_fs=gpu_fs,
         cluster_config=gpu_cluster,
         config_file=INPUTS / "ns_neuralil.yaml",
-        sample_size=SAMPLE_SIZE,
-        selector=UncertaintySelector(
-            n_configs=SAMPLE_SIZE,
-            energy_key="ns_energy_std",  # info: committee energy std
-            forces_key="ns_force_std",  # arrays: per-atom force std
-            energy_weight=0.0,  # forces drive selection (legacy)
-            forces_weight=1.0,
-        ),
         n_gpu_parallel=N_GPU_PARALLEL,
         backend_type="neuralil",
         out_file_prefix="neuralil_sn16",
@@ -277,12 +280,22 @@ def run_phase2(
     schedule = Phase2SamplerSchedule(PHASE2_ITERS)
     preflight(schedule, sampler)
 
-    handler = active_learning_base.ActiveLearningHandler(
+    # Staged: sampler -> selector (committee uncertainty) -> evaluator ->
+    # trainer. The uncertainty selector reads jaxrens' ns_energy_std /
+    # ns_force_std (annotated in place by the phase-2 ns config).
+    handler = StagedActiveLearningHandler.from_actors(
         sampler=sampler,
         evaluator=evaluator,
         trainer=trainer,
-        sampler_schedule=schedule,
         calchome=str(calchome),
+        selector=UncertaintySelector(
+            n_configs=SAMPLE_SIZE,
+            energy_key="ns_energy_std",  # info: committee energy std
+            forces_key="ns_force_std",  # arrays: per-atom force std
+            energy_weight=0.0,  # forces drive selection (legacy)
+            forces_weight=1.0,
+        ),
+        sampler_schedule=schedule,
         # Enter at training: iteration 0 trains the NeuralIL ensemble from
         # scratch on ALL of phase 1's labelled configs, then samples with it.
         cycle_entry_point="training",

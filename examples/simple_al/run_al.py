@@ -27,7 +27,13 @@ from pathlib import Path
 
 from remote_handler.core.cluster_handler import ClusterConfig
 from remote_handler.core.file_handler import LocalFileSystem, RemoteFileSystem
-from remote_handler.workflows import active_learning_base, evaluators, trainers
+from remote_handler.workflows import (
+    StagedActiveLearningHandler,
+    active_learning_base,
+    evaluators,
+    trainers,
+)
+from remote_handler.workflows.selectors import UniformSelector
 
 from jaxrens_al import template_dir
 from jaxrens_al.sampler import JaxrensNSSampler
@@ -95,11 +101,12 @@ def main(calchome: str = "calchome"):
     )
 
     # --- SAMPLER: jaxrens nested sampling (this project) ------------------
+    # Pure producer: emits ALL dead points. Reducing them to candidates is the
+    # selector stage below.
     sampler = JaxrensNSSampler(
         remote_fs=remote_fs,
         cluster_config=gpu_cluster,
         config_file=INPUTS / "ns.yaml",
-        sample_size=100,
         n_gpu_parallel=N_GPU_PARALLEL,
         backend_type="neuralil",  # matches the trainer's model
         out_file_prefix="ns",
@@ -190,14 +197,19 @@ def main(calchome: str = "calchome"):
     )
 
     # --- orchestrate ------------------------------------------------------
-    handler = active_learning_base.ActiveLearningHandler(
+    # Staged handler: sampler -> selector -> evaluator -> trainer. The selector
+    # stage (UniformSelector) does the uniform thinning the sampler used to do
+    # internally -- here it picks 100 evenly-spaced configs from the dead-point
+    # pool. Swap in QUESTSSelector / UncertaintySelector to change strategy.
+    handler = StagedActiveLearningHandler.from_actors(
         sampler=sampler,
         evaluator=evaluator,
         trainer=trainer,
-        sampler_schedule=sampler_schedule,
         calchome=str(calchome),
-        # Seed the loop with an initial labelled dataset and enter at training
-        # so iteration 0 produces the first model the sampler needs.
+        selector=UniformSelector(n_configs=100),
+        sampler_schedule=sampler_schedule,
+        # Seed the loop with an initial labelled dataset and enter at
+        # evaluation so iteration 0 produces the first model the sampler needs.
         initial_sampler_out=INPUTS / "initial_train.extxyz",
         cycle_entry_point="evaluation",
         num_iterations=NUM_ITERATIONS,
