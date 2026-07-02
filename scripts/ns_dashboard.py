@@ -14,6 +14,13 @@ wiring. Run it in an env with jaxrens installed, e.g.::
     ~/miniconda3/envs/jaxrens_al/bin/python scripts/ns_dashboard.py \
         experiments/run4/calchome/phase1_mace/0/ns_sampler/results/output \
         --prefix mace_sn16 -o experiments/run4/ns_dashboard.pdf
+
+Add ``--steinhardt-rcut R`` to include the NS ``<q_l>(T)`` heatmap. The
+per-replica trajectories are annotated by the real ``remote_handler``
+processing pipeline (``SteinhardtProcessor``); ``--cluster`` picks where it
+runs -- ``local`` (default, scheduler-free on this machine) or a ClusterConfig
+JSON for a dedicated/existing postprocessing cluster. Same code path either
+way.
 """
 
 from __future__ import annotations
@@ -31,6 +38,7 @@ from jaxrens_al.panels import (
     NSSampledEnergyPanel,
     NSThermodynamicsHeatmap,
     RESwapAcceptancePanel,
+    SteinhardtExpectationHeatmap,
     StepSizePanel,
 )
 
@@ -90,6 +98,41 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Step-size / acceptance panels: one line per replica instead "
         "of the mean-across-replicas band.",
+    )
+    parser.add_argument(
+        "--steinhardt-rcut",
+        type=float,
+        default=None,
+        help="Enable the NS Steinhardt <q_l>(T) heatmap: neighbour cutoff in "
+        "Angstrom. Annotates the dead-point pool locally via jaxrens, cached. "
+        "Omit to skip the panel.",
+    )
+    parser.add_argument(
+        "--steinhardt-l",
+        type=int,
+        default=6,
+        help="Steinhardt degree for the <q_l>(T) heatmap (default: 6).",
+    )
+    parser.add_argument(
+        "--steinhardt-rcut-min",
+        type=float,
+        default=0.0,
+        help="Lower Steinhardt neighbour cutoff (default: 0).",
+    )
+    parser.add_argument(
+        "--steinhardt-shard-size",
+        type=int,
+        default=2000,
+        help="Configs per shard when annotating via the processing machinery "
+        "(default: 2000).",
+    )
+    parser.add_argument(
+        "--cluster",
+        default="local",
+        help="Where to run the Steinhardt annotation: 'local' (default, "
+        "scheduler-free on this machine) or the name/path of a remote_handler "
+        "ClusterConfig JSON (absolute, or resolved under "
+        "REMOTE_HANDLER_CONFIG_DIR).",
     )
     parser.add_argument(
         "--swap-pt",
@@ -162,6 +205,48 @@ def main(argv: list[str] | None = None) -> int:
             NSSampledEnergyPanel(
                 config_files=trajs, iteration_index=0, **common
             )
+        )
+    # NS Steinhardt <q_l>(T) heatmap: reweights the per-dead-point q_l onto the
+    # temperature grid with each replica's Monitor (like heat capacity). The
+    # panel discovers its own per-replica trajectories and declares a
+    # processing need on each; the resolver annotates them below.
+    if args.steinhardt_rcut is not None and trajs:
+        entries.append(
+            SteinhardtExpectationHeatmap(
+                result_dirs=[out_dir],
+                prefix=args.prefix,
+                r_cut=args.steinhardt_rcut,
+                r_cut_min=args.steinhardt_rcut_min,
+                l=args.steinhardt_l,
+                param="q",
+                temperatures=T,
+                k_B=args.k_B,
+                swap_axes=args.swap_pt,
+                **common,
+            )
+        )
+
+    # Run the real processing machinery over any panel that needs it (annotate
+    # trajectories), locally via a scheduler-free executor -- one step over the
+    # whole dashboard. Skipped (and remote_handler unimported) when nothing
+    # declares a need.
+    if any(
+        p.processing_needs() for p in entries if hasattr(p, "processing_needs")
+    ):
+        from jaxrens_al.processing_resolver import (
+            execution_context,
+            resolve_processing,
+        )
+
+        print(
+            f"Annotating via the processing machinery (cluster="
+            f"{args.cluster!r}); may be slow."
+        )
+        resolve_processing(
+            entries,
+            shard_size=args.steinhardt_shard_size,
+            num_parallel=1,
+            **execution_context(args.cluster, datapath / "processing"),
         )
 
     board = Dashboard.from_entries(

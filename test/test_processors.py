@@ -74,6 +74,107 @@ def test_validate_args_rejects_bad_payload():
         )
 
 
+class _FakeHandler:
+    """Stand-in for RemoteTrajectoryProcessor: on run() it writes each input's
+    tagged output where the real handler's redistribute would (front_tag), with
+    a synthetic annotation -- so the resolver logic is testable with no
+    cluster."""
+
+    calls = []
+
+    def __init__(self, *, traj_files, processors, tag, **kw):
+        self.traj_files = traj_files
+        self.tag = tag
+        _FakeHandler.calls.append(
+            {"processors": processors, "tag": tag, "n_traj": len(traj_files)}
+        )
+
+    def run(self):
+        import ase.io
+        import numpy as np
+        from remote_handler.core.atoms_shard import front_tag
+
+        for src in self.traj_files:
+            frames = ase.io.read(src, index=":")
+            for at in frames:
+                for key in ("q6", "w6"):
+                    at.new_array(key, np.zeros(len(at)))
+                    at.info[f"{key}_mean"] = 0.0
+            ase.io.write(str(front_tag(src, self.tag)), frames)
+
+
+def test_resolve_processing_dedups_into_one_job_and_delivers(
+    monkeypatch, tmp_path
+):
+    """Two panels on the same pool + need -> one step, one job, both fed."""
+    import ase.io
+    from ase import Atoms
+
+    from jaxrens_al.panels.steinhardt import (
+        SteinhardtDistributionPanel,
+        SteinhardtHeatmapPanel,
+    )
+    from jaxrens_al.processing_resolver import resolve_processing
+
+    pool = tmp_path / "pool.extxyz"
+    ase.io.write(
+        str(pool),
+        [
+            Atoms(
+                "Cu2O",
+                positions=[[0, 0, 0], [1, 0, 0], [0, 1, 0]],
+                cell=[5, 5, 5],
+                pbc=True,
+            )
+            for _ in range(3)
+        ],
+    )
+    _FakeHandler.calls.clear()
+    monkeypatch.setattr(
+        "remote_handler.processing.RemoteTrajectoryProcessor", _FakeHandler
+    )
+
+    p1 = SteinhardtDistributionPanel(
+        configs=pool, r_cut=3.5, l_values=(6,), datapath=tmp_path
+    )
+    p2 = SteinhardtHeatmapPanel(
+        configs=pool, r_cut=3.5, l=6, datapath=tmp_path
+    )
+    ctx = dict(cluster_config=None, remote_fs=None, remote_savepath="/remote")
+    resolve_processing([p1, p2], **ctx)
+
+    # Identical needs -> one deduped step, one job over the single pool.
+    assert len(_FakeHandler.calls) == 1
+    assert len(_FakeHandler.calls[0]["processors"]) == 1
+    assert _FakeHandler.calls[0]["n_traj"] == 1
+
+    # Both panels received the annotated pool and can read it (3 configs x 3).
+    assert len(p1.compute_data({})["q"]["6"]) == 9
+
+    # Reuse: a fresh panel with the same need finds the artifact on disk.
+    p3 = SteinhardtDistributionPanel(
+        configs=pool, r_cut=3.5, l_values=(6,), datapath=tmp_path
+    )
+    resolve_processing([p3], **ctx)
+    assert len(_FakeHandler.calls) == 1
+
+
+def test_execution_context_selects_local_or_config(tmp_path):
+    """'local' builds a local context; a name goes to from_file."""
+    from remote_handler.exceptions import ConfigurationError
+
+    from jaxrens_al.processing_resolver import execution_context
+
+    ctx = execution_context("local", tmp_path / "wd")
+    assert ctx["cluster_config"].executor == "direct"
+    assert ctx["cluster_config"].remote_machine == "local"
+    assert ctx["remote_savepath"] and ctx["local_savepath"]
+
+    # A missing config name is resolved via ClusterConfig.from_file (-> error).
+    with pytest.raises(ConfigurationError):
+        execution_context("/does/not/exist.json", tmp_path / "wd")
+
+
 def test_run_annotates_atoms():
     """The cluster-side ``run`` attaches q_l/w_l via jaxrens (self-skips)."""
     pytest.importorskip("jaxrens")

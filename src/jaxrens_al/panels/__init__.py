@@ -21,6 +21,7 @@ from jaxrens_al.panels.quests import QuestsPCAPanel, ResampledGridPanel
 from jaxrens_al.panels.sampling import NSSampledEnergyPanel
 from jaxrens_al.panels.steinhardt import (
     SteinhardtDistributionPanel,
+    SteinhardtExpectationHeatmap,
     SteinhardtHeatmapPanel,
     SteinhardtPanel,
 )
@@ -47,6 +48,7 @@ __all__ = [
     "RESwapAcceptancePanel",
     "ResampledGridPanel",
     "SteinhardtDistributionPanel",
+    "SteinhardtExpectationHeatmap",
     "SteinhardtHeatmapPanel",
     "SteinhardtPanel",
     "NeuralILParityPanel",

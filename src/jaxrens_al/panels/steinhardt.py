@@ -8,16 +8,33 @@ trajectory (per-atom ``q<l>`` / ``w<l>`` arrays + per-frame ``q<l>_mean`` /
 ``w<l>_mean`` in ``atoms.info``). These panels are pure **readers** of that
 artifact (ase + numpy, no cluster, no ``remote_handler`` import).
 
-Each panel takes its data from ``annotated_file=`` -- an already-annotated
-extxyz. Run the processor once and hand the *same* output file to any number of
-panels: that is how one computation is shared (the sharing is explicit, in the
-file, not hidden behind a producer). ``remote_handler`` never enters here.
+Each panel gets its data from one of two sources:
+
+  * ``annotated_file=`` -- an already-annotated extxyz (pure read); or
+  * ``configs=`` + Steinhardt params (``r_cut`` ...) -- the *raw* pool to
+    annotate. The panel then declares a :class:`~jaxrens_al.panels.processing.
+    ProcessingNeed` (plain data, no cluster), and the run-side
+    :func:`jaxrens_al.processing_resolver.resolve_processing` -- called once
+    over the whole dashboard -- runs a single processing job and hands the
+    annotated path back via ``receive_annotations``. Identical needs across
+    panels deduplicate to one step, so the panels below share one job.
+
+Either way the panels themselves stay pure readers -- ``remote_handler`` enters
+only through the resolver, never here.
 
 Panels:
   * :class:`SteinhardtDistributionPanel` -- per-atom ``q_l`` / ``w_l``
     distribution (joint scatter for two l-values, else per-l histograms);
   * :class:`SteinhardtHeatmapPanel` -- expectation ``<q_l>`` (or ``<w_l>``) as
-    a heatmap over a 2D grid of two per-config keys (e.g. volume vs energy).
+    a heatmap over a 2D grid of two per-config keys (e.g. volume vs energy);
+  * :class:`SteinhardtExpectationHeatmap` -- the *nested-sampling* expectation
+    ``<q_l>(T)`` per replica (like the heat-capacity heatmap), combining a
+    jaxrens ``Monitor`` with the annotated pool.
+
+The first two are pure ase+numpy readers. :class:`SteinhardtExpectationHeatmap`
+additionally uses the jaxrens ``Monitor`` (deferred behind a ``_load_monitors``
+seam, as in :mod:`jaxrens_al.panels.thermodynamics`), so building the dashboard
+still pulls in no JAX -- only the actual NS postprocessing does.
 """
 
 from __future__ import annotations
@@ -28,12 +45,14 @@ from typing import Optional, Sequence
 
 import numpy as np
 from alviz import Entry, JsonDict
-from alviz.panels import HeatmapData, HeatmapPanel
+from alviz.panels import HeatmapData, HeatmapPanel, heatmap_pcolormesh
+
+from jaxrens_al.panels.processing import ProcessingConsumer, ProcessingNeed
 
 _PARAMS = ("q", "w")
 
 
-def _read_frames(annotated: Path):
+def _read_frames(annotated) -> list:
     import ase.io
 
     return ase.io.read(str(annotated), index=":")
@@ -48,13 +67,32 @@ def _require_array(at, key, annotated):
     return np.asarray(at.arrays[key], float)
 
 
-class _SteinhardtSource:
-    """Shared source-resolution for the reader panels (mix in before Entry)."""
+class _SteinhardtSource(ProcessingConsumer):
+    """Shared source resolution for the reader panels (mix in before Entry).
 
-    def _init_source(self, annotated_file, l_values, param):
-        if annotated_file is None:
-            raise ValueError("Steinhardt panel needs annotated_file=.")
+    Source is either a pre-annotated ``annotated_file`` (pure read) or a raw
+    ``configs`` pool that the run-side resolver annotates (declared as a
+    :class:`ProcessingNeed`, delivered via :meth:`receive_annotations`).
+    """
+
+    def _init_source(
+        self, annotated_file, configs, l_values, param, r_cut, r_cut_min
+    ):
+        if (annotated_file is None) == (configs is None):
+            raise ValueError(
+                "Steinhardt panel needs exactly one of annotated_file= or "
+                "configs=."
+            )
+        if configs is not None and r_cut is None:
+            raise ValueError(
+                "Steinhardt panel with configs= needs r_cut= (the Steinhardt "
+                "neighbour cutoff) so it can declare its processing need."
+            )
+        # ``_annotated_file`` may start None and be filled by the resolver.
         self._annotated_file = annotated_file
+        self._configs = None if configs is None else str(configs)
+        self._r_cut = r_cut
+        self._r_cut_min = r_cut_min
         self._l_values = [int(l) for l in l_values]
         if not self._l_values:
             raise ValueError("Steinhardt panel needs at least one l value.")
@@ -63,7 +101,32 @@ class _SteinhardtSource:
         self._param = param
 
     def _annotated(self) -> Path:
+        if self._annotated_file is None:
+            raise RuntimeError(
+                "Steinhardt panel has no annotated file yet: pass "
+                "annotated_file=, or run resolve_processing() over the "
+                "dashboard (configs= declares the need)."
+            )
         return Path(self._annotated_file)
+
+    def processing_needs(self) -> list:
+        if self._configs is None or self._annotated_file is not None:
+            return []
+        return [
+            ProcessingNeed.make(
+                (self._configs,),
+                "steinhardt",
+                {
+                    "l_values": tuple(self._l_values),
+                    "r_cut": self._r_cut,
+                    "r_cut_min": self._r_cut_min,
+                },
+            )
+        ]
+
+    def receive_annotations(self, mapping: dict) -> None:
+        if self._configs is not None:
+            self._annotated_file = mapping[self._configs]
 
 
 class SteinhardtDistributionPanel(_SteinhardtSource, Entry):
@@ -74,10 +137,13 @@ class SteinhardtDistributionPanel(_SteinhardtSource, Entry):
     otherwise one histogram per ``l``.
 
     Args:
-        annotated_file: An extxyz already annotated by the Steinhardt
-            processor (``processors.steinhardt.SteinhardtProcessor``).
-        l_values: Steinhardt degrees present in the annotation (default 4, 6).
+        annotated_file: A Steinhardt-annotated extxyz (pure read); or
+        configs: the raw pool to annotate (the resolver fills the annotated
+            path). Give exactly one of the two.
+        l_values: Steinhardt degrees (default 4, 6).
         param: ``"q"`` (default) or ``"w"``.
+        r_cut, r_cut_min: neighbour cutoffs -- required with ``configs=`` (they
+            define the processing need).
     """
 
     name = "steinhardt"
@@ -86,12 +152,17 @@ class SteinhardtDistributionPanel(_SteinhardtSource, Entry):
         self,
         *args,
         annotated_file: Optional[os.PathLike] = None,
+        configs: Optional[os.PathLike] = None,
         l_values: Sequence[int] = (4, 6),
         param: str = "q",
+        r_cut: Optional[float] = None,
+        r_cut_min: float = 0.0,
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
-        self._init_source(annotated_file, l_values, param)
+        self._init_source(
+            annotated_file, configs, l_values, param, r_cut, r_cut_min
+        )
         self._joint = len(self._l_values) == 2
         self.colspan = 1 if self._joint else len(self._l_values)
 
@@ -202,9 +273,11 @@ class SteinhardtHeatmapPanel(_SteinhardtSource, HeatmapPanel):
     compute once.
 
     Args:
-        annotated_file: annotated extxyz to read (see module doc).
+        annotated_file: annotated extxyz to read; or ``configs``: the raw pool
+            (resolver-annotated). Give exactly one (see module doc).
         l: Single Steinhardt degree to map (default 6).
         param: ``"q"`` (default) or ``"w"``.
+        r_cut, r_cut_min: neighbour cutoffs -- required with ``configs=``.
         x_key, y_key: per-config axis keys -- ``"volume"`` /
             ``"volume_per_atom"`` or any ``atoms.info`` key (default volume per
             atom vs ``ns_energy``).
@@ -217,8 +290,11 @@ class SteinhardtHeatmapPanel(_SteinhardtSource, HeatmapPanel):
         self,
         *args,
         annotated_file: Optional[os.PathLike] = None,
+        configs: Optional[os.PathLike] = None,
         l: int = 6,
         param: str = "q",
+        r_cut: Optional[float] = None,
+        r_cut_min: float = 0.0,
         x_key: str = "volume_per_atom",
         y_key: str = "ns_energy",
         n_bins=24,
@@ -229,7 +305,9 @@ class SteinhardtHeatmapPanel(_SteinhardtSource, HeatmapPanel):
         plot_kwargs.setdefault("T_label", x_key)
         plot_kwargs.setdefault("P_label", y_key)
         super().__init__(*args, plot_kwargs=plot_kwargs, **kwargs)
-        self._init_source(annotated_file, [l], param)
+        self._init_source(
+            annotated_file, configs, [l], param, r_cut, r_cut_min
+        )
         self._l = int(l)
         self._x_key = x_key
         self._y_key = y_key
@@ -271,3 +349,273 @@ class SteinhardtHeatmapPanel(_SteinhardtSource, HeatmapPanel):
             obs=mean.T.tolist(),  # rows = y bins (p), cols = x bins (t)
             quantity=f"<{self._param}{self._l}>",
         )
+
+
+class SteinhardtExpectationHeatmap(ProcessingConsumer, HeatmapPanel):
+    """Nested-sampling expectation ``<q_l>(T)`` per replica (like the C_v map).
+
+    The NS analogue of :class:`SteinhardtHeatmapPanel`: rather than binning
+    per-config means over two arbitrary keys, it reweights a Steinhardt
+    observable onto a temperature grid with each replica's jaxrens ``Monitor``
+    -- the same machinery as
+    :class:`~jaxrens_al.panels.thermodynamics.NSThermodynamicsHeatmap`, but
+    with ``<q_l>`` / ``<w_l>`` as the observable instead of ``C_v`` / ``<V>``.
+
+    The panel is self-sufficient about its inputs: from each result dir it
+    discovers the per-replica ``<prefix>.run*.traj.extxyz`` (the same dir +
+    prefix it loads Monitors from), in replica order. Each such trajectory *is*
+    one replica; it declares a :class:`ProcessingNeed` on each (with ``r_cut``)
+    and the run-side resolver annotates them, delivering the annotated paths
+    back. Given ``r_cut=None`` the discovered trajectories are assumed already
+    annotated and read directly.
+
+    Per replica: the per-config ``q<l>_mean`` and dead-point index
+    ``info['iter']``. A jaxrens trajectory is usually a regular *slice* of the
+    dead points (``output.traj_interval``), so each retained value is held
+    across its slice window to reconstruct the per-dead-point observable (a
+    good approximation -- consecutive dead points barely differ); a
+    full-resolution trajectory is used directly. ``mon.expectation(obs, T)``
+    then gives
+    ``<q_l>`` over the temperature grid with the full NS weights.
+
+    Args:
+        result_dirs: NS output dirs (per-replica ``<prefix>.run*.energies`` +
+            ``.run*.traj.extxyz`` + combined checkpoint); every replica across
+            every dir is one heatmap row.
+        prefix: jaxrens ``out_file_prefix`` of the run files.
+        r_cut: Steinhardt neighbour cutoff (Angstrom). Given -> the panel
+            declares a processing need on each trajectory (the resolver
+            annotates them). ``None`` -> the trajectories are read as already
+            annotated.
+        r_cut_min: Lower Steinhardt neighbour cutoff (default 0).
+        l: Steinhardt degree (default 6).
+        param: ``"q"`` (default) or ``"w"``.
+        temperatures: Explicit temperature array, or None to build ``n_T``
+            points spanning ``tlim``.
+        tlim: (T_min, T_max) when ``temperatures`` is None.
+        n_T: Number of temperature points when ``temperatures`` is None.
+        k_B: Boltzmann constant in the energy units of the stored energies.
+        pressures: Optional row labels (one per replica row); default row
+            indices.
+        swap_axes: If True, render pressure on x and temperature on y.
+    """
+
+    name = "steinhardt_expectation"
+
+    def __init__(
+        self,
+        result_dirs,
+        *args,
+        prefix: str = "ns",
+        r_cut: Optional[float] = None,
+        r_cut_min: float = 0.0,
+        l: int = 6,
+        param: str = "q",
+        temperatures=None,
+        tlim=(0.05, 2.0),
+        n_T: int = 50,
+        k_B: float = 1.0,
+        pressures=None,
+        swap_axes: bool = False,
+        plot_kwargs: dict = None,
+        **kwargs,
+    ):
+        super().__init__(*args, plot_kwargs=plot_kwargs, **kwargs)
+        if param not in _PARAMS:
+            raise ValueError(f"param must be one of {_PARAMS}; got {param!r}.")
+        self._result_dirs = [str(p) for p in result_dirs]
+        self._prefix = prefix
+        self._r_cut = r_cut
+        self._r_cut_min = r_cut_min
+        self._l = int(l)
+        self._param = param
+        # {raw trajectory -> annotated trajectory}, filled by the resolver.
+        self._annotations: dict = {}
+        if temperatures is not None:
+            self._temperatures = np.asarray(temperatures, dtype=float)
+        else:
+            self._temperatures = np.linspace(tlim[0], tlim[1], n_T)
+        self._k_B = k_B
+        self._pressures = pressures
+        self._swap_axes = swap_axes
+
+    def _traj_files(self, result_dir) -> list:
+        """The per-replica trajectories in ``result_dir``, in replica order.
+
+        Globs ``<prefix>.run*.traj.extxyz`` (which excludes the ``.snap.``
+        snapshot files); sorted order matches the Monitors' ``runNN`` order.
+        """
+        return [
+            str(p)
+            for p in sorted(
+                Path(result_dir).glob(f"{self._prefix}.run*.traj.extxyz")
+            )
+        ]
+
+    def _load_monitors(self, result_dir):
+        """Monitors for one NS output dir, one per replica (test seam).
+
+        Same seam/loader as
+        :meth:`~jaxrens_al.panels.thermodynamics.NSThermodynamicsHeatmap.
+        _load_monitors`; a single-run output is the one-replica edge case.
+        """
+        from jaxrens.postprocess import MonitorCollection
+
+        return list(
+            MonitorCollection.from_multi_run_directory(
+                result_dir, prefix=self._prefix
+            )
+        )
+
+    def processing_needs(self) -> list:
+        if self._r_cut is None:
+            return []  # trajectories read as already annotated
+        params = {
+            "l_values": (self._l,),
+            "r_cut": self._r_cut,
+            "r_cut_min": self._r_cut_min,
+        }
+        return [
+            ProcessingNeed.make((traj,), "steinhardt", params)
+            for result_dir in self._result_dirs
+            for traj in self._traj_files(result_dir)
+        ]
+
+    def receive_annotations(self, mapping: dict) -> None:
+        self._annotations = dict(mapping)
+
+    def _read_observable(self, src):
+        """Per-config ``<param_l>`` + dead-point index for one replica traj.
+
+        Returns ``(values, indices)``; ``indices`` (from ``info['iter']``) is
+        None if no frame carries it. Each value is the per-frame mean
+        ``param<l>_mean`` (falling back to the mean of the per-atom array).
+        """
+        frames = _read_frames(src)
+        key = f"{self._param}{self._l}_mean"
+        arr_key = f"{self._param}{self._l}"
+        vals: list = []
+        idxs: list = []
+        have_iter = True
+        for at in frames:
+            if key in at.info:
+                vals.append(float(at.info[key]))
+            elif arr_key in at.arrays:
+                arr = np.asarray(at.arrays[arr_key], float)
+                vals.append(float(np.mean(arr)))
+            else:
+                raise ValueError(
+                    f"Annotated trajectory {src} is missing '{key}' and "
+                    f"per-atom '{arr_key}'. Did the Steinhardt processor "
+                    f"write it?"
+                )
+            it = at.info.get("iter")
+            if it is None:
+                have_iter = False
+            idxs.append(it)
+        return (
+            np.asarray(vals, float),
+            np.asarray(idxs, int) if have_iter else None,
+        )
+
+    def _to_dead_point_observable(self, vals, idx, n_dead, replica):
+        """Reconstruct a per-dead-point observable of length ``n_dead``.
+
+        A jaxrens trajectory is usually a regular *slice* of the dead points
+        (``output.traj_interval``), so ``vals`` is shorter than ``n_dead``. NS
+        reweighting needs a value at every dead point, but consecutive dead
+        points barely differ, so we hold each retained value across its slice
+        window (piecewise constant, keyed by ``iter``) -- a good approximation
+        that lets ``Monitor.expectation`` reweight with the full NS weights.
+        A full-resolution trajectory (``len(vals) == n_dead``) is used as-is.
+        """
+        if len(vals) == n_dead:
+            return vals
+        if idx is None:
+            raise ValueError(
+                f"SteinhardtExpectationHeatmap: replica {replica} has "
+                f"{len(vals)} annotated configs but the NS run has {n_dead} "
+                f"dead points, and the pool carries no 'iter' index to align "
+                f"the subsampled trajectory. Re-annotate from a jaxrens "
+                f"trajectory (its frames carry 'iter')."
+            )
+        if idx.min() < 0 or idx.max() >= n_dead:
+            raise ValueError(
+                f"SteinhardtExpectationHeatmap: replica {replica} dead-point "
+                f"indices ('iter') span [{idx.min()}, {idx.max()}] but the NS "
+                f"run has {n_dead} dead points -- pool and run mismatched."
+            )
+        # For each dead point, the most recent retained config's value.
+        pos = np.searchsorted(idx, np.arange(n_dead), side="right") - 1
+        pos = np.clip(pos, 0, len(vals) - 1)
+        return np.asarray(vals, float)[pos]
+
+    def compute_data(self, shared_ressources: dict) -> HeatmapData:
+        if not self._result_dirs:
+            raise RuntimeError(
+                "SteinhardtExpectationHeatmap: no NS result directories given."
+            )
+
+        T = self._temperatures
+        rows = []
+        for result_dir in self._result_dirs:
+            trajs = self._traj_files(result_dir)
+            if not trajs:
+                raise RuntimeError(
+                    f"SteinhardtExpectationHeatmap: no "
+                    f"'{self._prefix}.run*.traj.extxyz' under {result_dir}."
+                )
+            monitors = self._load_monitors(result_dir)
+            if len(trajs) != len(monitors):
+                raise ValueError(
+                    f"SteinhardtExpectationHeatmap: {len(trajs)} trajectories "
+                    f"but {len(monitors)} replicas in {result_dir}."
+                )
+            for i, (traj, mon) in enumerate(zip(trajs, monitors)):
+                src = self._annotations.get(traj)
+                if src is None:
+                    if self._r_cut is not None:
+                        raise RuntimeError(
+                            "SteinhardtExpectationHeatmap declared a "
+                            "processing need but no annotation was delivered "
+                            "-- run resolve_processing() over the dashboard "
+                            "before rendering."
+                        )
+                    src = traj  # r_cut None -> trajectory already annotated
+                vals, idx = self._read_observable(src)
+                n_dead = getattr(mon, "n_dead", len(vals))
+                obs = self._to_dead_point_observable(vals, idx, n_dead, i)
+                row = mon.expectation(obs, T, k_B=self._k_B)
+                rows.append(np.asarray(row, dtype=float).tolist())
+
+        if self._pressures is not None:
+            p = [float(x) for x in self._pressures]
+        else:
+            p = [float(i) for i in range(len(rows))]
+
+        return HeatmapData(
+            t=T.tolist(),
+            p=p,
+            obs=rows,
+            quantity=f"<{self._param}{self._l}>",
+        )
+
+    def plot_data(self):
+        # Default orientation (T on x, P on y) is alviz's; defer to it.
+        if not self._swap_axes:
+            return super().plot_data()
+
+        # P on x, T on y: transpose the grid and swap the axis labels, still
+        # rendering through alviz's helper (colorbar/scaling/cmap reused).
+        d = self.data
+        kw = dict(self._plot_kwargs)
+        if d.quantity and "label" not in kw:
+            kw["label"] = d.quantity
+        t_label = kw.pop("T_label", r"$T$")
+        p_label = kw.pop("P_label", r"$\log P$")
+        obs_t = np.asarray(d.obs, dtype=float).T  # (len(t), len(p))
+        heatmap_pcolormesh(
+            self.ax, d.p, d.t, obs_t, T_label=p_label, P_label=t_label, **kw
+        )
+        if d.quantity:
+            self.ax.set_title(d.quantity)
