@@ -32,15 +32,13 @@ from pathlib import Path
 import numpy as np
 from alviz import Dashboard
 
-from jaxrens_al.panels import (
-    AdaptationAcceptancePanel,
-    NSEnergyTracePanel,
-    NSSampledEnergyPanel,
-    NSThermodynamicsHeatmap,
-    RESwapAcceptancePanel,
-    SteinhardtExpectationHeatmap,
-    StepSizePanel,
+from jaxrens_al.cli_args import (
+    add_output_args,
+    add_steinhardt_args,
+    add_thermo_args,
+    steinhardt_params,
 )
+from jaxrens_al.sections import ns_section
 
 # MACE/jax energies are in eV, so scan temperature in Kelvin. (Pass
 # --k-B 1.0 with a reduced --tmax for a reduced-unit run instead.)
@@ -65,33 +63,15 @@ def _build_parser() -> argparse.ArgumentParser:
         default="ns",
         help="jaxrens out_file_prefix of the run files (default: ns).",
     )
-    parser.add_argument(
-        "-o",
-        "--output",
-        default=None,
-        help="Output PDF (default: <output_dir>/ns_dashboard.pdf).",
-    )
-    parser.add_argument(
-        "--datapath",
-        default=None,
-        help="Where panels cache computed JSON "
-        "(default: <output_dir>/ns_dashboard_data).",
-    )
-    parser.add_argument(
-        "--k-B",
-        type=float,
-        default=K_BOLTZMANN_EV_PER_K,
-        help="Boltzmann constant in the energy units of the .energies log "
-        "(default: 8.617e-5 eV/K; use 1.0 for reduced units).",
-    )
-    parser.add_argument(
-        "--tmin", type=float, default=100.0, help="Min temperature."
-    )
-    parser.add_argument(
-        "--tmax", type=float, default=3000.0, help="Max temperature."
-    )
-    parser.add_argument(
-        "--n-T", type=int, default=60, help="Number of temperature points."
+    add_output_args(parser)
+    # Kelvin defaults: MACE/jax energies are in eV (see K_BOLTZMANN_EV_PER_K).
+    add_thermo_args(
+        parser,
+        k_B=K_BOLTZMANN_EV_PER_K,
+        tmin=100.0,
+        tmax=3000.0,
+        n_T=60,
+        swap_default=True,
     )
     parser.add_argument(
         "--per-run",
@@ -99,49 +79,7 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Step-size / acceptance panels: one line per replica instead "
         "of the mean-across-replicas band.",
     )
-    parser.add_argument(
-        "--steinhardt-rcut",
-        type=float,
-        default=None,
-        help="Enable the NS Steinhardt <q_l>(T) heatmap: neighbour cutoff in "
-        "Angstrom. Annotates the dead-point pool locally via jaxrens, cached. "
-        "Omit to skip the panel.",
-    )
-    parser.add_argument(
-        "--steinhardt-l",
-        type=int,
-        default=6,
-        help="Steinhardt degree for the <q_l>(T) heatmap (default: 6).",
-    )
-    parser.add_argument(
-        "--steinhardt-rcut-min",
-        type=float,
-        default=0.0,
-        help="Lower Steinhardt neighbour cutoff (default: 0).",
-    )
-    parser.add_argument(
-        "--steinhardt-shard-size",
-        type=int,
-        default=2000,
-        help="Configs per shard when annotating via the processing machinery "
-        "(default: 2000).",
-    )
-    parser.add_argument(
-        "--cluster",
-        default="local",
-        help="Where to run the Steinhardt annotation: 'local' (default, "
-        "scheduler-free on this machine) or the name/path of a remote_handler "
-        "ClusterConfig JSON (absolute, or resolved under "
-        "REMOTE_HANDLER_CONFIG_DIR).",
-    )
-    parser.add_argument(
-        "--swap-pt",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Thermodynamics heatmap: pressure on x-axis, temperature on "
-        "y-axis (default; use --no-swap-pt for T on x, P on y).",
-    )
-    parser.add_argument("--force", action="store_true", help="Recompute.")
+    add_steinhardt_args(parser)
     return parser
 
 
@@ -161,9 +99,6 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 1
-    trajs = sorted(out_dir.glob(f"{args.prefix}.run*.traj.extxyz"))
-    re_stats = out_dir / f"{args.prefix}.re_stats.h5"
-    adaptation = out_dir / f"{args.prefix}.adaptation.h5"
 
     output = Path(args.output) if args.output else out_dir / "ns_dashboard.pdf"
     datapath = (
@@ -173,58 +108,16 @@ def main(argv: list[str] | None = None) -> int:
     common = dict(datapath=datapath, force_recompute=args.force)
 
     T = np.linspace(args.tmin, args.tmax, args.n_T)
-    entries = [
-        # Energy descent per replica -- the at-a-glance "are they all moving".
-        NSEnergyTracePanel(
-            result_dirs=[out_dir], prefix=args.prefix, **common
-        ),
-        # Thermodynamics from the dead+live energies, one row per replica.
-        NSThermodynamicsHeatmap(
-            result_dirs=[out_dir],
-            quantity="heat_capacity",
-            temperatures=T,
-            k_B=args.k_B,
-            prefix=args.prefix,
-            swap_axes=args.swap_pt,
-            **common,
-        ),
-    ]
-    if adaptation.exists():
-        entries += [
-            StepSizePanel(
-                adaptation_file=adaptation, per_run=args.per_run, **common
-            ),
-            AdaptationAcceptancePanel(
-                adaptation_file=adaptation, per_run=args.per_run, **common
-            ),
-        ]
-    if re_stats.exists():
-        entries.append(RESwapAcceptancePanel(re_stats_file=re_stats, **common))
-    if trajs:
-        entries.append(
-            NSSampledEnergyPanel(
-                config_files=trajs, iteration_index=0, **common
-            )
-        )
-    # NS Steinhardt <q_l>(T) heatmap: reweights the per-dead-point q_l onto the
-    # temperature grid with each replica's Monitor (like heat capacity). The
-    # panel discovers its own per-replica trajectories and declares a
-    # processing need on each; the resolver annotates them below.
-    if args.steinhardt_rcut is not None and trajs:
-        entries.append(
-            SteinhardtExpectationHeatmap(
-                result_dirs=[out_dir],
-                prefix=args.prefix,
-                r_cut=args.steinhardt_rcut,
-                r_cut_min=args.steinhardt_rcut_min,
-                l=args.steinhardt_l,
-                param="q",
-                temperatures=T,
-                k_B=args.k_B,
-                swap_axes=args.swap_pt,
-                **common,
-            )
-        )
+    entries = ns_section(
+        out_dir,
+        prefix=args.prefix,
+        k_B=args.k_B,
+        temperatures=T,
+        swap_axes=args.swap_pt,
+        per_run=args.per_run,
+        steinhardt=steinhardt_params(args),
+        **common,
+    )
 
     # Run the real processing machinery over any panel that needs it (annotate
     # trajectories), locally via a scheduler-free executor -- one step over the

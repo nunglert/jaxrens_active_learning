@@ -26,13 +26,9 @@ import sys
 from pathlib import Path
 
 from alviz import Dashboard
-from alviz.panels import (
-    ExtxyzEnergyErrorPanel,
-    ExtxyzParityPanel,
-    ExtxyzSampledEnergyVolume,
-)
 
-from jaxrens_al.panels import AtomicEnvsPanel
+from jaxrens_al.cli_args import add_output_args, add_ref_key_args
+from jaxrens_al.sections import dft_section
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -47,28 +43,8 @@ def _build_parser() -> argparse.ArgumentParser:
         help="One or more DFT-labelled extxyz files (REF_energy / "
         "REF_forces). Several are pooled into one set.",
     )
-    parser.add_argument(
-        "-o",
-        "--output",
-        default=None,
-        help="Output PDF (default: <first input>/../dft_dashboard.pdf).",
-    )
-    parser.add_argument(
-        "--datapath",
-        default=None,
-        help="Where panels cache computed JSON "
-        "(default: alongside the output PDF).",
-    )
-    parser.add_argument(
-        "--energy-key",
-        default="REF_energy",
-        help="info key of the reference energy (default: REF_energy).",
-    )
-    parser.add_argument(
-        "--forces-key",
-        default="REF_forces",
-        help="array key of the reference forces (default: REF_forces).",
-    )
+    add_output_args(parser)
+    add_ref_key_args(parser)
     parser.add_argument(
         "--pred-energy-key",
         default="ns_energy",
@@ -81,7 +57,6 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Skip the surrogate-vs-DFT parity / error panels even if "
         "--pred-energy-key is present.",
     )
-    parser.add_argument("--force", action="store_true", help="Recompute.")
     return parser
 
 
@@ -110,41 +85,13 @@ def main(argv: list[str] | None = None) -> int:
     datapath.mkdir(parents=True, exist_ok=True)
     common = dict(datapath=datapath, force_recompute=args.force)
 
-    # Does the surrogate energy key exist? Read just the first config's header.
-    has_pred = False
-    if not args.no_parity:
-        from ase.io import read
-
-        has_pred = args.pred_energy_key in read(files[0], index=0).info
-
-    entries = [
-        # Energy / force / volume distributions of the labelled set.
-        ExtxyzSampledEnergyVolume(
-            config_files=files,
-            energy_key=args.energy_key,
-            forces_key=args.forces_key,
-            **common,
-        ),
-        # Descriptor diversity of the labelled set.
-        AtomicEnvsPanel(config_files=files, **common),
-    ]
-    if has_pred:
-        # Surrogate (e.g. NS foundation-model) energy vs DFT reference.
-        entries += [
-            ExtxyzParityPanel(
-                config_files=files,
-                energy_ref_key=args.energy_key,
-                energy_pred_key=args.pred_energy_key,
-                show_forces=False,
-                **common,
-            ),
-            ExtxyzEnergyErrorPanel(
-                config_files=files,
-                energy_ref_key=args.energy_key,
-                energy_pred_key=args.pred_energy_key,
-                **common,
-            ),
-        ]
+    entries = dft_section(
+        files,
+        energy_key=args.energy_key,
+        forces_key=args.forces_key,
+        pred_energy_key=None if args.no_parity else args.pred_energy_key,
+        **common,
+    )
 
     board = Dashboard.from_entries(
         entries, ncols=2, width_per_panel=5.0, height_per_panel=4.0

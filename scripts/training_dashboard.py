@@ -40,15 +40,9 @@ import sys
 from pathlib import Path
 
 from alviz import Dashboard
-from alviz.panels import ExtxyzSampledEnergyVolume
 
-from jaxrens_al.panels import (
-    AtomicEnvsPanel,
-    MaceTrainingCurve,
-    ModelParityPanel,
-    NeuralILParityPanel,
-    NeuralILTrainingCurve,
-)
+from jaxrens_al.cli_args import add_output_args, add_ref_key_args
+from jaxrens_al.sections import training_section
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -62,28 +56,8 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Training results directory (searched recursively for "
         "*_train.txt / error_*.txt / *.npz / db_train.extxyz).",
     )
-    parser.add_argument(
-        "-o",
-        "--output",
-        default=None,
-        help="Output PDF (default: <results_dir>/training_dashboard.pdf).",
-    )
-    parser.add_argument(
-        "--datapath",
-        default=None,
-        help="Where panels cache computed JSON "
-        "(default: <results_dir>/training_dashboard_data).",
-    )
-    parser.add_argument(
-        "--energy-key",
-        default="REF_energy",
-        help="info key of the reference (DFT) energy (default: REF_energy).",
-    )
-    parser.add_argument(
-        "--forces-key",
-        default="REF_forces",
-        help="array key of the reference (DFT) forces (default: REF_forces).",
-    )
+    add_output_args(parser)
+    add_ref_key_args(parser)
     parser.add_argument(
         "--model",
         default=None,
@@ -119,44 +93,7 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Skip the trained-model parity panel.",
     )
-    parser.add_argument("--force", action="store_true", help="Recompute.")
     return parser
-
-
-# jax-loadable model artifacts, best match first: a mace-jax ``.bundle`` dir
-# (``config.json`` + ``params.msgpack``), a ``*-jax.pkl`` / ``*.pkl`` bundle.
-_MODEL_PATTERNS = ("*.bundle", "*-jax.pkl", "*.pkl")
-
-
-def _find_model(results: Path, override: str | None):
-    """Locate the trained-model bundle to re-score (or None).
-
-    An explicit ``--model`` wins (a ``.bundle`` is a directory, so we accept
-    any existing path). Otherwise search the results tree first, then a sibling
-    ``trainer_output/`` -- the staged handler writes the trained model there,
-    not under ``<i>/train/results`` -- found by walking up the parents.
-    """
-    if override:
-        p = Path(override)
-        return p if p.exists() else None
-
-    def _search(root: Path):
-        for pattern in _MODEL_PATTERNS:
-            hits = sorted(root.rglob(pattern))
-            if hits:
-                return hits[0]
-        return None
-
-    found = _search(results)
-    if found is not None:
-        return found
-    for ancestor in results.parents:
-        trainer_output = ancestor / "trainer_output"
-        if trainer_output.is_dir():
-            found = _search(trainer_output)
-            if found is not None:
-                return found
-    return None
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -166,18 +103,6 @@ def main(argv: list[str] | None = None) -> int:
     if not results.is_dir():
         print(f"Not a directory: {results}", file=sys.stderr)
         return 1
-
-    mace_logs = sorted(results.rglob("*_train.txt"))
-    error_logs = sorted(results.rglob("error_*.txt"))
-    npz_files = sorted(results.rglob("*.npz"))
-    train_sets = sorted(results.rglob("db_train.extxyz"))
-    # Validation split to re-score for the model parity: prefer db_val*, then
-    # the training set. MACE's split_db writes db_val.extxyz.
-    valid_sets = (
-        sorted(results.rglob("db_val.extxyz"))
-        or sorted(results.rglob("db_valid.extxyz"))
-        or train_sets
-    )
 
     output = (
         Path(args.output)
@@ -192,65 +117,26 @@ def main(argv: list[str] | None = None) -> int:
     datapath.mkdir(parents=True, exist_ok=True)
     common = dict(datapath=datapath, force_recompute=args.force)
 
-    entries = []
-    # ``has_parity`` tracks whether a trained-model parity panel is already
-    # covered (NeuralIL reads it from .npz); MACE has none, so we re-score.
-    has_parity = False
-    if mace_logs:
-        kind, default_backend = "MACE", "mace"
-        entries.append(MaceTrainingCurve(train_logs=mace_logs, **common))
-    elif error_logs or npz_files:
-        kind, default_backend = "NeuralIL", "neuralil"
-        if error_logs:
-            entries.append(
-                NeuralILTrainingCurve(error_files=error_logs, **common)
-            )
-        if npz_files:
-            entries.append(NeuralILParityPanel(npz_files=npz_files, **common))
-            has_parity = True
-    else:
+    entries = training_section(
+        results,
+        energy_key=args.energy_key,
+        forces_key=args.forces_key,
+        model=args.model,
+        valid_set=args.valid_set,
+        backend=args.backend,
+        show_forces=not args.no_forces,
+        max_neighbors=args.max_neighbors,
+        include_parity=not args.no_parity,
+        **common,
+    )
+    if not entries:
         print(
             f"No training logs under {results} -- expected *_train.txt "
             f"(MACE) or error_*.txt / *.npz (NeuralIL).",
             file=sys.stderr,
         )
         return 1
-
-    # Trained-model parity by re-scoring a labelled set (mainly MACE, which
-    # writes no .npz bundle). Auto-detect the model bundle and backend.
-    if not has_parity and not args.no_parity and valid_sets:
-        model_file = _find_model(results, args.model)
-        if model_file is None:
-            print(
-                f"No model bundle found under {results} for the parity panel "
-                "(pass --model, or --no-parity to skip).",
-                file=sys.stderr,
-            )
-        else:
-            entries.append(
-                ModelParityPanel(
-                    config_files=valid_sets,
-                    model_file=model_file,
-                    backend_type=args.backend or default_backend,
-                    energy_ref_key=args.energy_key,
-                    forces_ref_key=args.forces_key,
-                    show_forces=not args.no_forces,
-                    max_neighbors=args.max_neighbors,
-                    **common,
-                )
-            )
-
-    if train_sets:
-        # Energy/volume spread + descriptor diversity of what it trained on.
-        entries += [
-            ExtxyzSampledEnergyVolume(
-                config_files=train_sets,
-                energy_key=args.energy_key,
-                forces_key=args.forces_key,
-                **common,
-            ),
-            AtomicEnvsPanel(config_files=train_sets, **common),
-        ]
+    kind = "MACE" if sorted(results.rglob("*_train.txt")) else "NeuralIL"
 
     board = Dashboard.from_entries(
         entries, ncols=2, width_per_panel=5.0, height_per_panel=4.0

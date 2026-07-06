@@ -267,6 +267,44 @@ def iteration_dir(calchome, index: int):
     return Path(calchome) / str(index)
 
 
+# The trainer actor's working-dir name is a remote_handler convention that has
+# not been stable: the staged handler names it ``train``, an older/other layout
+# ``training``. Resolve whichever is on disk so every training accessor (and
+# the dashboard's per-iteration training panels) works across both.
+_TRAINING_DIR_NAMES = ("train", "training")
+
+
+def training_results_dir(it_dir):
+    """This iteration's trainer ``results`` dir (``train``/``training``), or
+    None. Prefers whichever exists on disk."""
+    for name in _TRAINING_DIR_NAMES:
+        base = Path(it_dir) / name / "results"
+        if base.exists():
+            return base
+    return None
+
+
+def detect_ns_prefix(it_dir, default=None):
+    """Infer the jaxrens ``out_file_prefix`` from an iteration's NS output.
+
+    Reads it off the first ``<prefix>.run*.energies`` (or bare
+    ``<prefix>.energies``) under ``ns_sampler/results`` -- so callers need not
+    know a MACE run wrote ``mace_sn16`` rather than the ``ns`` default. Returns
+    ``default`` when no energies file is present.
+    """
+    base = Path(it_dir) / "ns_sampler" / "results"
+    if base.exists():
+        hits = sorted(base.rglob("*.run*.energies")) or sorted(
+            base.rglob("*.energies")
+        )
+        for f in hits:
+            marker = ".run" if ".run" in f.name else ".energies"
+            prefix = f.name[: f.name.rfind(marker)]
+            if prefix:
+                return prefix
+    return default
+
+
 def ns_result_dir(it_dir, prefix: str = "ns"):
     """Dir holding this iteration's jaxrens NS energies, or None.
 
@@ -335,16 +373,16 @@ def resampled_provenance_json(it_dir):
 
 def training_npz_for_iteration(it_dir) -> list:
     """This iteration's NeuralIL parity ``.npz`` bundles (possibly empty)."""
-    base = Path(it_dir) / "training" / "results"
-    return sorted(base.rglob("*.npz")) if base.exists() else []
+    base = training_results_dir(it_dir)
+    return sorted(base.rglob("*.npz")) if base else []
 
 
 def trained_model_for_iteration(it_dir):
-    """This iteration's trained-model bundle (a ``.pkl`` under
-    ``training/results``), or None. Used by the EOS panel to evaluate the
-    model. Returns the first match if several are present."""
-    base = Path(it_dir) / "training" / "results"
-    if not base.exists():
+    """This iteration's trained-model bundle (a ``.pkl`` under the trainer
+    ``results`` dir), or None. Used by the EOS panel to evaluate the model.
+    Returns the first match if several are present."""
+    base = training_results_dir(it_dir)
+    if base is None:
         return None
     hits = sorted(base.rglob("*.pkl"))
     return hits[0] if hits else None
@@ -352,11 +390,11 @@ def trained_model_for_iteration(it_dir):
 
 def training_error_for_iteration(it_dir) -> list:
     """This iteration's NeuralIL ``error_*.txt`` logs (possibly empty)."""
-    base = Path(it_dir) / "training" / "results"
-    return sorted(base.rglob("error_*.txt")) if base.exists() else []
+    base = training_results_dir(it_dir)
+    return sorted(base.rglob("error_*.txt")) if base else []
 
 
 def training_mace_for_iteration(it_dir) -> list:
     """This iteration's MACE ``*_train.txt`` logs (possibly empty)."""
-    base = Path(it_dir) / "training" / "results"
-    return sorted(base.rglob("*_train.txt")) if base.exists() else []
+    base = training_results_dir(it_dir)
+    return sorted(base.rglob("*_train.txt")) if base else []

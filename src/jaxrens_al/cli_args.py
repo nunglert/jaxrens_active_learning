@@ -1,0 +1,255 @@
+"""Reusable argparse argument groups shared by the dashboard entry points.
+
+The standalone ``scripts/{ns,dft,training}_dashboard.py`` and the global
+``jaxrens-al-dashboard`` CLI expose overlapping flags -- output/cache options,
+the NS temperature grid, the Steinhardt block, the reference-key options.
+Defining each group once here keeps every consumer in step (a new Steinhardt
+flag lands in all of them at once) and mirrors :mod:`jaxrens_al.sections`,
+which unifies the panel wiring those same flags feed. argparse only -- no
+heavy imports, safe on the dashboard import path.
+
+Each ``add_*`` helper adds its flags to an existing parser (some accept
+defaults so a consumer can keep its natural values -- e.g. the scripts scan
+Kelvin temperatures for eV models, the AL CLI reduced units).
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+from pathlib import Path
+
+_FORCE_HELP = "Recompute panel data even if a JSON cache exists."
+
+# Config files auto-discovered in a run's calchome dir, in priority order. Each
+# maps long-option names (``swap-pt``/``swap_pt``) to values; CLI flags still
+# win. YAML is the project's native format; JSON/TOML need no extra dependency.
+_CONFIG_BASENAMES = (
+    "dashboard.yaml",
+    "dashboard.yml",
+    "dashboard.toml",
+    "dashboard.json",
+)
+
+
+def find_config(calchome):
+    """The dashboard config auto-discovered in ``calchome``, or None.
+
+    Looks for ``dashboard.{yaml,yml,toml,json}`` (first match wins) so
+    ``jaxrens-al-dashboard <calchome>`` needs no flags when one is dropped
+    beside the run.
+    """
+    calchome = Path(calchome)
+    for name in _CONFIG_BASENAMES:
+        p = calchome / name
+        if p.is_file():
+            return p
+    return None
+
+
+def load_config(path) -> dict:
+    """Parse a dashboard config into ``{option: value}`` (argparse dests).
+
+    Format is by extension: ``.yaml``/``.yml`` (lazy ``pyyaml``), ``.toml``
+    (stdlib ``tomllib`` on 3.11+, else ``tomli``), ``.json`` (stdlib). Keys are
+    normalized to argparse dests (``swap-pt`` -> ``swap_pt``). Raises on an
+    unreadable/oddly-shaped file so a typo'd config fails loudly.
+    """
+    path = Path(path)
+    suffix = path.suffix.lower()
+    if suffix in (".yaml", ".yml"):
+        try:
+            import yaml
+        except ImportError as exc:  # pragma: no cover - env-dependent
+            raise ImportError(
+                "Reading a YAML dashboard config needs pyyaml; install it or "
+                "use a .json/.toml config instead."
+            ) from exc
+        data = yaml.safe_load(path.read_text()) or {}
+    elif suffix == ".toml":
+        try:
+            import tomllib
+        except ModuleNotFoundError:  # pragma: no cover - py<3.11
+            import tomli as tomllib
+        data = tomllib.loads(path.read_text())
+    elif suffix == ".json":
+        data = json.loads(path.read_text() or "{}")
+    else:
+        raise ValueError(
+            f"Unsupported dashboard config format {path.suffix!r} "
+            "(use .yaml/.yml/.toml/.json)."
+        )
+    if not isinstance(data, dict):
+        raise ValueError(
+            f"Dashboard config {path} must be a mapping of option -> value."
+        )
+    return {str(k).replace("-", "_"): v for k, v in data.items()}
+
+
+def add_config_arg(parser) -> None:
+    """``--config PATH`` (else a ``dashboard.*`` beside the run is used)."""
+    parser.add_argument(
+        "--config",
+        default=None,
+        metavar="PATH",
+        help="Dashboard config file (YAML/TOML/JSON) providing flag defaults; "
+        "CLI flags still override it. Default: auto-detect "
+        "<calchome>/dashboard.{yaml,yml,toml,json} if present.",
+    )
+
+
+def apply_config(parser, argv, args, logger):
+    """Fold a config file's values in as defaults, return re-parsed ``args``.
+
+    Resolves ``--config`` (else :func:`find_config` on the run dir), loads it,
+    drops unknown keys (with a warning) and the non-overridable ``path`` /
+    ``config``, applies the rest via ``parser.set_defaults`` and re-parses --
+    so a config supplies defaults while any CLI flag still wins. No-op (returns
+    ``args`` unchanged) when no config is found.
+    """
+    path = Path(args.config) if args.config else find_config(args.path)
+    if path is None:
+        return args
+    if not path.is_file():
+        raise FileNotFoundError(f"Config file not found: {path}")
+    cfg = load_config(path)
+    cfg.pop("path", None)
+    cfg.pop("config", None)
+    valid = {a.dest for a in parser._actions}
+    unknown = sorted(set(cfg) - valid)
+    if unknown:
+        logger.warning(
+            "%s: ignoring unknown config key(s): %s",
+            path,
+            ", ".join(unknown),
+        )
+    cfg = {k: v for k, v in cfg.items() if k in valid}
+    parser.set_defaults(**cfg)
+    logger.info("Applied dashboard config %s (%d setting(s)).", path, len(cfg))
+    return parser.parse_args(argv)
+
+
+def add_output_args(parser, *, force_help: str = _FORCE_HELP) -> None:
+    """``-o/--output``, ``--datapath``, ``--force`` (shared by all four)."""
+    parser.add_argument(
+        "-o",
+        "--output",
+        default=None,
+        help="Output PDF path (default: alongside the input).",
+    )
+    parser.add_argument(
+        "--datapath",
+        default=None,
+        help="Where panels cache computed JSON (default: beside the output).",
+    )
+    parser.add_argument("--force", action="store_true", help=force_help)
+
+
+def add_ref_key_args(parser) -> None:
+    """``--energy-key`` / ``--forces-key`` (DFT/training reference keys)."""
+    parser.add_argument(
+        "--energy-key",
+        default="REF_energy",
+        help="info key of the reference energy (default: REF_energy).",
+    )
+    parser.add_argument(
+        "--forces-key",
+        default="REF_forces",
+        help="array key of the reference forces (default: REF_forces).",
+    )
+
+
+def add_thermo_args(
+    parser,
+    *,
+    k_B: float = 1.0,
+    tmin: float = 0.05,
+    tmax: float = 2.0,
+    n_T: int = 50,
+    swap_default: bool = False,
+) -> None:
+    """NS temperature grid + heatmap axis order (scripts + AL CLI).
+
+    Defaults differ per consumer -- the scripts scan Kelvin for eV models
+    (``k_B=8.617e-5``, ``tmin=100``, ...), the AL CLI reduced units -- so they
+    are parameters here rather than baked in.
+    """
+    parser.add_argument(
+        "--k-B",
+        type=float,
+        default=k_B,
+        help="Boltzmann constant in the energy units of the .energies log "
+        "(1.0 reduced; 8.617e-5 eV with T in K).",
+    )
+    parser.add_argument(
+        "--tmin", type=float, default=tmin, help="Min NS temperature."
+    )
+    parser.add_argument(
+        "--tmax", type=float, default=tmax, help="Max NS temperature."
+    )
+    parser.add_argument(
+        "--n-T",
+        type=int,
+        default=n_T,
+        help="Number of NS temperature points.",
+    )
+    parser.add_argument(
+        "--swap-pt",
+        action=argparse.BooleanOptionalAction,
+        default=swap_default,
+        help="Thermodynamics/Steinhardt heatmaps: pressure on x, temperature "
+        "on y (use --no-swap-pt for T on x, P on y).",
+    )
+
+
+def add_steinhardt_args(parser) -> None:
+    """The NS Steinhardt ``<q_l>(T)`` heatmap block (scripts + AL CLI)."""
+    parser.add_argument(
+        "--steinhardt-rcut",
+        type=float,
+        default=None,
+        help="Enable the NS Steinhardt <q_l>(T) heatmap: neighbour cutoff in "
+        "Angstrom. Trajectories are annotated via the remote_handler "
+        "processing pipeline (see --cluster). Omit to skip the panel.",
+    )
+    parser.add_argument(
+        "--steinhardt-l",
+        type=int,
+        default=6,
+        help="Steinhardt degree for the <q_l>(T) heatmap (default: 6).",
+    )
+    parser.add_argument(
+        "--steinhardt-rcut-min",
+        type=float,
+        default=0.0,
+        help="Lower Steinhardt neighbour cutoff (default: 0).",
+    )
+    parser.add_argument(
+        "--steinhardt-shard-size",
+        type=int,
+        default=2000,
+        help="Configs per shard when annotating via the processing machinery "
+        "(default: 2000).",
+    )
+    parser.add_argument(
+        "--cluster",
+        default="local",
+        help="Where to run Steinhardt annotation: 'local' (default, "
+        "scheduler-free on this machine) or the name/path of a remote_handler "
+        "ClusterConfig JSON.",
+    )
+
+
+def steinhardt_params(args) -> dict | None:
+    """``{r_cut, r_cut_min, l}`` from parsed args, or None if not requested.
+
+    The shape :func:`jaxrens_al.sections.ns_section` /
+    :func:`jaxrens_al.dashboard.assemble` expect for their ``steinhardt=``.
+    """
+    if args.steinhardt_rcut is None:
+        return None
+    return dict(
+        r_cut=args.steinhardt_rcut,
+        r_cut_min=args.steinhardt_rcut_min,
+        l=args.steinhardt_l,
+    )

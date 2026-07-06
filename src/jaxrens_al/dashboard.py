@@ -47,6 +47,7 @@ from jaxrens_al.panels import (
     QuestsPCAPanel,
     ResampledGridPanel,
     RESwapAcceptancePanel,
+    SteinhardtExpectationHeatmap,
     StepSizePanel,
 )
 from jaxrens_al.run_layout import (
@@ -133,6 +134,8 @@ class RunContext:
     ns_prefix: str = "ns"
     ns_k_B: float = 1.0
     ns_swap_axes: bool = False
+    ns_temperatures: Optional[list] = None
+    steinhardt: Optional[dict] = None  # {r_cut, l, r_cut_min} or None
     force_recompute: bool = False
 
     @property
@@ -188,6 +191,8 @@ def iteration_context(
     ns_prefix: str = "ns",
     ns_k_B: float = 1.0,
     ns_swap_axes: bool = False,
+    ns_temperatures=None,
+    steinhardt=None,
     force_recompute: bool = False,
 ) -> RunContext:
     """Single-iteration context (``calchome/<index>``'s artifacts).
@@ -225,6 +230,8 @@ def iteration_context(
         ns_prefix=ns_prefix,
         ns_k_B=ns_k_B,
         ns_swap_axes=ns_swap_axes,
+        ns_temperatures=ns_temperatures,
+        steinhardt=steinhardt,
         force_recompute=force_recompute,
     )
 
@@ -364,12 +371,31 @@ def assemble(ctx: RunContext) -> list:
         NSThermodynamicsHeatmap(
             result_dirs=ctx.ns_dirs,
             quantity="heat_capacity",
+            temperatures=ctx.ns_temperatures,
             k_B=ctx.ns_k_B,
             prefix=ctx.ns_prefix,
             swap_axes=ctx.ns_swap_axes,
             **c,
         )
         if ctx.ns_dirs
+        else None,
+        # NS Steinhardt <q_l>(T) heatmap -- reweights per-dead-point q_l onto
+        # the T grid like heat capacity. Per iteration (needs this iteration's
+        # trajectories); the panel declares a processing need the CLI resolves
+        # before rendering. Opt-in via --steinhardt-rcut.
+        SteinhardtExpectationHeatmap(
+            result_dirs=ctx.ns_dirs,
+            prefix=ctx.ns_prefix,
+            r_cut=ctx.steinhardt["r_cut"],
+            r_cut_min=ctx.steinhardt.get("r_cut_min", 0.0),
+            l=ctx.steinhardt.get("l", 6),
+            param="q",
+            temperatures=ctx.ns_temperatures,
+            k_B=ctx.ns_k_B,
+            swap_axes=ctx.ns_swap_axes,
+            **c,
+        )
+        if (ctx.steinhardt and ctx.ns_dirs and not ctx.is_summary)
         else None,
     ]
     return [p for p in panels if p is not None]
@@ -448,6 +474,8 @@ def build_iteration_dashboard(
     ns_prefix: str = "ns",
     ns_k_B: float = 1.0,
     ns_swap_axes: bool = False,
+    ns_temperatures=None,
+    steinhardt=None,
     compute: bool = True,
     only=None,
     exclude=None,
@@ -480,6 +508,8 @@ def build_iteration_dashboard(
         ns_prefix=ns_prefix,
         ns_k_B=ns_k_B,
         ns_swap_axes=ns_swap_axes,
+        ns_temperatures=ns_temperatures,
+        steinhardt=steinhardt,
         force_recompute=force_recompute,
     )
     board = Dashboard.from_entries(

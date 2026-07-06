@@ -187,3 +187,46 @@ def test_iteration_dirs_numeric_sorted(make_calchome, tmp_path):
     calchome = make_calchome(tmp_path, n_iter=2, with_training=True)
     dirs = iteration_dirs(calchome)
     assert [d.name for d in dirs] == ["0", "1"]
+
+
+def test_training_results_dir_prefers_train_then_training(tmp_path):
+    """The trainer working dir is 'train' (staged) or 'training' (older)."""
+    from jaxrens_al.run_layout import training_results_dir
+
+    it = tmp_path / "0"
+    assert training_results_dir(it) is None  # neither present
+
+    (it / "training" / "results").mkdir(parents=True)
+    assert training_results_dir(it) == it / "training" / "results"
+
+    # When both exist, 'train' (the staged handler's name) wins.
+    (it / "train" / "results").mkdir(parents=True)
+    assert training_results_dir(it) == it / "train" / "results"
+
+
+def test_training_accessors_read_the_train_dir(tmp_path, write_mace_train_log):
+    """MACE logs under <i>/train/results are found (staged layout)."""
+    from jaxrens_al.run_layout import training_mace_for_iteration
+
+    res = tmp_path / "0" / "train" / "results" / "calcdirs" / "0" / "results"
+    res.mkdir(parents=True)
+    write_mace_train_log(res / "Model_run-1_train.txt")
+    hits = training_mace_for_iteration(tmp_path / "0")
+    assert len(hits) == 1 and hits[0].name == "Model_run-1_train.txt"
+
+
+def test_detect_ns_prefix_reads_mace_prefix(tmp_path):
+    """The prefix is sniffed off <prefix>.run*.energies (e.g. mace_sn16)."""
+    from jaxrens_al.run_layout import detect_ns_prefix
+
+    out = tmp_path / "0" / "ns_sampler" / "results" / "output"
+    out.mkdir(parents=True)
+    for r in (0, 1):
+        (out / f"mace_sn16.run0{r}.energies").write_text("# stub\n")
+    assert detect_ns_prefix(tmp_path / "0") == "mace_sn16"
+
+
+def test_detect_ns_prefix_default_when_absent(tmp_path):
+    from jaxrens_al.run_layout import detect_ns_prefix
+
+    assert detect_ns_prefix(tmp_path / "0", default="ns") == "ns"

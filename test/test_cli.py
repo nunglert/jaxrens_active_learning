@@ -85,3 +85,124 @@ def test_only_flag_restricts_panels(make_calchome, tmp_path):
     assert rc == 0
     assert not (calchome / "plots" / "Iteration0.pdf").exists()
     assert len(pdf.PdfReader(str(calchome / "dashboard.pdf")).pages) == 2
+
+
+def test_sections_flag_emits_per_iteration_section_pages(
+    make_calchome, tmp_path
+):
+    """--sections adds raw-dir NS/DFT/training pages alongside the AL pages."""
+    pytest.importorskip("alviz")
+    pdf = pytest.importorskip("pypdf")
+
+    # Training artifacts on disk per iteration -> a Training section page;
+    # evaluated configs -> a DFT section page. (NS needs run*.energies, which
+    # this synthetic run doesn't write, so no NS section here.)
+    calchome = make_calchome(tmp_path, n_iter=2, with_training=True)
+
+    rc = main([str(calchome), "--force", "--sections"])
+    assert rc == 0
+
+    plots = calchome / "plots"
+    for it in range(2):
+        # Only the AL iteration page persists in plots/ ...
+        assert (plots / f"Iteration{it}.pdf").exists()
+        # ... section pages are ephemeral (merged, not kept on disk).
+        assert not (plots / f"Iteration{it}_Training.pdf").exists()
+        assert not (plots / f"Iteration{it}_DFT.pdf").exists()
+
+    # ... but they ARE in the combined PDF: (AL + Training + DFT) x 2 = 6.
+    combined = calchome / "dashboard.pdf"
+    assert len(pdf.PdfReader(str(combined)).pages) == 6
+
+
+def test_sections_flag_renders_unrecorded_iteration(make_calchome, tmp_path):
+    """--sections renders an iteration dir AL_progress.json never recorded.
+
+    The crashed-loop case the standalone scripts exist for: iteration 2's
+    training results are on disk but not in the progress file (which stops at
+    iteration 1). The AL pages ignore it; the section pass still renders it.
+    """
+    pytest.importorskip("alviz")
+    pdf = pytest.importorskip("pypdf")
+
+    calchome = make_calchome(tmp_path, n_iter=2, with_training=True)
+    # An unrecorded iteration 2 with training artifacts on disk.
+    res = calchome / "2" / "train" / "results"
+    res.mkdir(parents=True)
+    (res / "error_0.txt").write_text(
+        "i_epoch=0\nModel #1:\nF_RMSE = 0.5 eV/A. \nE_RMSE = 0.2 eV. \n"
+    )
+
+    # Without --sections: iters 0,1 -> AL + Training + DFT = 6 pages; the
+    # unrecorded iter 2 contributes nothing.
+    rc = main([str(calchome), "--force", "--sections"])
+    assert rc == 0
+
+    plots = calchome / "plots"
+    # No AL page for iter 2 (not in AL_progress.json), and section pages never
+    # persist to plots/ ...
+    assert not (plots / "Iteration2.pdf").exists()
+    assert not (plots / "Iteration2_Training.pdf").exists()
+    # ... but iter 2's section IS merged into the combined PDF: the two
+    # recorded iters give 6 pages, iter 2 adds its Training section -> 7.
+    combined = calchome / "dashboard.pdf"
+    assert len(pdf.PdfReader(str(combined)).pages) == 7
+
+
+def test_sections_autodetects_mace_prefix_and_train_dir(
+    make_calchome, tmp_path, caplog
+):
+    """--sections finds NS/training pages for a MACE-style staged run.
+
+    The NS files use a 'mace_sn16' prefix (not 'ns') and the trainer dir is
+    'train' (not 'training') -- both are auto-resolved, so the sections are
+    discovered without any --prefix flag.
+    """
+    pytest.importorskip("alviz")
+
+    calchome = make_calchome(tmp_path, n_iter=1, with_training=False)
+    it = calchome / "0"
+    out = it / "ns_sampler" / "results" / "output"
+    out.mkdir(parents=True)
+    for r in (0, 1):
+        (out / f"mace_sn16.run0{r}.energies").write_text("# stub\n")
+        (out / f"mace_sn16.run0{r}.traj.extxyz").write_text("")
+    res = it / "train" / "results"
+    res.mkdir(parents=True)
+    (res / "Model_run-1_train.txt").write_text(
+        '{"loss": 1.0, "rmse_e_per_atom": 6.0, "rmse_f": 1.0, '
+        '"mode": "eval", "epoch": 0, "head": "Default"}\n'
+    )
+
+    import logging
+
+    with caplog.at_level(logging.INFO, logger="jaxrens_al.cli"):
+        rc = main([str(calchome), "--dry-run", "--sections"])
+    assert rc == 0
+    log = caplog.text
+    assert "'mace_sn16' (auto-detected)" in log
+    assert "iteration 0 -- NS" in log
+    assert "iteration 0 -- Training" in log
+
+
+def test_log_file_writes_run_log(make_calchome, tmp_path):
+    """--log-file tees logs to <calchome>/dashboard.log (bare form)."""
+    pytest.importorskip("alviz")
+    pytest.importorskip("pypdf")
+
+    calchome = make_calchome(tmp_path, n_iter=1)
+    rc = main([str(calchome), "--force", "--log-file"])
+    assert rc == 0
+
+    log = calchome / "dashboard.log"
+    assert log.exists()
+    text = log.read_text()
+    assert "Wrote combined" in text  # the full render was captured
+    # No leaked handler after the run resolves (idempotent clear on next call).
+    main([str(calchome), "--force"])  # a run without --log-file
+    import logging
+
+    root = logging.getLogger()
+    assert not any(
+        getattr(h, "_jaxrens_dashboard_log", False) for h in root.handlers
+    )

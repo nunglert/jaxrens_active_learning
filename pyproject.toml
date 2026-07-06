@@ -25,6 +25,7 @@ dependencies = [
     "alviz @ git+ssh://git@gitlab.tuwien.ac.at/e165-03-1_theoretische_materialchemie/madsen-s-research-group/alviz.git@main",
     "ase",
     "scikit-learn",
+    "pyyaml",
 ]
 readme = "README.md"
 
