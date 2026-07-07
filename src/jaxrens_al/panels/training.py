@@ -32,6 +32,8 @@ import numpy as np
 from alviz import Entry, JsonDict, register_simple
 from alviz.panels import ParityData, ParityPanel
 
+from jaxrens_al.keys import REF_ENERGY_KEY, REF_FORCES_KEY
+
 
 def _rmse(a, b):
     return float(np.sqrt(np.mean((a - b) ** 2)))
@@ -464,10 +466,6 @@ class MaceTrainingCurve(Entry):
                 ax2.set_yscale("log")
 
 
-_REF_ENERGY_KEY = "REF_energy"
-_REF_FORCES_KEY = "REF_forces"
-
-
 def _build_neuralil_parity(ctx, c):
     return (
         NeuralILParityPanel(npz_files=ctx.npz_files, **c)
@@ -484,8 +482,8 @@ def _build_model_parity(ctx, c):
             config_files=ctx.eval_files,
             model_file=ctx.model_file,
             backend_type=ctx.eos_backend,
-            energy_ref_key=_REF_ENERGY_KEY,
-            forces_ref_key=_REF_FORCES_KEY,
+            energy_ref_key=REF_ENERGY_KEY,
+            forces_ref_key=REF_FORCES_KEY,
             **c,
         )
     return None

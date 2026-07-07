@@ -195,3 +195,52 @@ def test_run_annotates_atoms():
     for key in ("q4", "w4", "q6", "w6"):
         assert key in at.arrays and len(at.arrays[key]) == len(at)
     assert "q6_mean" in at.info and "w4_mean" in at.info
+
+
+def test_steps_merge_steinhardt_needs_by_cutoff():
+    """Several Steinhardt panels (same r_cut, different l) -> ONE processor.
+
+    A single pipeline can't hold two 'steinhardt' steps (remote_handler resolves
+    processors by their fixed name), so needs sharing a cutoff must fold into one
+    processor whose l_values are the union -- computed in a single pass.
+    """
+    from jaxrens_al.panels.processing import ProcessingNeed
+    from jaxrens_al.processing_resolver import _steps_from_needs
+
+    needs = [
+        ProcessingNeed.make(
+            ("t.extxyz",),
+            "steinhardt",
+            {"l_values": (6,), "r_cut": 3.5, "r_cut_min": 0.0},
+        ),
+        ProcessingNeed.make(
+            ("t.extxyz",),
+            "steinhardt",
+            {"l_values": (4,), "r_cut": 3.5, "r_cut_min": 0.0},
+        ),
+    ]
+    steps = _steps_from_needs(needs)
+    assert len(steps) == 1
+    assert steps[0].l_values == [4, 6]
+    assert steps[0].name == "steinhardt"
+
+
+def test_steps_reject_multiple_steinhardt_cutoffs():
+    """Distinct r_cut can't coexist (cutoff-free q<l> keys) -> clear error."""
+    from jaxrens_al.panels.processing import ProcessingNeed
+    from jaxrens_al.processing_resolver import _steps_from_needs
+
+    needs = [
+        ProcessingNeed.make(
+            ("t.extxyz",),
+            "steinhardt",
+            {"l_values": (6,), "r_cut": 3.5, "r_cut_min": 0.0},
+        ),
+        ProcessingNeed.make(
+            ("t.extxyz",),
+            "steinhardt",
+            {"l_values": (6,), "r_cut": 3.0, "r_cut_min": 0.0},
+        ),
+    ]
+    with pytest.raises(ValueError, match="share one"):
+        _steps_from_needs(needs)

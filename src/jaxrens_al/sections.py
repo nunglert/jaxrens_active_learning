@@ -33,6 +33,12 @@ from alviz.panels import (
     ExtxyzSampledEnergyVolume,
 )
 
+from jaxrens_al.keys import (
+    REF_ENERGY_KEY,
+    REF_FORCES_KEY,
+    SURROGATE_ENERGY_KEY,
+    first_has_info_key,
+)
 from jaxrens_al.panels import (
     AtomicEnvsPanel,
     MaceTrainingCurve,
@@ -41,32 +47,9 @@ from jaxrens_al.panels import (
     NeuralILTrainingCurve,
 )
 
-# remote_handler labels ground-truth energies/forces with these keys; jaxrens
-# trajectories carry the sampler's surrogate energy under ``ns_energy``.
-REF_ENERGY_KEY = "REF_energy"
-REF_FORCES_KEY = "REF_forces"
-SURROGATE_ENERGY_KEY = "ns_energy"
-
 # jax-loadable model artifacts, best match first: a mace-jax ``.bundle`` dir
 # (``config.json`` + ``params.msgpack``), a ``*-jax.pkl`` / ``*.pkl`` bundle.
 _MODEL_PATTERNS = ("*.bundle", "*-jax.pkl", "*.pkl")
-
-
-def _first_has_info_key(files, key) -> bool:
-    """True if the first config of ``files`` carries ``key`` in its info.
-
-    A cheap header-peek so a section only wires the surrogate-vs-reference
-    parity panels when the surrogate key is actually present (a panel reading a
-    missing key would raise at compute time). Any read error -> False.
-    """
-    if not files:
-        return False
-    try:
-        from ase.io import read
-
-        return key in read(str(files[0]), index=0).info
-    except Exception:
-        return False
 
 
 # ---------------------------------------------------------------------------
@@ -181,7 +164,7 @@ def dft_section(
         # Descriptor diversity of the labelled set.
         AtomicEnvsPanel(config_files=files, **common),
     ]
-    if pred_energy_key and _first_has_info_key(files, pred_energy_key):
+    if pred_energy_key and first_has_info_key(files, pred_energy_key):
         entries += [
             ExtxyzParityPanel(
                 config_files=files,

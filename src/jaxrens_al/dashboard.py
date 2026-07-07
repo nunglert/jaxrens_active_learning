@@ -26,6 +26,8 @@ from typing import Optional
 
 from alviz import Dashboard
 
+# Config keys live in one place -- jaxrens_al.keys.
+from jaxrens_al.keys import SURROGATE_ENERGY_KEY
 from jaxrens_al.run_layout import (
     acc_rates_file,
     adaptation_file,
@@ -48,14 +50,6 @@ from jaxrens_al.run_layout import (
     training_npz_files,
     training_npz_for_iteration,
 )
-
-# remote_handler labels ground-truth energies/forces with these keys.
-REF_ENERGY_KEY = "REF_energy"
-REF_FORCES_KEY = "REF_forces"
-# jaxrens trajectories carry the sampler's surrogate energy under this key; it
-# is preserved through the evaluator, so evaluated (DFT) configs carry *both*
-# the reference and this surrogate -> a "how far off was the sampler" parity.
-SURROGATE_ENERGY_KEY = "ns_energy"
 
 
 # ---------------------------------------------------------------------------
@@ -239,6 +233,7 @@ def build_dashboard(
     ns_prefix: str = "ns",
     ns_k_B: float = 1.0,
     ns_swap_axes: bool = False,
+    panel_config=None,
     compute: bool = True,
     only=None,
     exclude=None,
@@ -275,7 +270,7 @@ def build_dashboard(
         force_recompute=force_recompute,
     )
     board = Dashboard.from_entries(
-        assemble(ctx),
+        assemble(ctx, panel_config=panel_config),
         ncols=ncols,
         width_per_panel=width_per_panel,
         height_per_panel=height_per_panel,

@@ -16,25 +16,7 @@ from alviz.panels import (
     ExtxyzSampledEnergyVolume,
 )
 
-_REF_ENERGY_KEY = "REF_energy"
-_REF_FORCES_KEY = "REF_forces"
-
-
-def _first_has_info_key(files, key) -> bool:
-    """True if the first config of ``files`` carries ``key`` in its info.
-
-    A cheap header-peek so the surrogate-vs-DFT parity panels are only built
-    when the surrogate key is present (reading a missing key would raise at
-    compute time). Any read error -> False.
-    """
-    if not files:
-        return False
-    try:
-        from ase.io import read
-
-        return key in read(str(files[0]), index=0).info
-    except Exception:
-        return False
+from jaxrens_al.keys import REF_ENERGY_KEY, REF_FORCES_KEY, first_has_info_key
 
 
 def _build_sampled_energy_volume(ctx, c):
@@ -42,18 +24,18 @@ def _build_sampled_energy_volume(ctx, c):
         return None
     return ExtxyzSampledEnergyVolume(
         config_files=ctx.eval_files,
-        energy_key=_REF_ENERGY_KEY,
-        forces_key=_REF_FORCES_KEY,
+        energy_key=REF_ENERGY_KEY,
+        forces_key=REF_FORCES_KEY,
         **c,
     )
 
 
 def _build_parity(ctx, c):
-    if not _first_has_info_key(ctx.eval_files, ctx.surrogate_energy_key):
+    if not first_has_info_key(ctx.eval_files, ctx.surrogate_energy_key):
         return None
     return ExtxyzParityPanel(
         config_files=ctx.eval_files,
-        energy_ref_key=_REF_ENERGY_KEY,
+        energy_ref_key=REF_ENERGY_KEY,
         energy_pred_key=ctx.surrogate_energy_key,
         show_forces=False,
         **c,
@@ -61,11 +43,11 @@ def _build_parity(ctx, c):
 
 
 def _build_energy_error(ctx, c):
-    if not _first_has_info_key(ctx.eval_files, ctx.surrogate_energy_key):
+    if not first_has_info_key(ctx.eval_files, ctx.surrogate_energy_key):
         return None
     return ExtxyzEnergyErrorPanel(
         config_files=ctx.eval_files,
-        energy_ref_key=_REF_ENERGY_KEY,
+        energy_ref_key=REF_ENERGY_KEY,
         energy_pred_key=ctx.surrogate_energy_key,
         **c,
     )

@@ -100,18 +100,23 @@ def execution_context(cluster, workdir) -> dict:
 
 
 def register_processor_kind(kind: str, builder) -> None:
-    """Register how a :class:`ProcessingNeed` of ``kind`` becomes a Processor.
+    """Register how ``ProcessingNeed``\\ s of ``kind`` become Processor step(s).
 
-    ``builder(params: dict) -> Processor`` -- ``params`` is the need's
-    ``params_dict``. Called run-side (may import ``remote_handler`` / the
-    upstream); this is the extension point for future producer-backed panels.
+    ``builder(param_dicts: list[dict]) -> Processor | list[Processor]`` --
+    receives *all* the distinct ``params_dict``\\ s for this kind across the
+    dashboard, so it can **merge** them into as few steps as possible. That is
+    required, not just an optimization: ``remote_handler`` resolves a processor
+    by its (fixed) ``name`` on the cluster and forbids two steps of the same
+    name in one pipeline, so a kind that would otherwise emit N same-named steps
+    must fold them into one (e.g. Steinhardt unions its ``l_values``). Called
+    run-side (may import ``remote_handler`` / the upstream).
     """
     _KIND_BUILDERS[kind] = builder
 
 
 def _steps_from_needs(needs):
-    """Distinct (kind, params) needs -> deduplicated Processor steps."""
-    steps, seen = [], set()
+    """Distinct needs -> Processor steps, each kind's needs built together."""
+    by_kind, seen = {}, set()
     for need in needs:
         key = (need.kind, need.params)
         if key in seen:
@@ -122,7 +127,12 @@ def _steps_from_needs(needs):
                 f"No processor builder registered for kind {need.kind!r}; "
                 f"known: {sorted(_KIND_BUILDERS)}."
             )
-        steps.append(_KIND_BUILDERS[need.kind](need.params_dict))
+        by_kind.setdefault(need.kind, []).append(need.params_dict)
+
+    steps = []
+    for kind, param_dicts in by_kind.items():
+        built = _KIND_BUILDERS[kind](param_dicts)
+        steps.extend(built if isinstance(built, list) else [built])
     return steps
 
 
@@ -204,13 +214,32 @@ def resolve_processing(
     return delivered
 
 
-def _build_steinhardt(params: dict):
+def _build_steinhardt(param_dicts: list):
+    """One ``SteinhardtProcessor`` per ``(r_cut, r_cut_min)``, l values unioned.
+
+    Several Steinhardt panels at different ``l`` (same cutoff) share a single
+    processor computing all their ``l`` in one pass -- the processor already
+    takes an ``l_values`` list, and two same-named steps can't coexist. Distinct
+    ``r_cut`` groups need separate processors; that would still collide on the
+    ``steinhardt`` name (and the ``q<l>`` output keys carry no cutoff), so it is
+    rejected with a clear message rather than the cryptic pipeline error.
+    """
     from jaxrens_al.processors.steinhardt import SteinhardtProcessor
 
+    groups: dict = {}
+    for p in param_dicts:
+        key = (p["r_cut"], p.get("r_cut_min", 0.0))
+        groups.setdefault(key, set()).update(p["l_values"])
+    if len(groups) > 1:
+        raise ValueError(
+            "Steinhardt panels must share one (r_cut, r_cut_min); got "
+            f"{sorted(groups)}. The 'steinhardt' processor writes cutoff-free "
+            "q<l> keys, so multiple cutoffs can't be annotated in one pass -- "
+            "use a single r_cut across the Steinhardt add: entries."
+        )
+    (r_cut, r_cut_min), ls = next(iter(groups.items()))
     return SteinhardtProcessor(
-        r_cut=params["r_cut"],
-        l_values=params["l_values"],
-        r_cut_min=params.get("r_cut_min", 0.0),
+        r_cut=r_cut, r_cut_min=r_cut_min, l_values=sorted(ls)
     )
 
 
