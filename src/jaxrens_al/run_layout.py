@@ -284,15 +284,18 @@ def training_results_dir(it_dir):
     return None
 
 
-def detect_ns_prefix(it_dir, default=None):
-    """Infer the jaxrens ``out_file_prefix`` from an iteration's NS output.
+def ns_prefix_from_dir(results_dir, default=None):
+    """Infer the jaxrens ``out_file_prefix`` from an NS output directory.
 
     Reads it off the first ``<prefix>.run*.energies`` (or bare
-    ``<prefix>.energies``) under ``ns_sampler/results`` -- so callers need not
-    know a MACE run wrote ``mace_sn16`` rather than the ``ns`` default. Returns
-    ``default`` when no energies file is present.
+    ``<prefix>.energies``) found under ``results_dir`` (searched recursively) --
+    so callers need not know a MACE run wrote ``mace_sn16`` rather than the
+    ``ns`` default. Returns ``default`` when no energies file is present. This
+    takes the directory that *directly* holds the energies (what the standalone
+    NS dashboard points at); :func:`detect_ns_prefix` wraps it for the AL
+    ``ns_sampler/results`` iteration layout.
     """
-    base = Path(it_dir) / "ns_sampler" / "results"
+    base = Path(results_dir)
     if base.exists():
         hits = sorted(base.rglob("*.run*.energies")) or sorted(
             base.rglob("*.energies")
@@ -303,6 +306,15 @@ def detect_ns_prefix(it_dir, default=None):
             if prefix:
                 return prefix
     return default
+
+
+def detect_ns_prefix(it_dir, default=None):
+    """Infer the jaxrens ``out_file_prefix`` from an AL iteration's NS output.
+
+    Sniffs the energies under ``<it_dir>/ns_sampler/results`` (the AL working-
+    dir convention); returns ``default`` when none is present.
+    """
+    return ns_prefix_from_dir(Path(it_dir) / "ns_sampler" / "results", default)
 
 
 def ns_result_dir(it_dir, prefix: str = "ns"):

@@ -19,6 +19,7 @@ from jaxrens_al.cli_args import (
     add_steinhardt_args,
     add_thermo_args,
     apply_config,
+    dump_config,
     steinhardt_params,
 )
 
@@ -202,3 +203,39 @@ def test_apply_config_custom_positional_and_run_dir(tmp_path):
     # never overridden from the config.
     assert args.prefix == "mace_sn16"
     assert args.output_dir == str(out)
+
+
+# ---------------------------------------------------------------------------
+# dump_config: parser-derived config template
+# ---------------------------------------------------------------------------
+def test_dump_config_round_trips_and_keys_are_valid_dests(tmp_path):
+    """A dumped template loads cleanly and every active key is a real dest.
+
+    This is the drift guard: because the template is derived from the parser's
+    own actions, a new flag appears here for free -- and load_config -> dests
+    proves no dumped key would be silently dropped by apply_config.
+    """
+    pytest.importorskip("yaml")
+    from jaxrens_al.cli_args import load_config
+
+    parser = argparse.ArgumentParser()
+    add_config_arg(parser)
+    add_output_args(parser)
+    add_thermo_args(parser, k_B=8.617e-5, tmin=100.0, swap_default=True)
+    add_steinhardt_args(parser)
+    add_processing_args(parser)
+
+    text = dump_config(parser, title="test flavor")
+    p = tmp_path / "dashboard.yaml"
+    p.write_text(text)
+    cfg = load_config(p)  # parses only the active (non-None-default) keys
+
+    dests = {a.dest for a in parser._actions}
+    assert set(cfg) <= dests  # no key would be dropped as "unknown"
+    # Active defaults are reproduced; a None-default flag is commented out.
+    assert cfg["cluster"] == "local"
+    assert cfg["swap_pt"] is True
+    assert "steinhardt_rcut" not in cfg  # default None -> emitted commented
+    # The positional and --config are never templated.
+    assert "config" not in cfg
+    assert "# steinhardt-rcut:" in text  # ... but still listed for discovery

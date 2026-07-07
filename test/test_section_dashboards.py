@@ -65,15 +65,29 @@ def test_unknown_first_token_is_treated_as_calchome(tmp_path):
 # ---------------------------------------------------------------------------
 def test_ns_reads_prefix_from_autodiscovered_config(tmp_path, capsys):
     out = _make_ns_dir(tmp_path, prefix="mace_sn16")
-    # No --prefix on the CLI; the config beside the dir supplies it. Without it
-    # the default prefix 'ns' would find no energies -> error.
+    # No --prefix on the CLI; a config beside the input dir supplies it.
     (out / "dashboard.yaml").write_text("prefix: mace_sn16\n")
     pytest.importorskip("yaml")
     pytest.importorskip("alviz")
 
     rc = main(["ns", str(out), "--n-T", "3", "--force"])
     assert rc == 0
-    assert (out / "ns_dashboard.pdf").exists()
+    # PDF defaults one directory above the NS output dir.
+    assert (out.parent / "ns_dashboard.pdf").exists()
+    assert not (out / "ns_dashboard.pdf").exists()
+
+
+def test_ns_reads_config_from_parent_dir(tmp_path, capsys):
+    """A config beside the *output* (the input dir's parent) is discovered."""
+    out = _make_ns_dir(tmp_path, prefix="mace_sn16")
+    # Config one level up, where the PDF lands -- not in the input dir itself.
+    (out.parent / "dashboard.yaml").write_text("prefix: mace_sn16\n")
+    pytest.importorskip("yaml")
+    pytest.importorskip("alviz")
+
+    rc = main(["ns", str(out), "--n-T", "3", "--force"])
+    assert rc == 0
+    assert (out.parent / "ns_dashboard.pdf").exists()
 
 
 def test_ns_cli_prefix_overrides_config(tmp_path, capsys):
@@ -85,3 +99,56 @@ def test_ns_cli_prefix_overrides_config(tmp_path, capsys):
     rc = main(["ns", str(out), "--prefix", "ns"])
     assert rc == 1
     assert "ns.run*.energies" in capsys.readouterr().err
+
+
+# ---------------------------------------------------------------------------
+# init-config: scaffold a starter config from each parser flavor.
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize("flavor", ["al", "ns", "dft", "training"])
+def test_init_config_stdout_round_trips(flavor, tmp_path, capsys):
+    pytest.importorskip("yaml")
+    from jaxrens_al.cli_args import load_config
+
+    rc = main(["init-config", flavor])
+    assert rc == 0
+    text = capsys.readouterr().out
+    assert text.startswith("#")  # header comment
+
+    p = tmp_path / "dashboard.yaml"
+    p.write_text(text)
+    cfg = load_config(p)
+    # Every dumped key is a real option of that flavor's parser (drift guard),
+    # so apply_config would accept the file without warning.
+    from jaxrens_al.cli import _build_parser
+    from jaxrens_al.section_dashboards import (
+        build_dft_parser,
+        build_ns_parser,
+        build_training_parser,
+    )
+
+    parser = {
+        "al": _build_parser,
+        "ns": build_ns_parser,
+        "dft": build_dft_parser,
+        "training": build_training_parser,
+    }[flavor]()
+    assert set(cfg) <= {a.dest for a in parser._actions}
+
+
+def test_init_config_writes_file_and_guards_overwrite(tmp_path, capsys):
+    dest = tmp_path / "dashboard.yaml"
+    assert main(["init-config", "ns", "-o", str(dest)]) == 0
+    assert dest.is_file() and dest.read_text().startswith("#")
+
+    # Existing file + no --force -> error, original untouched.
+    original = dest.read_text()
+    rc = main(["init-config", "ns", "-o", str(dest)])
+    assert rc == 1
+    assert dest.read_text() == original
+    # --force overwrites.
+    assert main(["init-config", "ns", "-o", str(dest), "--force"]) == 0
+
+
+def test_init_config_bad_flavor_errors():
+    with pytest.raises(SystemExit):  # argparse choices rejects it
+        main(["init-config", "bogus"])

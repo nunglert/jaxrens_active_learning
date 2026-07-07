@@ -71,8 +71,10 @@ def build_ns_parser(prog: str | None = None) -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--prefix",
-        default="ns",
-        help="jaxrens out_file_prefix of the run files (default: ns).",
+        default=None,
+        help="jaxrens out_file_prefix of the run files (default: "
+        "auto-detected from <prefix>.run*.energies in the output dir, e.g. "
+        "'mace_sn16'; falls back to 'ns').",
     )
     add_config_arg(parser)
     add_output_args(parser)
@@ -112,12 +114,22 @@ def run_ns(argv: list[str] | None = None, prog: str | None = None) -> int:
             argv,
             args,
             logger,
-            run_dir=out_dir,
+            # The PDF defaults one dir above the NS output dir, so a config
+            # dropped beside *either* the input or the output is discovered.
+            run_dir=[out_dir, out_dir.parent],
             positional="output_dir",
         )
     except (FileNotFoundError, ValueError, ImportError) as exc:
         logger.error(str(exc))
         return 1
+
+    # Prefix: honour --prefix / config, else sniff it off the output dir's
+    # <prefix>.run*.energies (a MACE run wrote 'mace_sn16', not 'ns').
+    if args.prefix is None:
+        from jaxrens_al.run_layout import ns_prefix_from_dir
+
+        args.prefix = ns_prefix_from_dir(out_dir, default="ns")
+        logger.info(f"NS out_file_prefix: {args.prefix!r} (auto-detected).")
 
     energies = sorted(out_dir.glob(f"{args.prefix}.run*.energies"))
     if not energies:
@@ -133,9 +145,18 @@ def run_ns(argv: list[str] | None = None, prog: str | None = None) -> int:
 
     from jaxrens_al.sections import ns_section
 
-    output = Path(args.output) if args.output else out_dir / "ns_dashboard.pdf"
+    # Default the PDF (and its data cache) one dir *above* the NS output dir,
+    # so the artifact lands beside the run rather than buried in the deep
+    # ``.../ns_sampler/results/output`` leaf it reads from.
+    output = (
+        Path(args.output)
+        if args.output
+        else out_dir.parent / "ns_dashboard.pdf"
+    )
     datapath = (
-        Path(args.datapath) if args.datapath else out_dir / "ns_dashboard_data"
+        Path(args.datapath)
+        if args.datapath
+        else out_dir.parent / "ns_dashboard_data"
     )
     datapath.mkdir(parents=True, exist_ok=True)
     common = dict(datapath=datapath, force_recompute=args.force)

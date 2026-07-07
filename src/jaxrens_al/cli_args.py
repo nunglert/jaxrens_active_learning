@@ -112,11 +112,20 @@ def apply_config(
     ``run_dir`` is the directory a ``dashboard.*`` config is auto-discovered in
     (default: the ``positional`` arg's value -- the AL CLI's calchome ``path``).
     Section subcommands pass their input dir + positional name (``output_dir``,
-    ``results_dir``, ``config_files``) so a config drops beside the artifact.
+    ``results_dir``, ``config_files``) so a config drops beside the artifact. It
+    may also be a *sequence* of dirs, tried in order (the NS subcommand passes
+    the input dir and its parent, since the PDF defaults one level up -- so a
+    config beside either is found).
     """
     if run_dir is None:
         run_dir = getattr(args, positional)
-    path = Path(args.config) if args.config else find_config(run_dir)
+    run_dirs = (
+        list(run_dir) if isinstance(run_dir, (list, tuple)) else [run_dir]
+    )
+    if args.config:
+        path = Path(args.config)
+    else:
+        path = next((c for c in (find_config(d) for d in run_dirs) if c), None)
     if path is None:
         return args
     if not path.is_file():
@@ -136,6 +145,81 @@ def apply_config(
     parser.set_defaults(**cfg)
     logger.info("Applied dashboard config %s (%d setting(s)).", path, len(cfg))
     return parser.parse_args(argv)
+
+
+def _config_value_repr(v) -> str:
+    """Format a default value as a YAML scalar for :func:`dump_config`."""
+    if isinstance(v, bool):
+        return "true" if v else "false"
+    if isinstance(v, (int, float)):
+        return repr(v)
+    if isinstance(v, (list, tuple)):
+        return "[" + ", ".join(_config_value_repr(x) for x in v) + "]"
+    s = str(v)
+    reserved = {"true", "false", "null", "yes", "no", "on", "off"}
+    if s == "" or s[0] in "!&*[]{}#>|%@`\"',:" or s.lower() in reserved:
+        return '"' + s.replace('"', '\\"') + '"'
+    return s
+
+
+def _short_help(help_text, limit: int = 60) -> str:
+    """A one-line, length-capped gloss of an argparse help string."""
+    if not help_text:
+        return ""
+    text = " ".join(help_text.split())
+    for sep in (". ", " -- "):  # keep only the first sentence/clause
+        if sep in text:
+            text = text.split(sep, 1)[0]
+            break
+    if len(text) > limit:
+        text = text[: limit - 1].rstrip() + "…"
+    return text
+
+
+def dump_config(parser, *, title: str | None = None) -> str:
+    """Render a parser's options as a commented YAML config template.
+
+    Walks the parser's *optional* actions (skipping the positional, ``--help``
+    and ``--config``) and emits one ``long-option: default  # help`` line each,
+    so the template is always in step with the live flags -- add a flag to a
+    :mod:`jaxrens_al.cli_args` group and it appears here for free. Options whose
+    default is ``None`` (no natural value) are emitted commented out; the rest
+    reproduce the current default. The result loads cleanly via
+    :func:`load_config` and every active key is a valid parser dest.
+    """
+    lines = []
+    if title:
+        lines.append(f"# {title} — default dashboard config.")
+    lines.append(
+        "# Keys are long-option names; set any to change its default "
+        "(an explicit CLI flag still wins)."
+    )
+    lines.append("# Options with no natural default are listed commented out.")
+    lines.append("")
+
+    body = []
+    for action in parser._actions:
+        if not action.option_strings:  # positional (path/output_dir/...)
+            continue
+        if action.dest in ("help", "config"):
+            continue
+        if action.default is argparse.SUPPRESS:
+            continue
+        key = action.dest.replace("_", "-")
+        help_txt = _short_help(action.help)
+        if action.default is None:
+            body.append((f"# {key}:", help_txt or "(unset)"))
+        else:
+            body.append(
+                (f"{key}: {_config_value_repr(action.default)}", help_txt)
+            )
+
+    width = max((len(entry) for entry, _ in body), default=0)
+    for entry, comment in body:
+        lines.append(
+            f"{entry.ljust(width)}  # {comment}" if comment else entry
+        )
+    return "\n".join(lines) + "\n"
 
 
 def add_output_args(parser, *, force_help: str = _FORCE_HELP) -> None:

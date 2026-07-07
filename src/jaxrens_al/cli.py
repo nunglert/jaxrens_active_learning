@@ -26,10 +26,75 @@ from jaxrens_al.cli_args import (
     add_steinhardt_args,
     add_thermo_args,
     apply_config,
+    dump_config,
     steinhardt_params,
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _run_init_config(argv: list[str] | None) -> int:
+    """``init-config <flavor>`` -- write a starter config for a parser flavor.
+
+    Builds the chosen flavor's parser (the same one its render path uses) and
+    dumps every option's default as a commented YAML template via
+    :func:`jaxrens_al.cli_args.dump_config` -- to ``-o PATH`` or stdout.
+    """
+    p = argparse.ArgumentParser(
+        prog="jaxrens-al-dashboard init-config",
+        description="Write a starter dashboard config (all default flag "
+        "values, commented) for a dashboard flavor. Redirect or -o it to "
+        "dashboard.yaml beside the run/artifact; CLI flags still override it.",
+    )
+    p.add_argument(
+        "flavor",
+        choices=("al", "ns", "dft", "training"),
+        help="Which dashboard's options to scaffold: 'al' (a full AL run) or a "
+        "section (ns/dft/training).",
+    )
+    p.add_argument(
+        "-o",
+        "--output",
+        default=None,
+        help="Write the template here (default: stdout).",
+    )
+    p.add_argument(
+        "--force",
+        action="store_true",
+        help="Overwrite the output file if it already exists.",
+    )
+    args = p.parse_args(argv)
+
+    if args.flavor == "al":
+        parser = _build_parser()
+        title = "jaxrens-al-dashboard"
+    else:
+        from jaxrens_al.section_dashboards import (
+            build_dft_parser,
+            build_ns_parser,
+            build_training_parser,
+        )
+
+        builder = {
+            "ns": build_ns_parser,
+            "dft": build_dft_parser,
+            "training": build_training_parser,
+        }[args.flavor]
+        parser = builder(prog=f"jaxrens-al-dashboard {args.flavor}")
+        title = f"jaxrens-al-dashboard {args.flavor}"
+
+    text = dump_config(parser, title=title)
+    if args.output:
+        out = Path(args.output)
+        if out.exists() and not args.force:
+            logger.error(f"{out} already exists; pass --force to overwrite.")
+            return 1
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(text)
+        logger.info(f"Wrote {out}")
+    else:
+        print(text, end="")
+    return 0
 
 
 def _clear_file_logging() -> None:
@@ -100,7 +165,9 @@ def _build_parser() -> argparse.ArgumentParser:
         "  jaxrens-al-dashboard ns       <ns_output_dir>\n"
         "  jaxrens-al-dashboard dft      <labelled.extxyz ...>\n"
         "  jaxrens-al-dashboard training <results_dir>\n"
-        "Run 'jaxrens-al-dashboard <section> --help' for each.",
+        "Run 'jaxrens-al-dashboard <section> --help' for each.\n"
+        "Scaffold a config:\n"
+        "  jaxrens-al-dashboard init-config <al|ns|dft|training> [-o PATH]",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
@@ -203,6 +270,10 @@ def main(argv: list[str] | None = None) -> int:
         from jaxrens_al.section_dashboards import SECTION_COMMANDS
 
         return SECTION_COMMANDS[argv[0]](argv[1:])
+    # ``init-config <flavor>`` scaffolds a starter dashboard config (all default
+    # flag values, commented) for the chosen flavor's parser.
+    if argv and argv[0] == "init-config":
+        return _run_init_config(argv[1:])
     _clear_file_logging()  # drop any log handler a previous run left attached
     parser = _build_parser()
     args = parser.parse_args(argv)
