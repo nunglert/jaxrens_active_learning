@@ -23,6 +23,7 @@ does not drag in jax/numba.
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 from typing import Optional, Sequence
 
@@ -155,6 +156,64 @@ def rattle_atoms(
                     out.append(at)
                     zero_emitted = True
     return out
+
+
+# ---------------------------------------------------------------------------
+# EOS reference: per-phase volume scan at zero rattle.
+# ---------------------------------------------------------------------------
+
+
+def _phase_label(atoms: Atoms, index: int) -> str:
+    """A filesystem-safe label for one phase (``mp_id`` > spacegroup > index).
+
+    Space-group symbols contain ``/`` (e.g. ``P6_3/mmc``), so anything but
+    ``[0-9A-Za-z._-]`` is collapsed to ``_`` -- the label becomes a file stem
+    (``eos_<label>.extxyz``) the EOS panel reads as one phase.
+    """
+    raw = atoms.info.get("mp_id") or atoms.info.get("spacegroup")
+    raw = str(raw) if raw else f"phase{index}"
+    return re.sub(r"[^0-9A-Za-z._-]+", "_", raw)
+
+
+def eos_phase_scans(
+    structures: Sequence[Atoms],
+    *,
+    vol_scalings: Optional[Sequence[float]] = None,
+    target_cutoff: float = 3.0,
+) -> dict[str, list[Atoms]]:
+    """Per-phase, zero-rattle volume scans for an equation-of-state reference.
+
+    For each input phase a supercell hosting ``target_cutoff`` is built and
+    scanned over ``vol_scalings`` with **no** position jitter (``rattle_atoms``
+    with a single ``0.0`` strength), so each returned list is a clean E(V)
+    curve for one phase -- exactly what :class:`~jaxrens_al.panels.eos.
+    EquationOfStatePanel` fits (it reads the volume off each frame's cell and
+    the DFT energy off ``REF_energy``, so no other provenance is needed).
+
+    Args:
+        structures: Base phases, e.g. from :func:`fetch_mp_elemental` (each
+            tagged with ``info["mp_id"]`` / ``info["spacegroup"]``).
+        vol_scalings: Cell-vector scale factors (volume ∝ ``s**3``); defaults
+            to ``rattle_atoms``' own default grid.
+        target_cutoff: Cutoff (Å) the per-phase supercell must host.
+
+    Returns:
+        ``{phase_label: [volume-scan configs]}``, one entry per phase (a
+        duplicate label gets an index suffix so file stems stay unique).
+    """
+    scans: dict[str, list[Atoms]] = {}
+    for i, base in enumerate(structures):
+        label = _phase_label(base, i)
+        if label in scans:  # keep every phase even if labels collide
+            label = f"{label}_{i}"
+        scans[label] = rattle_atoms(
+            [base],
+            rattle_strengths=(0.0,),
+            vol_scalings=vol_scalings,
+            num_realizations=1,
+            target_cutoff=target_cutoff,
+        )
+    return scans
 
 
 # ---------------------------------------------------------------------------

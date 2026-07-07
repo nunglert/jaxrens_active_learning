@@ -15,6 +15,7 @@ from jaxrens_al.reference_db import (  # noqa: E402
     _hnf_diagonals,
     _max_cutoff,
     build_reference_database,
+    eos_phase_scans,
     fetch_mp_elemental,
     find_supercell,
     rattle_atoms,
@@ -129,6 +130,31 @@ def test_build_reference_database_writes_extxyz(tmp_path, monkeypatch):
     )
     assert out.exists() and out.stat().st_size > 0
     assert len(configs) == 1
+
+
+# --------------------------------------------------------------------------
+# eos_phase_scans: per-phase, zero-rattle volume scans
+# --------------------------------------------------------------------------
+def test_eos_phase_scans_zero_rattle_per_phase():
+    a, b = _bulk_si(), _bulk_si(6.0)
+    a.info["mp_id"], b.info["mp_id"] = "mp-149", "mp-165"
+    scans = eos_phase_scans(
+        [a, b], vol_scalings=np.linspace(0.95, 1.05, 5), target_cutoff=2.0
+    )
+    assert set(scans) == {"mp-149", "mp-165"}
+    for scan in scans.values():
+        # One config per volume (zero rattle emits a single copy per volume).
+        assert len(scan) == 5
+        assert all(at.info["rattle_strength"] == 0.0 for at in scan)
+        vols = sorted(at.get_volume() for at in scan)
+        assert vols[0] < vols[-1]  # a real volume spread to fit an EOS to
+
+
+def test_eos_phase_scans_sanitizes_labels_for_filenames():
+    a = _bulk_si()
+    a.info["spacegroup"] = "P6_3/mmc"  # space-group symbols carry a slash
+    (label,) = eos_phase_scans([a], vol_scalings=[0.98, 1.0, 1.02])
+    assert "/" not in label and label == "P6_3_mmc"
 
 
 # --------------------------------------------------------------------------
