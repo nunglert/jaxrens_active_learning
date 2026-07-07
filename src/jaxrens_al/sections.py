@@ -27,19 +27,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from alviz.panels import ExtxyzSampledEnergyVolume
-
 from jaxrens_al.keys import (
     REF_ENERGY_KEY,
     REF_FORCES_KEY,
     SURROGATE_ENERGY_KEY,
-)
-from jaxrens_al.panels import (
-    AtomicEnvsPanel,
-    MaceTrainingCurve,
-    ModelParityPanel,
-    NeuralILParityPanel,
-    NeuralILTrainingCurve,
 )
 
 # jax-loadable model artifacts, best match first: a mace-jax ``.bundle`` dir
@@ -162,8 +153,7 @@ def dft_section(
         calchome=files[0].parent,
         datapath=Path(common["datapath"]),
         iteration=0,  # single "iteration" -> is_summary is False
-        eval_files=files,  # sampled_energy_volume / parity / energy_error
-        sampled_files=files,  # atomic_envs reads sampled_files
+        eval_files=files,  # every dft panel reads eval_files (via source=)
         energy_key=energy_key,
         forces_key=forces_key,
         # None -> the parity/error builders self-gate off (no surrogate probe).
@@ -233,26 +223,37 @@ def training_section(
     show_forces: bool = True,
     max_neighbors: int = 50,
     include_parity: bool = True,
+    panel_config: dict | None = None,
     **common,
 ) -> list:
     """Panels describing one training ``results`` directory.
 
     Auto-detects the trainer by what is on disk (searched recursively):
 
-    * **MACE** (``*_train.txt`` JSON-lines log) -> :class:`MaceTrainingCurve`,
-      plus a re-scored :class:`ModelParityPanel` (MACE writes no such bundle).
-    * **NeuralIL** (``error_*.txt`` logs / ``.npz`` bundles) ->
-      :class:`NeuralILTrainingCurve` + :class:`NeuralILParityPanel`.
+    * **MACE** (``*_train.txt`` JSON-lines log) -> a MACE training curve, plus
+      a re-scored model-parity panel (MACE writes no parity bundle).
+    * **NeuralIL** (``error_*.txt`` logs / ``.npz`` bundles) -> a NeuralIL
+      training curve + parity read from the ``.npz``.
 
-    If a ``db_train.extxyz`` is present, its energy/volume spread and
-    descriptor diversity are added. Returns ``[]`` when no logs are found (the
-    caller decides whether that is an error).
+    If a ``db_train.extxyz`` is present, its energy/volume spread and descriptor
+    diversity are added. Returns ``[]`` when no logs are found (the caller
+    decides whether that is an error).
+
+    Built through the shared panel registry (like ``ns_section`` /
+    ``dft_section``): the discovered artifacts become a single-iteration
+    ``RunContext`` and ``panel_config`` (``disable``/``add``/``panels``) layers
+    on top. The two config-set views bind their input by name -- ``model_parity``
+    re-scores the validation split (``valid_sets``), the spread/diversity views
+    read ``train_sets`` -- so a curated panel has one definition regardless of
+    which config set it reads.
     """
     results = Path(results_dir)
     mace_logs = sorted(results.rglob("*_train.txt"))
     error_logs = sorted(results.rglob("error_*.txt"))
     npz_files = sorted(results.rglob("*.npz"))
     train_sets = sorted(results.rglob("db_train.extxyz"))
+    if not (mace_logs or error_logs or npz_files):
+        return []
     # Validation split to re-score for the model parity: prefer db_val*, then
     # the training set. MACE's split_db writes db_val.extxyz.
     valid_sets = (
@@ -264,53 +265,50 @@ def training_section(
             or train_sets
         )
     )
+    # Model re-score is for the no-.npz case (mainly MACE); NeuralIL's .npz
+    # already carries real parity, so model_parity self-gates off then.
+    model_file = None if npz_files else find_model(results, model)
+    default_backend = "mace" if mace_logs else "neuralil"
 
-    entries: list = []
-    # ``has_parity`` tracks whether a trained-model parity panel is already
-    # covered (NeuralIL reads it from .npz); MACE has none, so we re-score.
-    has_parity = False
-    default_backend = "neuralil"
-    if mace_logs:
-        default_backend = "mace"
-        entries.append(MaceTrainingCurve(train_logs=mace_logs, **common))
-    elif error_logs or npz_files:
-        if error_logs:
-            entries.append(
-                NeuralILTrainingCurve(error_files=error_logs, **common)
-            )
-        if npz_files:
-            entries.append(NeuralILParityPanel(npz_files=npz_files, **common))
-            has_parity = True
-    else:
-        return []
+    from alviz import build_entries, resolve_panel_list
 
-    # Trained-model parity by re-scoring a labelled set (mainly MACE, which
-    # writes no .npz bundle). Auto-detect the model bundle and backend.
-    if not has_parity and include_parity and valid_sets:
-        model_file = find_model(results, model)
-        if model_file is not None:
-            entries.append(
-                ModelParityPanel(
-                    config_files=valid_sets,
-                    model_file=model_file,
-                    backend_type=backend or default_backend,
-                    energy_ref_key=energy_key,
-                    forces_ref_key=forces_key,
-                    show_forces=show_forces,
-                    max_neighbors=max_neighbors,
-                    **common,
-                )
-            )
+    from jaxrens_al.dashboard import RunContext
+    from jaxrens_al.panel_specs import (
+        apply_ctx_globals,
+        training_default_specs,
+    )
 
-    if train_sets:
-        # Energy/volume spread + descriptor diversity of what it trained on.
-        entries += [
-            ExtxyzSampledEnergyVolume(
-                config_files=train_sets,
-                energy_key=energy_key,
-                forces_key=forces_key,
-                **common,
-            ),
-            AtomicEnvsPanel(config_files=train_sets, **common),
-        ]
-    return entries
+    ctx = RunContext(
+        calchome=results,
+        datapath=Path(common["datapath"]),
+        iteration=0,  # single "iteration" -> is_summary is False
+        mace_logs=mace_logs,
+        error_files=error_logs,
+        npz_files=npz_files,
+        train_sets=train_sets,
+        valid_sets=valid_sets,
+        model_file=model_file,
+        eos_backend=backend or default_backend,
+        energy_key=energy_key,
+        forces_key=forces_key,
+        force_recompute=common.get("force_recompute", False),
+    )
+    cfg = panel_config or {}
+    disable = list(cfg.get("disable") or [])
+    if not include_parity and "model_parity" not in disable:
+        disable.append("model_parity")
+    specs = resolve_panel_list(
+        training_default_specs(
+            show_forces=show_forces, max_neighbors=max_neighbors
+        ),
+        panels=cfg.get("panels"),
+        add=cfg.get("add"),
+        disable=disable,
+    )
+    specs = apply_ctx_globals(specs, ctx)
+    return build_entries(
+        specs,
+        ctx,
+        datapath=ctx.datapath,
+        force_recompute=ctx.force_recompute,
+    )

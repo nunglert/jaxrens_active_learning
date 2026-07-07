@@ -389,6 +389,7 @@ def run_training(
 
     from alviz import Dashboard
 
+    from jaxrens_al.panel_specs import parse_panel_config
     from jaxrens_al.sections import training_section
 
     output = (
@@ -414,6 +415,9 @@ def run_training(
         show_forces=not args.no_forces,
         max_neighbors=args.max_neighbors,
         include_parity=not args.no_parity,
+        panel_config=parse_panel_config(
+            getattr(args, "panel_config_raw", None)
+        ),
         **common,
     )
     if not entries:

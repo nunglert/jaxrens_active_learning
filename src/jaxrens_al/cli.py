@@ -470,6 +470,7 @@ def main(argv: list[str] | None = None) -> int:
                 training_section(
                     results,
                     backend=args.eos_backend,
+                    panel_config=panel_config,
                     datapath=dp,
                     force_recompute=args.force,
                 ),

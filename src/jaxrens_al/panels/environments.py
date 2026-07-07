@@ -23,7 +23,7 @@ import numpy as np
 # ---------------------------------------------------------------------------
 # Panel spec.
 # ---------------------------------------------------------------------------
-from alviz import Entry, JsonDict, register_simple
+from alviz import Entry, JsonDict, PanelSpec, register_panel
 
 
 def _pca_2d(desc: np.ndarray) -> np.ndarray:
@@ -135,10 +135,23 @@ class AtomicEnvsPanel(Entry):
             self.ax.set_title("Atomic environments")
 
 
-def _build_atomic_envs(ctx, c):
-    if ctx.sampled_files and not ctx.is_summary:
-        return AtomicEnvsPanel(config_files=ctx.sampled_files, **c)
+class AtomicEnvsSpec(PanelSpec):
+    """PCA of atomic environments for one config set.
+
+    ``source`` names the :class:`RunContext` attribute holding the configs to
+    map (the sampled pool by default; a DFT-labelled or training set in the
+    section dashboards), so one panel type serves every consumer.
+    """
+
+    type: str = "atomic_envs"
+    source: str = "sampled_files"
+
+
+def _build_atomic_envs(spec, ctx, c):
+    files = getattr(ctx, spec.source, None)
+    if files and not ctx.is_summary:
+        return AtomicEnvsPanel(config_files=files, **c)
     return None
 
 
-register_simple("atomic_envs", _build_atomic_envs)
+register_panel("atomic_envs", AtomicEnvsSpec, _build_atomic_envs)

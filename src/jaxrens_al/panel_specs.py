@@ -29,6 +29,7 @@ __all__ = [
     "default_specs",
     "ns_default_specs",
     "dft_default_specs",
+    "training_default_specs",
     "apply_ctx_globals",
     "parse_panel_config",
 ]
@@ -101,9 +102,35 @@ def dft_default_specs() -> list:
     """
     return [
         make_spec("sampled_energy_volume"),
-        make_spec("atomic_envs"),
+        make_spec("atomic_envs", source="eval_files"),
         make_spec("parity"),
         make_spec("energy_error"),
+    ]
+
+
+def training_default_specs(
+    *, show_forces: bool = True, max_neighbors: int = 50
+) -> list:
+    """The training section's curated panels, in historical render order.
+
+    Every builder self-gates on what the trainer left on disk (MACE vs NeuralIL
+    logs, a ``.npz`` parity bundle, a re-scorable model + validation split), so
+    this one list serves both trainers. The two config-set views bind their
+    source explicitly: ``model_parity`` re-scores the ``valid_sets`` split; the
+    spread/diversity views read the ``train_sets``.
+    """
+    return [
+        make_spec("mace_training_curve"),
+        make_spec("neuralil_training_curve"),
+        make_spec("neuralil_parity"),
+        make_spec(
+            "model_parity",
+            source="valid_sets",
+            show_forces=show_forces,
+            max_neighbors=max_neighbors,
+        ),
+        make_spec("sampled_energy_volume", source="train_sets"),
+        make_spec("atomic_envs", source="train_sets"),
     ]
 
 

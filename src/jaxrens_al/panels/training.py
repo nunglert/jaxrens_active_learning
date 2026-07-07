@@ -29,10 +29,8 @@ import numpy as np
 # ---------------------------------------------------------------------------
 # Panel specs.
 # ---------------------------------------------------------------------------
-from alviz import Entry, JsonDict, register_simple
+from alviz import Entry, JsonDict, PanelSpec, register_panel, register_simple
 from alviz.panels import ParityData, ParityPanel
-
-from jaxrens_al.keys import REF_ENERGY_KEY, REF_FORCES_KEY
 
 
 def _rmse(a, b):
@@ -474,16 +472,35 @@ def _build_neuralil_parity(ctx, c):
     )
 
 
-def _build_model_parity(ctx, c):
+class ModelParitySpec(PanelSpec):
+    """Re-scored trained-model parity for one labelled set.
+
+    ``source`` names the :class:`RunContext` attribute holding the configs to
+    re-score (the evaluated set on the AL page; the validation split in the
+    training section). ``show_forces`` / ``max_neighbors`` tune the backend
+    re-score; their defaults match :class:`ModelParityPanel`, so the AL page is
+    unchanged.
+    """
+
+    type: str = "model_parity"
+    source: str = "eval_files"
+    show_forces: bool = True
+    max_neighbors: int = 50
+
+
+def _build_model_parity(spec, ctx, c):
     # Only when there is no NeuralIL .npz bundle (MACE) -- else neuralil_parity
     # already shows real predicted-vs-ref parity.
-    if ctx.model_file and ctx.eval_files and not ctx.npz_files:
+    files = getattr(ctx, spec.source, None)
+    if ctx.model_file and files and not ctx.npz_files:
         return ModelParityPanel(
-            config_files=ctx.eval_files,
+            config_files=files,
             model_file=ctx.model_file,
             backend_type=ctx.eos_backend,
-            energy_ref_key=REF_ENERGY_KEY,
-            forces_ref_key=REF_FORCES_KEY,
+            energy_ref_key=ctx.energy_key,
+            forces_ref_key=ctx.forces_key,
+            show_forces=spec.show_forces,
+            max_neighbors=spec.max_neighbors,
             **c,
         )
     return None
@@ -506,6 +523,6 @@ def _build_mace_training_curve(ctx, c):
 
 
 register_simple("neuralil_parity", _build_neuralil_parity)
-register_simple("model_parity", _build_model_parity)
+register_panel("model_parity", ModelParitySpec, _build_model_parity)
 register_simple("neuralil_training_curve", _build_neuralil_training_curve)
 register_simple("mace_training_curve", _build_mace_training_curve)

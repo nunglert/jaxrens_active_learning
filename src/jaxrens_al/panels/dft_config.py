@@ -9,7 +9,7 @@ with its panel class in the sibling modules.
 
 from __future__ import annotations
 
-from alviz import register_simple
+from alviz import PanelSpec, register_panel, register_simple
 from alviz.panels import (
     ExtxyzEnergyErrorPanel,
     ExtxyzParityPanel,
@@ -19,11 +19,24 @@ from alviz.panels import (
 from jaxrens_al.keys import first_has_info_key
 
 
-def _build_sampled_energy_volume(ctx, c):
-    if not ctx.eval_files:
+class SampledEnergyVolumeSpec(PanelSpec):
+    """Energy/volume spread of one config set.
+
+    ``source`` names the :class:`RunContext` attribute holding the configs (the
+    evaluated set by default; a training set in the training section), so one
+    panel type serves every consumer.
+    """
+
+    type: str = "sampled_energy_volume"
+    source: str = "eval_files"
+
+
+def _build_sampled_energy_volume(spec, ctx, c):
+    files = getattr(ctx, spec.source, None)
+    if not files:
         return None
     return ExtxyzSampledEnergyVolume(
-        config_files=ctx.eval_files,
+        config_files=files,
         energy_key=ctx.energy_key,
         forces_key=ctx.forces_key,
         **c,
@@ -53,6 +66,10 @@ def _build_energy_error(ctx, c):
     )
 
 
-register_simple("sampled_energy_volume", _build_sampled_energy_volume)
+register_panel(
+    "sampled_energy_volume",
+    SampledEnergyVolumeSpec,
+    _build_sampled_energy_volume,
+)
 register_simple("parity", _build_parity)
 register_simple("energy_error", _build_energy_error)

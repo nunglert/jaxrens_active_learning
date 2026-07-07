@@ -194,3 +194,29 @@ def test_training_section_empty_without_logs(tmp_path):
     res = tmp_path / "results"
     res.mkdir()
     assert training_section(res, datapath=tmp_path) == []
+
+
+def test_training_section_panel_config_disable(
+    tmp_path, write_npz, write_error_log, write_configs
+):
+    # training is on the registry now, so panel_config layers like ns/dft/AL.
+    res = tmp_path / "results"
+    res.mkdir()
+    write_npz(res / "val.npz")
+    write_error_log(res / "error_0.txt")
+    write_configs(
+        res / "db_train.extxyz",
+        4,
+        lambda i: {"REF_energy": -9.0 + 0.1 * i},
+        with_forces=True,
+    )
+    names = _names(
+        training_section(
+            res,
+            datapath=tmp_path,
+            panel_config={"disable": ["neuralil_parity", "atomic_envs"]},
+        )
+    )
+    assert "neuralil_parity" not in names and "atomic_envs" not in names
+    # The rest of the curated training set still resolves.
+    assert {"neuralil_training_curve", "sampled_energy_volume"} <= names

@@ -77,6 +77,12 @@ class RunContext:
     npz_files: list = field(default_factory=list)
     error_files: list = field(default_factory=list)
     mace_logs: list = field(default_factory=list)
+    # Trainer config sets: the set a model_parity re-scores (valid_sets) and
+    # the set whose spread/diversity is shown (train_sets). A panel spec names
+    # which of these (or eval_files / sampled_files) it reads via its ``source``
+    # field, so one panel type serves several config sets across consumers.
+    train_sets: list = field(default_factory=list)
+    valid_sets: list = field(default_factory=list)
     ns_dirs: list = field(default_factory=list)
     acc_rates: Optional[Path] = None
     adaptation: Optional[Path] = None
