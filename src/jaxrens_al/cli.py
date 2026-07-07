@@ -22,6 +22,7 @@ from pathlib import Path
 from jaxrens_al.cli_args import (
     add_config_arg,
     add_output_args,
+    add_processing_args,
     add_steinhardt_args,
     add_thermo_args,
     apply_config,
@@ -50,6 +51,9 @@ def _setup_file_logging(log_file, calchome):
 
     ``True`` (a config ``log-file: true``) or a bare ``--log-file`` means
     ``<calchome>/dashboard.log``; a relative path resolves under the calchome.
+    If the target already exists it is left untouched and a timestamped sibling
+    (``dashboard_YYYY-MM-DD_HH-MM-SS.log``, like the loop logs) is written
+    instead, so a re-render never clobbers an earlier run's log.
     """
     if log_file is True:
         log_file = "dashboard.log"
@@ -57,6 +61,11 @@ def _setup_file_logging(log_file, calchome):
     if not path.is_absolute():
         path = Path(calchome) / path
     path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists():
+        import datetime
+
+        stamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        path = path.with_name(f"{path.stem}_{stamp}{path.suffix}")
     handler = logging.FileHandler(path, mode="w")
     handler.setLevel(logging.INFO)
     handler.setFormatter(
@@ -165,6 +174,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "iterations AL_progress.json never recorded (a crashed loop).",
     )
     add_steinhardt_args(parser)
+    add_processing_args(parser)
     return parser
 
 
@@ -419,8 +429,9 @@ def main(argv: list[str] | None = None) -> int:
             )
             resolve_processing(
                 all_entries,
-                shard_size=args.steinhardt_shard_size,
-                num_parallel=1,
+                shard_size=args.shard_size,
+                num_parallel=args.num_parallel,
+                n_processors=args.n_processors,
                 **execution_context(args.cluster, datapath / "processing"),
             )
 

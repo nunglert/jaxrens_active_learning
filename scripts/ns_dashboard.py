@@ -34,6 +34,7 @@ from alviz import Dashboard
 
 from jaxrens_al.cli_args import (
     add_output_args,
+    add_processing_args,
     add_steinhardt_args,
     add_thermo_args,
     steinhardt_params,
@@ -80,6 +81,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "of the mean-across-replicas band.",
     )
     add_steinhardt_args(parser)
+    add_processing_args(parser)
     return parser
 
 
@@ -137,8 +139,9 @@ def main(argv: list[str] | None = None) -> int:
         )
         resolve_processing(
             entries,
-            shard_size=args.steinhardt_shard_size,
-            num_parallel=1,
+            shard_size=args.shard_size,
+            num_parallel=args.num_parallel,
+            n_processors=args.n_processors,
             **execution_context(args.cluster, datapath / "processing"),
         )
 

@@ -206,3 +206,22 @@ def test_log_file_writes_run_log(make_calchome, tmp_path):
     assert not any(
         getattr(h, "_jaxrens_dashboard_log", False) for h in root.handlers
     )
+
+
+def test_log_file_timestamps_when_present(make_calchome, tmp_path):
+    """A pre-existing log is preserved; a timestamped sibling is written."""
+    pytest.importorskip("alviz")
+    pytest.importorskip("pypdf")
+
+    calchome = make_calchome(tmp_path, n_iter=1)
+    (calchome / "dashboard.log").write_text("OLD LOG\n")
+
+    rc = main([str(calchome), "--force", "--log-file"])
+    assert rc == 0
+
+    # The existing log is untouched ...
+    assert (calchome / "dashboard.log").read_text() == "OLD LOG\n"
+    # ... and this run's log went to a timestamped sibling.
+    stamped = list(calchome.glob("dashboard_*.log"))
+    assert len(stamped) == 1
+    assert "Wrote combined" in stamped[0].read_text()

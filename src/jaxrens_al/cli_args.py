@@ -203,14 +203,18 @@ def add_thermo_args(
 
 
 def add_steinhardt_args(parser) -> None:
-    """The NS Steinhardt ``<q_l>(T)`` heatmap block (scripts + AL CLI)."""
+    """The NS Steinhardt ``<q_l>(T)`` heatmap **physics** params (rcut/l).
+
+    Property-specific only; *how* the annotation job runs (where, sharding,
+    parallelism) is the property-agnostic :func:`add_processing_args` group.
+    """
     parser.add_argument(
         "--steinhardt-rcut",
         type=float,
         default=None,
         help="Enable the NS Steinhardt <q_l>(T) heatmap: neighbour cutoff in "
         "Angstrom. Trajectories are annotated via the remote_handler "
-        "processing pipeline (see --cluster). Omit to skip the panel.",
+        "processing pipeline (see the processing options). Omit to skip.",
     )
     parser.add_argument(
         "--steinhardt-l",
@@ -224,19 +228,42 @@ def add_steinhardt_args(parser) -> None:
         default=0.0,
         help="Lower Steinhardt neighbour cutoff (default: 0).",
     )
+
+
+def add_processing_args(parser) -> None:
+    """Property-agnostic knobs for the trajectory-processing (annotation) job.
+
+    These govern *how* the single ``RemoteTrajectoryProcessor`` pass runs --
+    where, how trajectories are sharded, how much runs concurrently -- not
+    *what* it computes. Shared by any producer-backed panel (Steinhardt is the
+    first), so they are configured once, globally, not per property.
+    """
     parser.add_argument(
-        "--steinhardt-shard-size",
+        "--cluster",
+        default="local",
+        help="Where to run trajectory annotation: 'local' (default, "
+        "scheduler-free on this machine) or the name/path of a remote_handler "
+        "ClusterConfig JSON.",
+    )
+    parser.add_argument(
+        "--shard-size",
         type=int,
         default=2000,
         help="Configs per shard when annotating via the processing machinery "
         "(default: 2000).",
     )
     parser.add_argument(
-        "--cluster",
-        default="local",
-        help="Where to run Steinhardt annotation: 'local' (default, "
-        "scheduler-free on this machine) or the name/path of a remote_handler "
-        "ClusterConfig JSON.",
+        "--num-parallel",
+        type=int,
+        default=1,
+        help="Max shards processed concurrently by the annotation job "
+        "(default: 1).",
+    )
+    parser.add_argument(
+        "--n-processors",
+        type=int,
+        default=1,
+        help="CPUs requested per processing shard job (default: 1).",
     )
 
 

@@ -13,6 +13,7 @@ import pytest
 
 from jaxrens_al.cli_args import (
     add_output_args,
+    add_processing_args,
     add_ref_key_args,
     add_steinhardt_args,
     add_thermo_args,
@@ -73,7 +74,6 @@ def test_thermo_defaults_are_parameterized():
 
 def test_steinhardt_params_none_unless_requested():
     args = _parse(add_steinhardt_args)
-    assert args.cluster == "local"
     assert steinhardt_params(args) is None  # --steinhardt-rcut omitted
 
 
@@ -87,6 +87,19 @@ def test_steinhardt_params_shape_when_requested():
         "r_cut_min": 0.0,
         "l": 4,
     }
+
+
+def test_processing_args_defaults_are_property_agnostic():
+    # The remote-execution knobs live in their own group, not under Steinhardt.
+    args = _parse(add_processing_args)
+    assert args.cluster == "local"
+    assert args.shard_size == 2000
+    assert args.num_parallel == 1
+    assert args.n_processors == 1
+    # ... and they are NOT added by the Steinhardt (physics) group.
+    st = _parse(add_steinhardt_args)
+    assert not hasattr(st, "cluster")
+    assert not hasattr(st, "shard_size")
 
 
 # ---------------------------------------------------------------------------
