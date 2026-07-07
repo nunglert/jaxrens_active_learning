@@ -94,7 +94,6 @@ class RunContext:
     ns_k_B: float = 1.0
     ns_swap_axes: bool = False
     ns_temperatures: Optional[list] = None
-    steinhardt: Optional[dict] = None  # {r_cut, l, r_cut_min} or None
     force_recompute: bool = False
 
     @property
@@ -151,7 +150,6 @@ def iteration_context(
     ns_k_B: float = 1.0,
     ns_swap_axes: bool = False,
     ns_temperatures=None,
-    steinhardt=None,
     force_recompute: bool = False,
 ) -> RunContext:
     """Single-iteration context (``calchome/<index>``'s artifacts).
@@ -190,7 +188,6 @@ def iteration_context(
         ns_k_B=ns_k_B,
         ns_swap_axes=ns_swap_axes,
         ns_temperatures=ns_temperatures,
-        steinhardt=steinhardt,
         force_recompute=force_recompute,
     )
 
@@ -204,21 +201,17 @@ def assemble(ctx: RunContext, *, panel_config=None) -> list:
     Builds the curated default spec list (:func:`panel_specs.default_specs`,
     in historical render order) and lets a ``panel_config`` layer on top --
     ``{"disable": [...], "add": [PanelSpec...], "panels": [PanelSpec...]}`` (see
-    ``alviz.resolve_panel_list``). Steinhardt is opt-in: ``ctx.steinhardt`` (set
-    by ``--steinhardt-rcut``) becomes an ``add`` spec. Each spec's builder
-    self-gates on its inputs, so absent-input / wrong-view panels drop out and
-    the grid auto-sizes -- exactly as the old hand-wired ``assemble`` did.
+    ``alviz.resolve_panel_list``). A Steinhardt heatmap is just an ``add`` entry
+    (there is no CLI flag). Each spec's builder self-gates on its inputs, so
+    absent-input / wrong-view panels drop out and the grid auto-sizes -- exactly
+    as the old hand-wired ``assemble`` did.
     """
     from alviz import build_entries, resolve_panel_list
 
-    from jaxrens_al.panel_specs import (
-        apply_ctx_globals,
-        default_specs,
-        steinhardt_add_specs,
-    )
+    from jaxrens_al.panel_specs import apply_ctx_globals, default_specs
 
     cfg = panel_config or {}
-    add = list(cfg.get("add") or []) + steinhardt_add_specs(ctx)
+    add = list(cfg.get("add") or [])
     specs = resolve_panel_list(
         default_specs(ctx),
         panels=cfg.get("panels"),
@@ -310,7 +303,6 @@ def build_iteration_dashboard(
     ns_k_B: float = 1.0,
     ns_swap_axes: bool = False,
     ns_temperatures=None,
-    steinhardt=None,
     panel_config=None,
     compute: bool = True,
     only=None,
@@ -345,7 +337,6 @@ def build_iteration_dashboard(
         ns_k_B=ns_k_B,
         ns_swap_axes=ns_swap_axes,
         ns_temperatures=ns_temperatures,
-        steinhardt=steinhardt,
         force_recompute=force_recompute,
     )
     board = Dashboard.from_entries(

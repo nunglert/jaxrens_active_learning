@@ -59,8 +59,9 @@ def test_summary_panels_match(rich):
 
 def test_iteration_panels_match(rich):
     calchome, dp = rich
-    ctx = iteration_context(calchome, dp, 0, steinhardt={"r_cut": 3.5, "l": 6})
-    assert _names(assemble(ctx)) == [
+    ctx = iteration_context(calchome, dp, 0)
+    cfg = {"add": [SteinhardtSpec(r_cut=3.5, l=6)]}  # opt-in via config
+    assert _names(assemble(ctx, panel_config=cfg)) == [
         "sampled_energy_volume",
         "parity",
         "energy_error",

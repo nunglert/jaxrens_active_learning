@@ -31,10 +31,8 @@ from jaxrens_al.cli_args import (
     add_output_args,
     add_processing_args,
     add_ref_key_args,
-    add_steinhardt_args,
     add_thermo_args,
     apply_config,
-    steinhardt_params,
 )
 
 logger = logging.getLogger(__name__)
@@ -93,7 +91,6 @@ def build_ns_parser(prog: str | None = None) -> argparse.ArgumentParser:
         help="Step-size / acceptance panels: one line per replica instead "
         "of the mean-across-replicas band.",
     )
-    add_steinhardt_args(parser)
     add_processing_args(parser)
     return parser
 
@@ -170,7 +167,6 @@ def run_ns(argv: list[str] | None = None, prog: str | None = None) -> int:
         temperatures=T,
         swap_axes=args.swap_pt,
         per_run=args.per_run,
-        steinhardt=steinhardt_params(args),
         panel_config=parse_panel_config(
             getattr(args, "panel_config_raw", None)
         ),

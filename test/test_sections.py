@@ -64,22 +64,24 @@ def test_ns_section_discovers_optional_logs(tmp_path):
     assert {"step_sizes", "adaptation_acceptance", "re_swap_rates"} <= names
 
 
-def test_ns_section_steinhardt_opt_in(tmp_path):
+def test_ns_section_no_steinhardt_by_default(tmp_path):
+    # Steinhardt is opt-in via a config `add:` -- never in the curated set.
+    d = _make_ns_dir(tmp_path)
+    entries = ns_section(d, datapath=tmp_path)
+    assert not any(n.startswith("steinhardt") for n in _names(entries))
+
+
+def test_ns_section_steinhardt_opt_in_via_config(tmp_path):
+    from jaxrens_al.panel_specs import SteinhardtSpec
+
     d = _make_ns_dir(tmp_path)
     entries = ns_section(
-        d, steinhardt={"r_cut": 3.5, "l": 6}, datapath=tmp_path
+        d,
+        datapath=tmp_path,
+        panel_config={"add": [SteinhardtSpec(r_cut=3.5, l=6)]},
     )
     # Param-keyed name (so several Steinhardts can coexist).
     assert "steinhardt_q6_rc3.5" in _names(entries)
-
-
-def test_ns_section_no_steinhardt_without_trajs(tmp_path):
-    d = _make_ns_dir(tmp_path, trajs=False)
-    entries = ns_section(
-        d, steinhardt={"r_cut": 3.5, "l": 6}, datapath=tmp_path
-    )
-    # No trajectories to annotate -> no Steinhardt (and no sampled) panel.
-    assert not any(n.startswith("steinhardt") for n in _names(entries))
 
 
 def test_ns_section_multiple_steinhardts_via_config(tmp_path):

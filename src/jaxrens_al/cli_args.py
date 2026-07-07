@@ -315,41 +315,15 @@ def add_thermo_args(
     )
 
 
-def add_steinhardt_args(parser) -> None:
-    """The NS Steinhardt ``<q_l>(T)`` heatmap **physics** params (rcut/l).
-
-    Property-specific only; *how* the annotation job runs (where, sharding,
-    parallelism) is the property-agnostic :func:`add_processing_args` group.
-    """
-    parser.add_argument(
-        "--steinhardt-rcut",
-        type=float,
-        default=None,
-        help="Enable the NS Steinhardt <q_l>(T) heatmap: neighbour cutoff in "
-        "Angstrom. Trajectories are annotated via the remote_handler "
-        "processing pipeline (see the processing options). Omit to skip.",
-    )
-    parser.add_argument(
-        "--steinhardt-l",
-        type=int,
-        default=6,
-        help="Steinhardt degree for the <q_l>(T) heatmap (default: 6).",
-    )
-    parser.add_argument(
-        "--steinhardt-rcut-min",
-        type=float,
-        default=0.0,
-        help="Lower Steinhardt neighbour cutoff (default: 0).",
-    )
-
-
 def add_processing_args(parser) -> None:
     """Property-agnostic knobs for the trajectory-processing (annotation) job.
 
     These govern *how* the single ``RemoteTrajectoryProcessor`` pass runs --
     where, how trajectories are sharded, how much runs concurrently -- not
-    *what* it computes. Shared by any producer-backed panel (Steinhardt is the
-    first), so they are configured once, globally, not per property.
+    *what* it computes. Shared by any producer-backed panel, so they are
+    configured once, globally, not per property. The panels that *need*
+    annotation (e.g. a Steinhardt heatmap) are added via the config ``add:``
+    list -- there are no per-panel CLI flags.
     """
     parser.add_argument(
         "--cluster",
@@ -377,19 +351,4 @@ def add_processing_args(parser) -> None:
         type=int,
         default=1,
         help="CPUs requested per processing shard job (default: 1).",
-    )
-
-
-def steinhardt_params(args) -> dict | None:
-    """``{r_cut, r_cut_min, l}`` from parsed args, or None if not requested.
-
-    The shape :func:`jaxrens_al.sections.ns_section` /
-    :func:`jaxrens_al.dashboard.assemble` expect for their ``steinhardt=``.
-    """
-    if args.steinhardt_rcut is None:
-        return None
-    return dict(
-        r_cut=args.steinhardt_rcut,
-        r_cut_min=args.steinhardt_rcut_min,
-        l=args.steinhardt_l,
     )

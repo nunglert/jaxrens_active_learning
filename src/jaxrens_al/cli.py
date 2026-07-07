@@ -23,11 +23,9 @@ from jaxrens_al.cli_args import (
     add_config_arg,
     add_output_args,
     add_processing_args,
-    add_steinhardt_args,
     add_thermo_args,
     apply_config,
     dump_config,
-    steinhardt_params,
 )
 
 logger = logging.getLogger(__name__)
@@ -278,7 +276,6 @@ def _build_parser() -> argparse.ArgumentParser:
         "render) built from each iteration's raw working dir -- including "
         "iterations AL_progress.json never recorded (a crashed loop).",
     )
-    add_steinhardt_args(parser)
     add_processing_args(parser)
     return parser
 
@@ -376,10 +373,10 @@ def main(argv: list[str] | None = None) -> int:
         logger.info(f"NS out_file_prefix: {ns_prefix!r} (auto-detected).")
 
     T = np.linspace(args.tmin, args.tmax, args.n_T)
-    steinhardt = steinhardt_params(args)
 
     # A config's structured panel keys (add / disable / panels), parsed into
-    # specs against the panel registry; layered onto every iteration page.
+    # specs against the panel registry; layered onto every iteration page. A
+    # Steinhardt heatmap is one such `add:` entry -- there is no CLI flag.
     from jaxrens_al.panel_specs import parse_panel_config
 
     panel_config = parse_panel_config(getattr(args, "panel_config_raw", None))
@@ -405,7 +402,6 @@ def main(argv: list[str] | None = None) -> int:
             ns_swap_axes=args.swap_pt,
             ns_k_B=args.k_B,
             ns_temperatures=T,
-            steinhardt=steinhardt,
             panel_config=panel_config,
         )
 
@@ -459,7 +455,7 @@ def main(argv: list[str] | None = None) -> int:
                     k_B=args.k_B,
                     temperatures=T,
                     swap_axes=args.swap_pt,
-                    steinhardt=steinhardt,
+                    panel_config=panel_config,
                     datapath=dp,
                     force_recompute=args.force,
                 ),

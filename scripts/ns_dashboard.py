@@ -17,13 +17,14 @@ when jaxrens_al is installed, prefer the equivalent console subcommand
         experiments/run4/calchome/phase1_mace/0/ns_sampler/results/output \
         --prefix mace_sn16 -o experiments/run4/ns_dashboard.pdf
 
-Add ``--steinhardt-rcut R`` to include the NS ``<q_l>(T)`` heatmap. The
-per-replica trajectories are annotated by the real ``remote_handler``
-processing pipeline (``SteinhardtProcessor``); ``--cluster`` picks where it
-runs -- ``local`` (default, scheduler-free on this machine) or a ClusterConfig
-JSON for a dedicated/existing postprocessing cluster. Same code path either
-way. Flag defaults can also come from a ``dashboard.{yaml,yml,toml,json}``
-beside the output dir (or ``--config PATH``); CLI flags still win.
+Add NS ``<q_l>(T)`` Steinhardt heatmap(s) via a ``dashboard.*`` config ``add:``
+list (one entry per l / r_cut) -- there is no CLI flag. The per-replica
+trajectories are annotated by the real ``remote_handler`` processing pipeline
+(``SteinhardtProcessor``); ``--cluster`` picks where it runs -- ``local``
+(default, scheduler-free on this machine) or a ClusterConfig JSON for a
+dedicated/existing postprocessing cluster. Same code path either way. Flag
+defaults can also come from a ``dashboard.{yaml,yml,toml,json}`` beside the
+output dir (or ``--config PATH``); CLI flags still win.
 """
 
 from jaxrens_al.section_dashboards import run_ns

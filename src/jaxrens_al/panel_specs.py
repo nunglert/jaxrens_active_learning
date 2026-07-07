@@ -28,7 +28,7 @@ __all__ = [
     "make_spec",
     "default_specs",
     "ns_default_specs",
-    "steinhardt_add_specs",
+    "apply_ctx_globals",
     "parse_panel_config",
 ]
 
@@ -42,7 +42,7 @@ def make_spec(type_name: str, **params) -> PanelSpec:
 
 # Historical render order of the curated AL page (every builder self-gates, so
 # absent-input / wrong-view panels drop out). Steinhardt is intentionally *not*
-# here -- it is opt-in (``--steinhardt-rcut`` or a config ``add:``).
+# here -- it is opt-in via a config ``add:`` entry (no CLI flag).
 _DEFAULT_ORDER = [
     "dataset_growth",
     "sampled_energy_volume",
@@ -88,24 +88,6 @@ def ns_default_specs(*, per_run: bool = False) -> list:
         make_spec("adaptation_acceptance", per_run=per_run),
         make_spec("re_swap_rates"),
         make_spec("sampled_ns_energy"),
-    ]
-
-
-def steinhardt_add_specs(ctx) -> list:
-    """``[SteinhardtSpec]`` from ``ctx.steinhardt`` (or empty).
-
-    Bridges the ``--steinhardt-rcut`` flag (an opt-in single heatmap, stored as
-    ``ctx.steinhardt``) to the same add-spec path a config ``add:`` uses.
-    """
-    s = getattr(ctx, "steinhardt", None)
-    if not s:
-        return []
-    return [
-        SteinhardtSpec(
-            r_cut=s["r_cut"],
-            l=s.get("l", 6),
-            r_cut_min=s.get("r_cut_min", 0.0),
-        )
     ]
 
 

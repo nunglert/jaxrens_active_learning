@@ -3,8 +3,7 @@
 These helpers back both the standalone scripts and the global CLI, so the
 subtle part is that each consumer keeps its *own* defaults (the scripts scan
 Kelvin for eV models and default the pressure/temperature swap on; the AL CLI
-uses reduced units and swap off). Lock that in, plus the ``steinhardt_params``
-shape the section builders expect.
+uses reduced units and swap off). Lock that in.
 """
 
 import argparse
@@ -16,11 +15,9 @@ from jaxrens_al.cli_args import (
     add_output_args,
     add_processing_args,
     add_ref_key_args,
-    add_steinhardt_args,
     add_thermo_args,
     apply_config,
     dump_config,
-    steinhardt_params,
 )
 
 pytestmark = pytest.mark.local
@@ -74,34 +71,15 @@ def test_thermo_defaults_are_parameterized():
     assert parser.parse_args(["--no-swap-pt"]).swap_pt is False
 
 
-def test_steinhardt_params_none_unless_requested():
-    args = _parse(add_steinhardt_args)
-    assert steinhardt_params(args) is None  # --steinhardt-rcut omitted
-
-
-def test_steinhardt_params_shape_when_requested():
-    args = _parse(
-        add_steinhardt_args,
-        argv=["--steinhardt-rcut", "3.5", "--steinhardt-l", "4"],
-    )
-    assert steinhardt_params(args) == {
-        "r_cut": 3.5,
-        "r_cut_min": 0.0,
-        "l": 4,
-    }
-
-
-def test_processing_args_defaults_are_property_agnostic():
-    # The remote-execution knobs live in their own group, not under Steinhardt.
+def test_processing_args_defaults():
+    # The processing/job knobs are globals; there are no per-panel (Steinhardt)
+    # CLI flags -- a Steinhardt heatmap is a config `add:` entry.
     args = _parse(add_processing_args)
     assert args.cluster == "local"
     assert args.shard_size == 2000
     assert args.num_parallel == 1
     assert args.n_processors == 1
-    # ... and they are NOT added by the Steinhardt (physics) group.
-    st = _parse(add_steinhardt_args)
-    assert not hasattr(st, "cluster")
-    assert not hasattr(st, "shard_size")
+    assert not hasattr(args, "steinhardt_rcut")
 
 
 # ---------------------------------------------------------------------------
@@ -121,9 +99,9 @@ def test_load_config_yaml_normalizes_hyphen_keys(tmp_path):
     from jaxrens_al.cli_args import load_config
 
     p = tmp_path / "dashboard.yaml"
-    p.write_text("swap-pt: true\nsteinhardt-rcut: 3.5\nonly:\n  - eos\n")
+    p.write_text("swap-pt: true\nshard-size: 5000\nonly:\n  - eos\n")
     cfg = load_config(p)
-    assert cfg == {"swap_pt": True, "steinhardt_rcut": 3.5, "only": ["eos"]}
+    assert cfg == {"swap_pt": True, "shard_size": 5000, "only": ["eos"]}
 
 
 def test_load_config_json(tmp_path):
@@ -249,7 +227,6 @@ def test_dump_config_round_trips_and_keys_are_valid_dests(tmp_path):
     add_config_arg(parser)
     add_output_args(parser)
     add_thermo_args(parser, k_B=8.617e-5, tmin=100.0, swap_default=True)
-    add_steinhardt_args(parser)
     add_processing_args(parser)
 
     text = dump_config(parser, title="test flavor")
@@ -262,7 +239,7 @@ def test_dump_config_round_trips_and_keys_are_valid_dests(tmp_path):
     # Active defaults are reproduced; a None-default flag is commented out.
     assert cfg["cluster"] == "local"
     assert cfg["swap_pt"] is True
-    assert "steinhardt_rcut" not in cfg  # default None -> emitted commented
     # The positional and --config are never templated.
     assert "config" not in cfg
-    assert "# steinhardt-rcut:" in text  # ... but still listed for discovery
+    # A None-default flag (--output) is listed commented for discovery.
+    assert "# output:" in text

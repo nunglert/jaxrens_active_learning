@@ -80,7 +80,6 @@ def ns_section(
     temperatures=None,
     swap_axes: bool = True,
     per_run: bool = False,
-    steinhardt: dict | None = None,
     panel_config: dict | None = None,
     **common,
 ) -> list:
@@ -90,8 +89,8 @@ def ns_section(
     ``.adaptation.h5``, ``.runNN.traj.extxyz``). Each panel is wired only when
     its file(s) are present, so a partial run yields a smaller section.
 
-    ``steinhardt`` (``{"r_cut", "l", "r_cut_min"}`` or ``None``) enables the NS
-    ``<q_l>(T)`` expectation heatmap; the panel only *declares* a processing
+    A Steinhardt ``<q_l>(T)`` heatmap is added via ``panel_config`` (an ``add``
+    entry), not a dedicated argument; the panel only *declares* a processing
     need -- the caller runs it via ``resolve_processing`` before rendering.
 
     ``panel_config`` (``{"disable", "add", "panels"}`` of
@@ -116,11 +115,7 @@ def ns_section(
     from alviz import build_entries, resolve_panel_list
 
     from jaxrens_al.dashboard import RunContext
-    from jaxrens_al.panel_specs import (
-        SteinhardtSpec,
-        apply_ctx_globals,
-        ns_default_specs,
-    )
+    from jaxrens_al.panel_specs import apply_ctx_globals, ns_default_specs
 
     ctx = RunContext(
         calchome=out_dir,
@@ -137,23 +132,10 @@ def ns_section(
         force_recompute=common.get("force_recompute", False),
     )
     cfg = panel_config or {}
-    add = []
-    # Steinhardt reweights per-replica trajectories, so the section only wires
-    # it when trajectories are present (the AL page relies on the same gate via
-    # its context).
-    if steinhardt is not None and trajs:
-        add.append(
-            SteinhardtSpec(
-                r_cut=steinhardt["r_cut"],
-                l=steinhardt.get("l", 6),
-                r_cut_min=steinhardt.get("r_cut_min", 0.0),
-            )
-        )
-    add += list(cfg.get("add") or [])
     specs = resolve_panel_list(
         ns_default_specs(per_run=per_run),
         panels=cfg.get("panels"),
-        add=add,
+        add=cfg.get("add"),
         disable=cfg.get("disable"),
     )
     specs = apply_ctx_globals(specs, ctx)
