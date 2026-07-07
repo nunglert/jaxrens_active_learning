@@ -19,7 +19,11 @@ full compute.
 """
 
 import numpy as np
-from alviz import Entry, JsonDict
+
+# ---------------------------------------------------------------------------
+# Panel spec.
+# ---------------------------------------------------------------------------
+from alviz import Entry, JsonDict, register_simple
 
 
 def _pca_2d(desc: np.ndarray) -> np.ndarray:
@@ -129,3 +133,12 @@ class AtomicEnvsPanel(Entry):
             )
         else:
             self.ax.set_title("Atomic environments")
+
+
+def _build_atomic_envs(ctx, c):
+    if ctx.sampled_files and not ctx.is_summary:
+        return AtomicEnvsPanel(config_files=ctx.sampled_files, **c)
+    return None
+
+
+register_simple("atomic_envs", _build_atomic_envs)

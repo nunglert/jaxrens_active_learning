@@ -7,7 +7,11 @@ and stays pure (ase + numpy), so alviz remains ignorant of the orchestrator.
 """
 
 import numpy as np
-from alviz import Entry, JsonDict
+
+# ---------------------------------------------------------------------------
+# Panel spec.
+# ---------------------------------------------------------------------------
+from alviz import Entry, JsonDict, register_simple
 
 from jaxrens_al.run_layout import evaluated_configs_per_iteration
 
@@ -68,3 +72,15 @@ class DatasetGrowthPanel(Entry):
             label="cumulative",
         )
         ax2.set_ylabel("# configs total", color="tab:red")
+
+
+def _build_dataset_growth(ctx, c):
+    # Cumulative training-set growth -> summary page only.
+    return (
+        DatasetGrowthPanel(calchome=ctx.calchome, **c)
+        if ctx.is_summary
+        else None
+    )
+
+
+register_simple("dataset_growth", _build_dataset_growth)

@@ -34,18 +34,11 @@ from alviz.panels import (
 )
 
 from jaxrens_al.panels import (
-    AdaptationAcceptancePanel,
     AtomicEnvsPanel,
     MaceTrainingCurve,
     ModelParityPanel,
     NeuralILParityPanel,
     NeuralILTrainingCurve,
-    NSEnergyTracePanel,
-    NSSampledEnergyPanel,
-    NSThermodynamicsHeatmap,
-    RESwapAcceptancePanel,
-    SteinhardtExpectationHeatmap,
-    StepSizePanel,
 )
 
 # remote_handler labels ground-truth energies/forces with these keys; jaxrens
@@ -88,6 +81,7 @@ def ns_section(
     swap_axes: bool = True,
     per_run: bool = False,
     steinhardt: dict | None = None,
+    panel_config: dict | None = None,
     **common,
 ) -> list:
     """Panels describing one multi-run jaxrens NS output directory.
@@ -99,6 +93,13 @@ def ns_section(
     ``steinhardt`` (``{"r_cut", "l", "r_cut_min"}`` or ``None``) enables the NS
     ``<q_l>(T)`` expectation heatmap; the panel only *declares* a processing
     need -- the caller runs it via ``resolve_processing`` before rendering.
+
+    ``panel_config`` (``{"disable", "add", "panels"}`` of
+    :class:`~alviz.PanelSpec`) layers a config over the curated NS set -- e.g.
+    an ``add`` of several ``SteinhardtSpec`` at different ``l``/``r_cut`` (each
+    gets a distinct, param-keyed name so their caches/slots never collide).
+    Built through the same registry that backs the AL page, so an NS panel has
+    one definition regardless of which dashboard renders it.
     """
     out_dir = Path(out_dir)
     energies = sorted(out_dir.glob(f"{prefix}.run*.energies"))
@@ -108,56 +109,60 @@ def ns_section(
     re_stats = out_dir / f"{prefix}.re_stats.h5"
     adaptation = out_dir / f"{prefix}.adaptation.h5"
 
-    entries = [
-        # Energy descent per replica -- the at-a-glance "are they all moving".
-        NSEnergyTracePanel(result_dirs=[out_dir], prefix=prefix, **common),
-        # Thermodynamics from the dead+live energies, one row per replica.
-        NSThermodynamicsHeatmap(
-            result_dirs=[out_dir],
-            quantity="heat_capacity",
-            temperatures=temperatures,
-            k_B=k_B,
-            prefix=prefix,
-            swap_axes=swap_axes,
-            **common,
-        ),
-    ]
-    if adaptation.exists():
-        entries += [
-            StepSizePanel(
-                adaptation_file=adaptation, per_run=per_run, **common
-            ),
-            AdaptationAcceptancePanel(
-                adaptation_file=adaptation, per_run=per_run, **common
-            ),
-        ]
-    if re_stats.exists():
-        entries.append(RESwapAcceptancePanel(re_stats_file=re_stats, **common))
-    if trajs:
-        entries.append(
-            NSSampledEnergyPanel(
-                config_files=trajs, iteration_index=0, **common
-            )
-        )
-    # NS Steinhardt <q_l>(T) heatmap: reweights the per-dead-point q_l onto the
-    # temperature grid with each replica's Monitor. The panel discovers its own
-    # per-replica trajectories and declares a processing need on each.
+    # A raw NS output dir is just a single-iteration RunContext
+    # (ns_dirs=[out_dir]) whose "sampled" configs are the per-replica
+    # trajectories -- so the shared builders wire the section exactly as they
+    # wire the AL page.
+    from alviz import build_entries, resolve_panel_list
+
+    from jaxrens_al.dashboard import RunContext
+    from jaxrens_al.panel_specs import (
+        SteinhardtSpec,
+        apply_ctx_globals,
+        ns_default_specs,
+    )
+
+    ctx = RunContext(
+        calchome=out_dir,
+        datapath=Path(common["datapath"]),
+        iteration=0,  # single "iteration" -> is_summary is False
+        ns_dirs=[out_dir],
+        ns_prefix=prefix,
+        ns_k_B=k_B,
+        ns_temperatures=temperatures,
+        ns_swap_axes=swap_axes,
+        sampled_files=trajs,
+        adaptation=adaptation if adaptation.exists() else None,
+        re_stats=re_stats if re_stats.exists() else None,
+        force_recompute=common.get("force_recompute", False),
+    )
+    cfg = panel_config or {}
+    add = []
+    # Steinhardt reweights per-replica trajectories, so the section only wires
+    # it when trajectories are present (the AL page relies on the same gate via
+    # its context).
     if steinhardt is not None and trajs:
-        entries.append(
-            SteinhardtExpectationHeatmap(
-                result_dirs=[out_dir],
-                prefix=prefix,
+        add.append(
+            SteinhardtSpec(
                 r_cut=steinhardt["r_cut"],
-                r_cut_min=steinhardt.get("r_cut_min", 0.0),
                 l=steinhardt.get("l", 6),
-                param="q",
-                temperatures=temperatures,
-                k_B=k_B,
-                swap_axes=swap_axes,
-                **common,
+                r_cut_min=steinhardt.get("r_cut_min", 0.0),
             )
         )
-    return entries
+    add += list(cfg.get("add") or [])
+    specs = resolve_panel_list(
+        ns_default_specs(per_run=per_run),
+        panels=cfg.get("panels"),
+        add=add,
+        disable=cfg.get("disable"),
+    )
+    specs = apply_ctx_globals(specs, ctx)
+    return build_entries(
+        specs,
+        ctx,
+        datapath=ctx.datapath,
+        force_recompute=ctx.force_recompute,
+    )
 
 
 # ---------------------------------------------------------------------------

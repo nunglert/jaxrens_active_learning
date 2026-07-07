@@ -69,7 +69,8 @@ def test_ns_section_steinhardt_opt_in(tmp_path):
     entries = ns_section(
         d, steinhardt={"r_cut": 3.5, "l": 6}, datapath=tmp_path
     )
-    assert "steinhardt_expectation" in _names(entries)
+    # Param-keyed name (so several Steinhardts can coexist).
+    assert "steinhardt_q6_rc3.5" in _names(entries)
 
 
 def test_ns_section_no_steinhardt_without_trajs(tmp_path):
@@ -78,7 +79,25 @@ def test_ns_section_no_steinhardt_without_trajs(tmp_path):
         d, steinhardt={"r_cut": 3.5, "l": 6}, datapath=tmp_path
     )
     # No trajectories to annotate -> no Steinhardt (and no sampled) panel.
-    assert "steinhardt_expectation" not in _names(entries)
+    assert not any(n.startswith("steinhardt") for n in _names(entries))
+
+
+def test_ns_section_multiple_steinhardts_via_config(tmp_path):
+    from jaxrens_al.panel_specs import SteinhardtSpec
+
+    d = _make_ns_dir(tmp_path)
+    entries = ns_section(
+        d,
+        datapath=tmp_path,
+        panel_config={
+            "add": [
+                SteinhardtSpec(r_cut=3.5, l=6),
+                SteinhardtSpec(r_cut=3.5, l=4),
+            ]
+        },
+    )
+    names = _names(entries)
+    assert "steinhardt_q6_rc3.5" in names and "steinhardt_q4_rc3.5" in names
 
 
 # ---------------------------------------------------------------------------

@@ -20,7 +20,11 @@ jaxrens plotter -- so a render off the JSON cache never reopens the HDF5 file.
 """
 
 import numpy as np
-from alviz import Entry, JsonDict
+
+# ---------------------------------------------------------------------------
+# Panel specs (parameterized: per_run one-line-per-replica toggle).
+# ---------------------------------------------------------------------------
+from alviz import Entry, JsonDict, PanelSpec, register_panel
 
 
 class _AdaptationTracePanel(Entry):
@@ -114,3 +118,37 @@ class AdaptationAcceptancePanel(_AdaptationTracePanel):
         )
         self.ax.set_title("Move acceptance rate per move")
         self.ax.grid(alpha=0.3)
+
+
+class StepSizeSpec(PanelSpec):
+    type: str = "step_sizes"
+    per_run: bool = False
+
+
+class AdaptationAcceptanceSpec(PanelSpec):
+    type: str = "adaptation_acceptance"
+    per_run: bool = False
+
+
+def _build_step_sizes(spec, ctx, c):
+    if not ctx.adaptation:
+        return None
+    return StepSizePanel(
+        adaptation_file=ctx.adaptation, per_run=spec.per_run, **c
+    )
+
+
+def _build_adaptation_acceptance(spec, ctx, c):
+    if not ctx.adaptation:
+        return None
+    return AdaptationAcceptancePanel(
+        adaptation_file=ctx.adaptation, per_run=spec.per_run, **c
+    )
+
+
+register_panel("step_sizes", StepSizeSpec, _build_step_sizes)
+register_panel(
+    "adaptation_acceptance",
+    AdaptationAcceptanceSpec,
+    _build_adaptation_acceptance,
+)

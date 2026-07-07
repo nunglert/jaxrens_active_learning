@@ -175,6 +175,33 @@ def test_apply_config_noop_without_file(tmp_path):
     assert apply_config(parser, argv, args, logging.getLogger("t")) is args
 
 
+def test_apply_config_extracts_panel_keys(tmp_path, caplog):
+    """add/disable/global are handled specially, not warned as unknown."""
+    import logging
+
+    from jaxrens_al.cli import _build_parser
+
+    (tmp_path / "AL_progress.json").write_text("[]")
+    (tmp_path / "dashboard.yaml").write_text(
+        "global:\n  width: 6.0\n"
+        "disable: [ns_thermodynamics]\n"
+        "add:\n"
+        "  - {type: steinhardt_expectation, r_cut: 3.5, l: 6}\n"
+    )
+    parser = _build_parser()
+    argv = [str(tmp_path)]
+    args = parser.parse_args(argv)
+    with caplog.at_level(logging.WARNING):
+        args = apply_config(parser, argv, args, logging.getLogger("t"))
+    # global block merged into a flat key.
+    assert args.width == 6.0
+    # panel keys stashed raw, not warned about.
+    assert "add" not in caplog.text and "disable" not in caplog.text
+    raw = args.panel_config_raw
+    assert raw["disable"] == ["ns_thermodynamics"]
+    assert raw["add"][0]["l"] == 6
+
+
 def test_apply_config_custom_positional_and_run_dir(tmp_path):
     """Section subcommands discover a config beside a non-'path' positional."""
     import argparse

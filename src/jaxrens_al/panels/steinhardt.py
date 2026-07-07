@@ -44,7 +44,11 @@ from pathlib import Path
 from typing import Optional, Sequence
 
 import numpy as np
-from alviz import Entry, JsonDict
+
+# ---------------------------------------------------------------------------
+# Panel spec (parameterized + repeatable: several l / r_cut at once).
+# ---------------------------------------------------------------------------
+from alviz import Entry, JsonDict, PanelSpec, register_panel
 from alviz.panels import HeatmapData, HeatmapPanel, heatmap_pcolormesh
 
 from jaxrens_al.panels.processing import ProcessingConsumer, ProcessingNeed
@@ -619,3 +623,51 @@ class SteinhardtExpectationHeatmap(ProcessingConsumer, HeatmapPanel):
         )
         if d.quantity:
             self.ax.set_title(d.quantity)
+
+
+class SteinhardtSpec(PanelSpec):
+    """One NS Steinhardt <q_l>(T) heatmap; repeatable at different l / r_cut.
+
+    ``swap_axes`` / ``k_B`` / ``temperatures`` are NS-global settings a panel
+    opts into: left unset they inherit the run-global value (via
+    ``alviz.apply_globals``); set here they override just this instance.
+    """
+
+    type: str = "steinhardt_expectation"
+    r_cut: float
+    l: int = 6
+    r_cut_min: float = 0.0
+    param: str = "q"
+    swap_axes: bool | None = None
+    k_B: float | None = None
+    temperatures: list | None = None
+
+
+def _steinhardt_name(spec):
+    """Param-keyed name so several instances never collide (cache/grid slot)."""
+    if spec.name:
+        return spec.name
+    return f"steinhardt_{spec.param}{spec.l}_rc{spec.r_cut:g}"
+
+
+def _build_steinhardt(spec, ctx, c):
+    if not (ctx.ns_dirs and not ctx.is_summary):
+        return None
+    # swap_axes / k_B / temperatures are filled from the run globals unless the
+    # spec overrode them (see apply_globals); paths stay from the context.
+    return SteinhardtExpectationHeatmap(
+        result_dirs=ctx.ns_dirs,
+        prefix=ctx.ns_prefix,
+        r_cut=spec.r_cut,
+        r_cut_min=spec.r_cut_min,
+        l=spec.l,
+        param=spec.param,
+        temperatures=spec.temperatures,
+        k_B=spec.k_B,
+        swap_axes=spec.swap_axes,
+        name=_steinhardt_name(spec),
+        **c,
+    )
+
+
+register_panel("steinhardt_expectation", SteinhardtSpec, _build_steinhardt)

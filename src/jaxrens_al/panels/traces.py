@@ -13,7 +13,11 @@ cached JSON and the PDF panel stay light.
 
 import matplotlib.pyplot as plt
 import numpy as np
-from alviz import Entry, JsonDict
+
+# ---------------------------------------------------------------------------
+# Panel spec: this panel wired from a RunContext (see jaxrens_al.panel_specs).
+# ---------------------------------------------------------------------------
+from alviz import Entry, JsonDict, register_simple
 
 # Cap on points plotted per replica -- the dead-point log is far denser than a
 # PDF panel needs.
@@ -96,3 +100,14 @@ class NSEnergyTracePanel(Entry):
         self.ax.grid(alpha=0.3)
         if 0 < len(traces) <= 10:
             self.ax.legend(fontsize=6, ncol=2)
+
+
+def _build_ns_energy_trace(ctx, c):
+    if ctx.ns_dirs and not ctx.is_summary:
+        return NSEnergyTracePanel(
+            result_dirs=ctx.ns_dirs, prefix=ctx.ns_prefix, **c
+        )
+    return None
+
+
+register_simple("ns_energy_trace", _build_ns_energy_trace)

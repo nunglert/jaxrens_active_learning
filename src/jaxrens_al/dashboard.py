@@ -25,31 +25,7 @@ from pathlib import Path
 from typing import Optional
 
 from alviz import Dashboard
-from alviz.panels import (
-    ExtxyzEnergyErrorPanel,
-    ExtxyzParityPanel,
-    ExtxyzSampledEnergyVolume,
-)
 
-from jaxrens_al.panels import (
-    AdaptationAcceptancePanel,
-    AtomicEnvsPanel,
-    DatasetGrowthPanel,
-    EquationOfStatePanel,
-    MaceTrainingCurve,
-    ModelParityPanel,
-    MoveAcceptancePanel,
-    NeuralILParityPanel,
-    NeuralILTrainingCurve,
-    NSEnergyTracePanel,
-    NSSampledEnergyPanel,
-    NSThermodynamicsHeatmap,
-    QuestsPCAPanel,
-    ResampledGridPanel,
-    RESwapAcceptancePanel,
-    SteinhardtExpectationHeatmap,
-    StepSizePanel,
-)
 from jaxrens_al.run_layout import (
     acc_rates_file,
     adaptation_file,
@@ -80,23 +56,6 @@ REF_FORCES_KEY = "REF_forces"
 # is preserved through the evaluator, so evaluated (DFT) configs carry *both*
 # the reference and this surrogate -> a "how far off was the sampler" parity.
 SURROGATE_ENERGY_KEY = "ns_energy"
-
-
-def _first_has_info_key(files, key) -> bool:
-    """True if the first config of ``files`` carries ``key`` in its info.
-
-    A cheap header-peek so :func:`assemble` only registers the surrogate-vs-DFT
-    parity panels when the surrogate key is actually present (a panel that read
-    a missing key would raise at compute time). Any read error -> False.
-    """
-    if not files:
-        return False
-    try:
-        from ase.io import read
-
-        return key in read(str(files[0]), index=0).info
-    except Exception:
-        return False
 
 
 # ---------------------------------------------------------------------------
@@ -239,166 +198,42 @@ def iteration_context(
 # ---------------------------------------------------------------------------
 # Assemble + select: the one builder for both views.
 # ---------------------------------------------------------------------------
-def assemble(ctx: RunContext) -> list:
+def assemble(ctx: RunContext, *, panel_config=None) -> list:
     """Panels whose inputs exist in ``ctx`` (summary or single iteration).
 
-    Each entry is built only when its artifact is present; ``None`` entries are
-    dropped. ``dataset_growth`` is cumulative, so it is summary-only; the
-    sampled-energy panel reads the whole run in summary mode and one
-    iteration's configs per page.
+    Builds the curated default spec list (:func:`panel_specs.default_specs`,
+    in historical render order) and lets a ``panel_config`` layer on top --
+    ``{"disable": [...], "add": [PanelSpec...], "panels": [PanelSpec...]}`` (see
+    ``alviz.resolve_panel_list``). Steinhardt is opt-in: ``ctx.steinhardt`` (set
+    by ``--steinhardt-rcut``) becomes an ``add`` spec. Each spec's builder
+    self-gates on its inputs, so absent-input / wrong-view panels drop out and
+    the grid auto-sizes -- exactly as the old hand-wired ``assemble`` did.
     """
-    c = ctx.common
+    from alviz import build_entries, resolve_panel_list
 
-    # The surrogate-vs-DFT parity/error panels (from dft_dashboard) only apply
-    # when the evaluated configs carry the sampler's surrogate energy too.
-    has_surrogate = _first_has_info_key(
-        ctx.eval_files, ctx.surrogate_energy_key
+    from jaxrens_al.panel_specs import (
+        apply_ctx_globals,
+        default_specs,
+        steinhardt_add_specs,
     )
 
-    if not ctx.sampled_files:
-        sampled_panel = None
-    elif ctx.is_summary:
-        sampled_panel = NSSampledEnergyPanel(calchome=ctx.calchome, **c)
-    else:
-        sampled_panel = NSSampledEnergyPanel(
-            config_files=ctx.sampled_files,
-            iteration_index=ctx.iteration,
-            **c,
-        )
-
-    panels = [
-        # Training-set growth -- cumulative, so summary-only.
-        DatasetGrowthPanel(calchome=ctx.calchome, **c)
-        if ctx.is_summary
-        else None,
-        # Evaluated (DFT) energy/forces/volume distribution.
-        ExtxyzSampledEnergyVolume(
-            config_files=ctx.eval_files,
-            energy_key=REF_ENERGY_KEY,
-            forces_key=REF_FORCES_KEY,
-            **c,
-        )
-        if ctx.eval_files
-        else None,
-        # Surrogate (sampler) energy vs DFT reference on the evaluated configs
-        # -- "how far off was the sampler's model" (from dft_dashboard). Only
-        # when the surrogate energy survived into the evaluator output.
-        ExtxyzParityPanel(
-            config_files=ctx.eval_files,
-            energy_ref_key=REF_ENERGY_KEY,
-            energy_pred_key=ctx.surrogate_energy_key,
-            show_forces=False,
-            **c,
-        )
-        if has_surrogate
-        else None,
-        ExtxyzEnergyErrorPanel(
-            config_files=ctx.eval_files,
-            energy_ref_key=REF_ENERGY_KEY,
-            energy_pred_key=ctx.surrogate_energy_key,
-            **c,
-        )
-        if has_surrogate
-        else None,
-        # Sampled NS-energy distribution (built above; differs per view).
-        sampled_panel,
-        # QUESTS resampling map (per iteration; only when the selector ran).
-        QuestsPCAPanel(pca_json=ctx.quests_pca, **c)
-        if ctx.quests_pca
-        else None,
-        # Resampled configs on a (NS iteration, replica) grid.
-        ResampledGridPanel(provenance_json=ctx.resampled_provenance, **c)
-        if ctx.resampled_provenance
-        else None,
-        # Per-move MCMC acceptance rates over the NS run (.acc_rates.h5).
-        MoveAcceptancePanel(acc_rates_file=ctx.acc_rates, **c)
-        if ctx.acc_rates
-        else None,
-        # Adaptive step size + its acceptance, from the .adaptation.h5 trace.
-        StepSizePanel(adaptation_file=ctx.adaptation, **c)
-        if ctx.adaptation
-        else None,
-        AdaptationAcceptancePanel(adaptation_file=ctx.adaptation, **c)
-        if ctx.adaptation
-        else None,
-        # Dead-point energy vs iteration, one line per replica (per page).
-        NSEnergyTracePanel(result_dirs=ctx.ns_dirs, prefix=ctx.ns_prefix, **c)
-        if (ctx.ns_dirs and not ctx.is_summary)
-        else None,
-        # Inter-replica-exchange swap acceptance, per replica pair.
-        RESwapAcceptancePanel(re_stats_file=ctx.re_stats, **c)
-        if ctx.re_stats
-        else None,
-        # Per-atom environment PCA of this iteration's sampled configs.
-        AtomicEnvsPanel(config_files=ctx.sampled_files, **c)
-        if (ctx.sampled_files and not ctx.is_summary)
-        else None,
-        # Equation of state: this iteration's model on reference phase scans.
-        EquationOfStatePanel(
-            references=ctx.eos_reference,
-            model_file=ctx.model_file,
-            backend_type=ctx.eos_backend,
-            **c,
-        )
-        if (ctx.eos_reference and ctx.model_file)
-        else None,
-        # NeuralIL parity from the trainer's .npz bundles.
-        NeuralILParityPanel(npz_files=ctx.npz_files, **c)
-        if ctx.npz_files
-        else None,
-        # Trained-model parity by re-scoring this iteration's DFT-labelled
-        # configs -- for a trainer with no .npz bundle (MACE). Needs a model,
-        # so per-iteration only (like EOS); backend from --eos-backend.
-        ModelParityPanel(
-            config_files=ctx.eval_files,
-            model_file=ctx.model_file,
-            backend_type=ctx.eos_backend,
-            energy_ref_key=REF_ENERGY_KEY,
-            forces_ref_key=REF_FORCES_KEY,
-            **c,
-        )
-        if (ctx.model_file and ctx.eval_files and not ctx.npz_files)
-        else None,
-        # NeuralIL training-error curve from error_*.txt.
-        NeuralILTrainingCurve(error_files=ctx.error_files, **c)
-        if ctx.error_files
-        else None,
-        # MACE(-finetuning) validation-error curve from *_train.txt logs.
-        MaceTrainingCurve(train_logs=ctx.mace_logs, **c)
-        if ctx.mace_logs
-        else None,
-        # NS heat capacity vs T (needs .energies + .final.checkpoint.h5).
-        NSThermodynamicsHeatmap(
-            result_dirs=ctx.ns_dirs,
-            quantity="heat_capacity",
-            temperatures=ctx.ns_temperatures,
-            k_B=ctx.ns_k_B,
-            prefix=ctx.ns_prefix,
-            swap_axes=ctx.ns_swap_axes,
-            **c,
-        )
-        if ctx.ns_dirs
-        else None,
-        # NS Steinhardt <q_l>(T) heatmap -- reweights per-dead-point q_l onto
-        # the T grid like heat capacity. Per iteration (needs this iteration's
-        # trajectories); the panel declares a processing need the CLI resolves
-        # before rendering. Opt-in via --steinhardt-rcut.
-        SteinhardtExpectationHeatmap(
-            result_dirs=ctx.ns_dirs,
-            prefix=ctx.ns_prefix,
-            r_cut=ctx.steinhardt["r_cut"],
-            r_cut_min=ctx.steinhardt.get("r_cut_min", 0.0),
-            l=ctx.steinhardt.get("l", 6),
-            param="q",
-            temperatures=ctx.ns_temperatures,
-            k_B=ctx.ns_k_B,
-            swap_axes=ctx.ns_swap_axes,
-            **c,
-        )
-        if (ctx.steinhardt and ctx.ns_dirs and not ctx.is_summary)
-        else None,
-    ]
-    return [p for p in panels if p is not None]
+    cfg = panel_config or {}
+    add = list(cfg.get("add") or []) + steinhardt_add_specs(ctx)
+    specs = resolve_panel_list(
+        default_specs(ctx),
+        panels=cfg.get("panels"),
+        add=add,
+        disable=cfg.get("disable"),
+    )
+    # Each spec inherits unset global settings (swap_axes/k_B/temperatures)
+    # from the context; explicit per-panel values survive.
+    specs = apply_ctx_globals(specs, ctx)
+    return build_entries(
+        specs,
+        ctx,
+        datapath=ctx.datapath,
+        force_recompute=ctx.force_recompute,
+    )
 
 
 def build_dashboard(
@@ -476,6 +311,7 @@ def build_iteration_dashboard(
     ns_swap_axes: bool = False,
     ns_temperatures=None,
     steinhardt=None,
+    panel_config=None,
     compute: bool = True,
     only=None,
     exclude=None,
@@ -513,7 +349,7 @@ def build_iteration_dashboard(
         force_recompute=force_recompute,
     )
     board = Dashboard.from_entries(
-        assemble(ctx),
+        assemble(ctx, panel_config=panel_config),
         ncols=ncols,
         width_per_panel=width_per_panel,
         height_per_panel=height_per_panel,

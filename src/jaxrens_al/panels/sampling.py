@@ -11,7 +11,11 @@ stays pure (ase + numpy).
 """
 
 import numpy as np
-from alviz import Entry, JsonDict
+
+# ---------------------------------------------------------------------------
+# Panel spec.
+# ---------------------------------------------------------------------------
+from alviz import Entry, JsonDict, register_simple
 
 from jaxrens_al.run_layout import sampled_configs_per_iteration
 
@@ -127,3 +131,16 @@ class NSSampledEnergyPanel(Entry):
         self.ax.set_xlabel("AL iteration")
         self.ax.set_ylabel(f"sampled $E$ ({unit})")
         self.ax.set_title("Sampled-energy distribution")
+
+
+def _build_sampled_ns_energy(ctx, c):
+    if not ctx.sampled_files:
+        return None
+    if ctx.is_summary:
+        return NSSampledEnergyPanel(calchome=ctx.calchome, **c)
+    return NSSampledEnergyPanel(
+        config_files=ctx.sampled_files, iteration_index=ctx.iteration, **c
+    )
+
+
+register_simple("sampled_ns_energy", _build_sampled_ns_energy)

@@ -12,7 +12,11 @@ the result as JSON, so later renders just reload it.
 """
 
 import numpy as np
-from alviz import Entry, JsonDict
+
+# ---------------------------------------------------------------------------
+# Panel specs.
+# ---------------------------------------------------------------------------
+from alviz import Entry, JsonDict, register_simple
 
 
 class MoveAcceptancePanel(Entry):
@@ -129,3 +133,23 @@ class RESwapAcceptancePanel(Entry):
         plot_re_acceptance_stacked(re_log, ax=self.ax)
         self.ax.grid(alpha=0.3)
         self.ax.set_title(f"RE swap acceptance ({flavor}, stacked)")
+
+
+def _build_acceptance_rates(ctx, c):
+    return (
+        MoveAcceptancePanel(acc_rates_file=ctx.acc_rates, **c)
+        if ctx.acc_rates
+        else None
+    )
+
+
+def _build_re_swap_rates(ctx, c):
+    return (
+        RESwapAcceptancePanel(re_stats_file=ctx.re_stats, **c)
+        if ctx.re_stats
+        else None
+    )
+
+
+register_simple("acceptance_rates", _build_acceptance_rates)
+register_simple("re_swap_rates", _build_re_swap_rates)

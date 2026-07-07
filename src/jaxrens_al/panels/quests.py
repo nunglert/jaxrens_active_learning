@@ -17,7 +17,11 @@ ignorant of the run layout.
 import json
 
 import numpy as np
-from alviz import Entry, JsonDict
+
+# ---------------------------------------------------------------------------
+# Panel specs.
+# ---------------------------------------------------------------------------
+from alviz import Entry, JsonDict, register_simple
 
 
 class QuestsPCAPanel(Entry):
@@ -130,12 +134,30 @@ class ResampledGridPanel(Entry):
         iters = self.data["iters"]
         run_ids = self.data["run_ids"]
         if iters:
-            self.ax.scatter(
-                iters, run_ids, s=18, c="tab:red", alpha=0.7
-            )
+            self.ax.scatter(iters, run_ids, s=18, c="tab:red", alpha=0.7)
             # One integer tick per replica that actually appears.
             unique_runs = sorted(set(run_ids))
             self.ax.set_yticks(unique_runs)
         self.ax.set_xlabel("NS iteration")
         self.ax.set_ylabel("replica (run_id)")
         self.ax.set_title("Resampled configs")
+
+
+def _build_quests_pca(ctx, c):
+    return (
+        QuestsPCAPanel(pca_json=ctx.quests_pca, **c)
+        if ctx.quests_pca
+        else None
+    )
+
+
+def _build_resampled_grid(ctx, c):
+    if ctx.resampled_provenance:
+        return ResampledGridPanel(
+            provenance_json=ctx.resampled_provenance, **c
+        )
+    return None
+
+
+register_simple("quests_pca", _build_quests_pca)
+register_simple("resampled_grid", _build_resampled_grid)

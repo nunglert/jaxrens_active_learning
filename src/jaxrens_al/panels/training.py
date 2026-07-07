@@ -25,7 +25,11 @@ Four panels read what a trainer leaves on disk:
 import re
 
 import numpy as np
-from alviz import Entry, JsonDict
+
+# ---------------------------------------------------------------------------
+# Panel specs.
+# ---------------------------------------------------------------------------
+from alviz import Entry, JsonDict, register_simple
 from alviz.panels import ParityData, ParityPanel
 
 
@@ -458,3 +462,52 @@ class MaceTrainingCurve(Entry):
             )
             if np.nanmin(f_err) > 0:
                 ax2.set_yscale("log")
+
+
+_REF_ENERGY_KEY = "REF_energy"
+_REF_FORCES_KEY = "REF_forces"
+
+
+def _build_neuralil_parity(ctx, c):
+    return (
+        NeuralILParityPanel(npz_files=ctx.npz_files, **c)
+        if ctx.npz_files
+        else None
+    )
+
+
+def _build_model_parity(ctx, c):
+    # Only when there is no NeuralIL .npz bundle (MACE) -- else neuralil_parity
+    # already shows real predicted-vs-ref parity.
+    if ctx.model_file and ctx.eval_files and not ctx.npz_files:
+        return ModelParityPanel(
+            config_files=ctx.eval_files,
+            model_file=ctx.model_file,
+            backend_type=ctx.eos_backend,
+            energy_ref_key=_REF_ENERGY_KEY,
+            forces_ref_key=_REF_FORCES_KEY,
+            **c,
+        )
+    return None
+
+
+def _build_neuralil_training_curve(ctx, c):
+    return (
+        NeuralILTrainingCurve(error_files=ctx.error_files, **c)
+        if ctx.error_files
+        else None
+    )
+
+
+def _build_mace_training_curve(ctx, c):
+    return (
+        MaceTrainingCurve(train_logs=ctx.mace_logs, **c)
+        if ctx.mace_logs
+        else None
+    )
+
+
+register_simple("neuralil_parity", _build_neuralil_parity)
+register_simple("model_parity", _build_model_parity)
+register_simple("neuralil_training_curve", _build_neuralil_training_curve)
+register_simple("mace_training_curve", _build_mace_training_curve)

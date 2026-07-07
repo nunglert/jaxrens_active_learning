@@ -143,6 +143,7 @@ def run_ns(argv: list[str] | None = None, prog: str | None = None) -> int:
     import numpy as np
     from alviz import Dashboard
 
+    from jaxrens_al.panel_specs import parse_panel_config
     from jaxrens_al.sections import ns_section
 
     # Default the PDF (and its data cache) one dir *above* the NS output dir,
@@ -170,6 +171,9 @@ def run_ns(argv: list[str] | None = None, prog: str | None = None) -> int:
         swap_axes=args.swap_pt,
         per_run=args.per_run,
         steinhardt=steinhardt_params(args),
+        panel_config=parse_panel_config(
+            getattr(args, "panel_config_raw", None)
+        ),
         **common,
     )
 

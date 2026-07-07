@@ -20,6 +20,11 @@ stack their replicas into one grid.
 """
 
 import numpy as np
+
+# ---------------------------------------------------------------------------
+# Panel spec (parameterized: which thermodynamic quantity).
+# ---------------------------------------------------------------------------
+from alviz import PanelSpec, register_panel
 from alviz.panels import HeatmapData, HeatmapPanel, heatmap_pcolormesh
 
 _QUANTITIES = ("heat_capacity", "volume")
@@ -142,3 +147,30 @@ class NSThermodynamicsHeatmap(HeatmapPanel):
         )
         if d.quantity:
             self.ax.set_title(d.quantity)
+
+
+class ThermodynamicsSpec(PanelSpec):
+    type: str = "ns_thermodynamics"
+    quantity: str = "heat_capacity"
+    # NS-global settings a panel opts into; unset -> inherit the run global
+    # (alviz.apply_globals), set -> override this instance.
+    swap_axes: bool | None = None
+    k_B: float | None = None
+    temperatures: list | None = None
+
+
+def _build_thermodynamics(spec, ctx, c):
+    if not ctx.ns_dirs:
+        return None
+    return NSThermodynamicsHeatmap(
+        result_dirs=ctx.ns_dirs,
+        quantity=spec.quantity,
+        temperatures=spec.temperatures,
+        k_B=spec.k_B,
+        prefix=ctx.ns_prefix,
+        swap_axes=spec.swap_axes,
+        **c,
+    )
+
+
+register_panel("ns_thermodynamics", ThermodynamicsSpec, _build_thermodynamics)

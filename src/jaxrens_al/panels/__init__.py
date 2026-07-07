@@ -6,6 +6,10 @@ reads a remote_handler/jaxrens run's artifacts. Generic, reusable panels (the
 ``Extxyz*`` readers) belong in ``alviz.panels`` instead.
 """
 
+# Importing each panel module above ran its ``register_panel`` call, so the
+# panel registry is populated by importing this package. ``dft_config`` holds
+# the specs for the generic Extxyz panels (no jaxrens class of their own).
+from jaxrens_al.panels import dft_config  # noqa: F401
 from jaxrens_al.panels.acceptance import (
     MoveAcceptancePanel,
     RESwapAcceptancePanel,

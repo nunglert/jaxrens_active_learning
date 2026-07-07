@@ -33,6 +33,29 @@ from jaxrens_al.cli_args import (
 logger = logging.getLogger(__name__)
 
 
+# Appended to `init-config al|ns` output: the structured panel-config block,
+# commented out. The flat keys above are the `global` settings; these three keys
+# add/remove/replace panels (parsed against the panel registry).
+_PANEL_CONFIG_EXAMPLE = """
+# --- panels (optional) -----------------------------------------------------
+# The keys above are global settings. Below, layer the panel set: `disable`
+# drops curated defaults by name; `add` appends extra panels (a list, so a
+# panel type can repeat -- e.g. several Steinhardt heatmaps at different l /
+# r_cut, each auto-named steinhardt_q<l>_rc<r_cut>); `panels` (not shown) is an
+# authoritative list that replaces the curated defaults entirely.
+#
+# A panel inherits the global settings above (swap-pt, k-B, temperatures)
+# unless it sets that field itself -- so an `add` entry can override just one
+# instance (e.g. swap_axes below).
+#
+# disable: [ns_thermodynamics]
+# add:
+#   - {type: steinhardt_expectation, r_cut: 3.5, l: 6}
+#   - {type: steinhardt_expectation, r_cut: 3.5, l: 4, swap_axes: false}
+#   - {type: steinhardt_expectation, r_cut: 3.0, l: 6}
+"""
+
+
 def _run_init_config(argv: list[str] | None) -> int:
     """``init-config <flavor>`` -- write a starter config for a parser flavor.
 
@@ -84,6 +107,8 @@ def _run_init_config(argv: list[str] | None) -> int:
         title = f"jaxrens-al-dashboard {args.flavor}"
 
     text = dump_config(parser, title=title)
+    if args.flavor in ("al", "ns"):
+        text += _PANEL_CONFIG_EXAMPLE
     if args.output:
         out = Path(args.output)
         if out.exists() and not args.force:
@@ -353,6 +378,12 @@ def main(argv: list[str] | None = None) -> int:
     T = np.linspace(args.tmin, args.tmax, args.n_T)
     steinhardt = steinhardt_params(args)
 
+    # A config's structured panel keys (add / disable / panels), parsed into
+    # specs against the panel registry; layered onto every iteration page.
+    from jaxrens_al.panel_specs import parse_panel_config
+
+    panel_config = parse_panel_config(getattr(args, "panel_config_raw", None))
+
     def _page(index, *, compute):
         dp = datapath / str(index)
         dp.mkdir(parents=True, exist_ok=True)
@@ -375,6 +406,7 @@ def main(argv: list[str] | None = None) -> int:
             ns_k_B=args.k_B,
             ns_temperatures=T,
             steinhardt=steinhardt,
+            panel_config=panel_config,
         )
 
     def _section_board(entries):

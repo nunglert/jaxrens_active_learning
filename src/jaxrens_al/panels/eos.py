@@ -14,7 +14,11 @@ seam so unit tests need neither jaxrens nor a real model.
 """
 
 import numpy as np
-from alviz import Entry, JsonDict
+
+# ---------------------------------------------------------------------------
+# Panel spec.
+# ---------------------------------------------------------------------------
+from alviz import Entry, JsonDict, register_simple
 
 # 1 eV / Angstrom^3 expressed in GPa.
 _EVA3_TO_GPA = 160.21766208
@@ -224,3 +228,17 @@ class EquationOfStatePanel(Entry):
         self.ax_dh.set_xlabel(r"$P$ [GPa]")
         self.ax_dh.set_ylabel(r"$H - H_{\mathrm{ref}}$ [eV/atom]")
         self.ax_dh.set_title(r"$\Delta H(P)$")
+
+
+def _build_eos(ctx, c):
+    if ctx.eos_reference and ctx.model_file:
+        return EquationOfStatePanel(
+            references=ctx.eos_reference,
+            model_file=ctx.model_file,
+            backend_type=ctx.eos_backend,
+            **c,
+        )
+    return None
+
+
+register_simple("eos", _build_eos)

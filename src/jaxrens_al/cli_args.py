@@ -116,6 +116,13 @@ def apply_config(
     may also be a *sequence* of dirs, tried in order (the NS subcommand passes
     the input dir and its parent, since the PDF defaults one level up -- so a
     config beside either is found).
+
+    Beyond the flat argparse-dest keys, the config may carry the structured
+    **panel** keys ``add`` / ``disable`` / ``panels`` (and an optional
+    ``global:`` block that is merged into the flat keys). These are not argparse
+    options; the raw (unparsed) mapping is stashed on the returned args as
+    ``panel_config_raw`` for the caller to turn into panel specs (via the
+    project's panel registry -- kept out of this argparse-only module).
     """
     if run_dir is None:
         run_dir = getattr(args, positional)
@@ -133,6 +140,16 @@ def apply_config(
     cfg = load_config(path)
     cfg.pop(positional, None)
     cfg.pop("config", None)
+
+    # Structured panel keys live outside the flat argparse namespace.
+    panel_raw = {k: cfg.pop(k, None) for k in ("add", "disable", "panels")}
+    # A ``global:`` block is an alias for the flat keys (both forms work); an
+    # explicit flat key wins over the block.
+    block = cfg.pop("global", None)
+    if isinstance(block, dict):
+        for k, v in block.items():
+            cfg.setdefault(str(k).replace("-", "_"), v)
+
     valid = {a.dest for a in parser._actions}
     unknown = sorted(set(cfg) - valid)
     if unknown:
@@ -144,7 +161,10 @@ def apply_config(
     cfg = {k: v for k, v in cfg.items() if k in valid}
     parser.set_defaults(**cfg)
     logger.info("Applied dashboard config %s (%d setting(s)).", path, len(cfg))
-    return parser.parse_args(argv)
+    new_args = parser.parse_args(argv)
+    if any(v is not None for v in panel_raw.values()):
+        new_args.panel_config_raw = panel_raw
+    return new_args
 
 
 def _config_value_repr(v) -> str:
