@@ -12,6 +12,7 @@ import argparse
 import pytest
 
 from jaxrens_al.cli_args import (
+    add_config_arg,
     add_output_args,
     add_processing_args,
     add_ref_key_args,
@@ -171,3 +172,33 @@ def test_apply_config_noop_without_file(tmp_path):
     args = parser.parse_args(argv)
     # No dashboard.* present -> args returned unchanged.
     assert apply_config(parser, argv, args, logging.getLogger("t")) is args
+
+
+def test_apply_config_custom_positional_and_run_dir(tmp_path):
+    """Section subcommands discover a config beside a non-'path' positional."""
+    import argparse
+    import logging
+
+    out = tmp_path / "output"
+    out.mkdir()
+    (out / "dashboard.yaml").write_text("prefix: mace_sn16\n")
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("output_dir")
+    parser.add_argument("--prefix", default="ns")
+    add_config_arg(parser)
+
+    argv = [str(out)]
+    args = parser.parse_args(argv)
+    args = apply_config(
+        parser,
+        argv,
+        args,
+        logging.getLogger("t"),
+        run_dir=out,
+        positional="output_dir",
+    )
+    # Config beside the input dir supplies the prefix; the positional itself is
+    # never overridden from the config.
+    assert args.prefix == "mace_sn16"
+    assert args.output_dir == str(out)

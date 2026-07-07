@@ -83,12 +83,25 @@ def _setup_file_logging(log_file, calchome):
     return path
 
 
+# First-token subcommands that render a single raw artifact set instead of a
+# whole AL run. Dispatched in main() before the AL parser so bare
+# ``jaxrens-al-dashboard <calchome>`` stays the (backward-compatible) default.
+_SECTION_COMMANDS = ("ns", "dft", "training")
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="jaxrens-al-dashboard",
         description="Build an alviz dashboard PDF for a remote_handler "
         "active-learning run (a 'calchome' directory holding "
         "AL_progress.json).",
+        epilog="Section subcommands render a single raw artifact set (no "
+        "AL_progress.json needed):\n"
+        "  jaxrens-al-dashboard ns       <ns_output_dir>\n"
+        "  jaxrens-al-dashboard dft      <labelled.extxyz ...>\n"
+        "  jaxrens-al-dashboard training <results_dir>\n"
+        "Run 'jaxrens-al-dashboard <section> --help' for each.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
         "path",
@@ -181,6 +194,15 @@ def _build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     """Entry point. Returns a process exit code."""
     logging.basicConfig(level=logging.INFO, stream=sys.stdout)
+    if argv is None:
+        argv = sys.argv[1:]
+    # Section subcommands (ns/dft/training) render a single raw artifact set;
+    # dispatch to jaxrens_al.section_dashboards. Bare ``<calchome>`` (no known
+    # subcommand as the first token) falls through to the AL run flow below.
+    if argv and argv[0] in _SECTION_COMMANDS:
+        from jaxrens_al.section_dashboards import SECTION_COMMANDS
+
+        return SECTION_COMMANDS[argv[0]](argv[1:])
     _clear_file_logging()  # drop any log handler a previous run left attached
     parser = _build_parser()
     args = parser.parse_args(argv)

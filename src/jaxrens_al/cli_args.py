@@ -98,22 +98,31 @@ def add_config_arg(parser) -> None:
     )
 
 
-def apply_config(parser, argv, args, logger):
+def apply_config(
+    parser, argv, args, logger, *, run_dir=None, positional="path"
+):
     """Fold a config file's values in as defaults, return re-parsed ``args``.
 
     Resolves ``--config`` (else :func:`find_config` on the run dir), loads it,
-    drops unknown keys (with a warning) and the non-overridable ``path`` /
+    drops unknown keys (with a warning) and the non-overridable positional /
     ``config``, applies the rest via ``parser.set_defaults`` and re-parses --
     so a config supplies defaults while any CLI flag still wins. No-op (returns
     ``args`` unchanged) when no config is found.
+
+    ``run_dir`` is the directory a ``dashboard.*`` config is auto-discovered in
+    (default: the ``positional`` arg's value -- the AL CLI's calchome ``path``).
+    Section subcommands pass their input dir + positional name (``output_dir``,
+    ``results_dir``, ``config_files``) so a config drops beside the artifact.
     """
-    path = Path(args.config) if args.config else find_config(args.path)
+    if run_dir is None:
+        run_dir = getattr(args, positional)
+    path = Path(args.config) if args.config else find_config(run_dir)
     if path is None:
         return args
     if not path.is_file():
         raise FileNotFoundError(f"Config file not found: {path}")
     cfg = load_config(path)
-    cfg.pop("path", None)
+    cfg.pop(positional, None)
     cfg.pop("config", None)
     valid = {a.dest for a in parser._actions}
     unknown = sorted(set(cfg) - valid)
