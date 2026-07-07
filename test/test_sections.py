@@ -142,6 +142,22 @@ def test_dft_section_empty_files(tmp_path):
     assert dft_section([], datapath=tmp_path) == []
 
 
+def test_dft_section_panel_config_disable(tmp_path, write_configs):
+    # dft is on the registry now, so panel_config layers like ns/AL.
+    f = write_configs(
+        tmp_path / "e.extxyz",
+        4,
+        lambda i: {"REF_energy": -9.0 + 0.1 * i},
+        with_forces=True,
+    )
+    names = _names(
+        dft_section(
+            [f], datapath=tmp_path, panel_config={"disable": ["atomic_envs"]}
+        )
+    )
+    assert names == {"sampled_energy_volume"}
+
+
 # ---------------------------------------------------------------------------
 # training_section
 # ---------------------------------------------------------------------------

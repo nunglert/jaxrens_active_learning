@@ -27,7 +27,11 @@ from typing import Optional
 from alviz import Dashboard
 
 # Config keys live in one place -- jaxrens_al.keys.
-from jaxrens_al.keys import SURROGATE_ENERGY_KEY
+from jaxrens_al.keys import (
+    REF_ENERGY_KEY,
+    REF_FORCES_KEY,
+    SURROGATE_ENERGY_KEY,
+)
 from jaxrens_al.run_layout import (
     acc_rates_file,
     adaptation_file,
@@ -82,6 +86,8 @@ class RunContext:
     eos_reference: Optional[list] = None  # phase reference files
     model_file: Optional[Path] = None
     eos_backend: str = "neuralil"
+    energy_key: str = REF_ENERGY_KEY
+    forces_key: str = REF_FORCES_KEY
     surrogate_energy_key: str = SURROGATE_ENERGY_KEY
     iteration: Optional[int] = None
     ns_prefix: str = "ns"

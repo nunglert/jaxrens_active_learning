@@ -16,7 +16,7 @@ from alviz.panels import (
     ExtxyzSampledEnergyVolume,
 )
 
-from jaxrens_al.keys import REF_ENERGY_KEY, REF_FORCES_KEY, first_has_info_key
+from jaxrens_al.keys import first_has_info_key
 
 
 def _build_sampled_energy_volume(ctx, c):
@@ -24,8 +24,8 @@ def _build_sampled_energy_volume(ctx, c):
         return None
     return ExtxyzSampledEnergyVolume(
         config_files=ctx.eval_files,
-        energy_key=REF_ENERGY_KEY,
-        forces_key=REF_FORCES_KEY,
+        energy_key=ctx.energy_key,
+        forces_key=ctx.forces_key,
         **c,
     )
 
@@ -35,7 +35,7 @@ def _build_parity(ctx, c):
         return None
     return ExtxyzParityPanel(
         config_files=ctx.eval_files,
-        energy_ref_key=REF_ENERGY_KEY,
+        energy_ref_key=ctx.energy_key,
         energy_pred_key=ctx.surrogate_energy_key,
         show_forces=False,
         **c,
@@ -47,7 +47,7 @@ def _build_energy_error(ctx, c):
         return None
     return ExtxyzEnergyErrorPanel(
         config_files=ctx.eval_files,
-        energy_ref_key=REF_ENERGY_KEY,
+        energy_ref_key=ctx.energy_key,
         energy_pred_key=ctx.surrogate_energy_key,
         **c,
     )

@@ -28,6 +28,7 @@ __all__ = [
     "make_spec",
     "default_specs",
     "ns_default_specs",
+    "dft_default_specs",
     "apply_ctx_globals",
     "parse_panel_config",
 ]
@@ -88,6 +89,21 @@ def ns_default_specs(*, per_run: bool = False) -> list:
         make_spec("adaptation_acceptance", per_run=per_run),
         make_spec("re_swap_rates"),
         make_spec("sampled_ns_energy"),
+    ]
+
+
+def dft_default_specs() -> list:
+    """The DFT section's curated panels (one set of labelled configs), in order.
+
+    The energy/volume + descriptor-diversity views of the labelled set, plus the
+    surrogate-vs-reference parity/error (self-gated on the surrogate key being
+    present -- absent when ``surrogate_energy_key`` is None).
+    """
+    return [
+        make_spec("sampled_energy_volume"),
+        make_spec("atomic_envs"),
+        make_spec("parity"),
+        make_spec("energy_error"),
     ]
 
 

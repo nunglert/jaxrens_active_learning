@@ -482,7 +482,10 @@ def main(argv: list[str] | None = None) -> int:
             yield from _sec(
                 "DFT",
                 dft_section(
-                    eval_files, datapath=dp, force_recompute=args.force
+                    eval_files,
+                    panel_config=panel_config,
+                    datapath=dp,
+                    force_recompute=args.force,
                 ),
             )
 

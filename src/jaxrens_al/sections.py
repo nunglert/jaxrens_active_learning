@@ -27,17 +27,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from alviz.panels import (
-    ExtxyzEnergyErrorPanel,
-    ExtxyzParityPanel,
-    ExtxyzSampledEnergyVolume,
-)
+from alviz.panels import ExtxyzSampledEnergyVolume
 
 from jaxrens_al.keys import (
     REF_ENERGY_KEY,
     REF_FORCES_KEY,
     SURROGATE_ENERGY_KEY,
-    first_has_info_key,
 )
 from jaxrens_al.panels import (
     AtomicEnvsPanel,
@@ -139,6 +134,7 @@ def dft_section(
     energy_key: str = REF_ENERGY_KEY,
     forces_key: str = REF_FORCES_KEY,
     pred_energy_key: str | None = SURROGATE_ENERGY_KEY,
+    panel_config: dict | None = None,
     **common,
 ) -> list:
     """Panels describing one set of DFT-labelled configs.
@@ -148,39 +144,46 @@ def dft_section(
     sampler's surrogate energy, preserved through the evaluator), the
     surrogate-vs-reference parity/error panels are added too -- "how far off
     was the sampler's model". Pass ``pred_energy_key=None`` to skip that probe.
+
+    Built through the shared panel registry (like ``ns_section``): the labelled
+    configs are a single-iteration ``RunContext`` and ``panel_config``
+    (``disable``/``add``/``panels``) layers on top.
     """
     files = [Path(f) for f in files]
     if not files:
         return []
 
-    entries = [
-        # Energy / force / volume distributions of the labelled set.
-        ExtxyzSampledEnergyVolume(
-            config_files=files,
-            energy_key=energy_key,
-            forces_key=forces_key,
-            **common,
-        ),
-        # Descriptor diversity of the labelled set.
-        AtomicEnvsPanel(config_files=files, **common),
-    ]
-    if pred_energy_key and first_has_info_key(files, pred_energy_key):
-        entries += [
-            ExtxyzParityPanel(
-                config_files=files,
-                energy_ref_key=energy_key,
-                energy_pred_key=pred_energy_key,
-                show_forces=False,
-                **common,
-            ),
-            ExtxyzEnergyErrorPanel(
-                config_files=files,
-                energy_ref_key=energy_key,
-                energy_pred_key=pred_energy_key,
-                **common,
-            ),
-        ]
-    return entries
+    from alviz import build_entries, resolve_panel_list
+
+    from jaxrens_al.dashboard import RunContext
+    from jaxrens_al.panel_specs import apply_ctx_globals, dft_default_specs
+
+    ctx = RunContext(
+        calchome=files[0].parent,
+        datapath=Path(common["datapath"]),
+        iteration=0,  # single "iteration" -> is_summary is False
+        eval_files=files,  # sampled_energy_volume / parity / energy_error
+        sampled_files=files,  # atomic_envs reads sampled_files
+        energy_key=energy_key,
+        forces_key=forces_key,
+        # None -> the parity/error builders self-gate off (no surrogate probe).
+        surrogate_energy_key=pred_energy_key,
+        force_recompute=common.get("force_recompute", False),
+    )
+    cfg = panel_config or {}
+    specs = resolve_panel_list(
+        dft_default_specs(),
+        panels=cfg.get("panels"),
+        add=cfg.get("add"),
+        disable=cfg.get("disable"),
+    )
+    specs = apply_ctx_globals(specs, ctx)
+    return build_entries(
+        specs,
+        ctx,
+        datapath=ctx.datapath,
+        force_recompute=ctx.force_recompute,
+    )
 
 
 # ---------------------------------------------------------------------------

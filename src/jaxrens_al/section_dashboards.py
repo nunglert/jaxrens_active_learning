@@ -270,6 +270,7 @@ def run_dft(argv: list[str] | None = None, prog: str | None = None) -> int:
 
     from alviz import Dashboard
 
+    from jaxrens_al.panel_specs import parse_panel_config
     from jaxrens_al.sections import dft_section
 
     output = (
@@ -290,6 +291,9 @@ def run_dft(argv: list[str] | None = None, prog: str | None = None) -> int:
         energy_key=args.energy_key,
         forces_key=args.forces_key,
         pred_energy_key=None if args.no_parity else args.pred_energy_key,
+        panel_config=parse_panel_config(
+            getattr(args, "panel_config_raw", None)
+        ),
         **common,
     )
 
