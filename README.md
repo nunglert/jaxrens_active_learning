@@ -14,13 +14,13 @@ jaxrens_active_learning   ← this repo: the jaxrens NS Sampler + wiring + panel
 No package depends on another except this one, which depends on all of them.
 `alviz` and `remote_handler` never know about each other — this repo is the
 only place that bridges them. The concrete **nested-sampling Sampler lives
-here** (`jaxrens_al.sampler`), implementing `remote_handler`'s `Sampler`
+here** (`jaxrens_al.run.sampler`), implementing `remote_handler`'s `Sampler`
 interface for `jaxrens` — it does *not* use `remote_handler`'s own deprecated
 `NSTrajectorySampler`.
 
 ## What lives here
 
-- `jaxrens_al.sampler` — `JaxrensNSSampler`, the native nested-sampling
+- `jaxrens_al.run.sampler` — `JaxrensNSSampler`, the native nested-sampling
   `Sampler`. Per AL iteration it injects the freshly trained model into a
   `jaxrens` YAML config (`backend.checkpoint_path`), runs `jaxrens run` on the
   cluster via a `remote_handler` `SingleScriptTask`, and reads the resulting
@@ -28,7 +28,7 @@ interface for `jaxrens` — it does *not* use `remote_handler`'s own deprecated
 - `jaxrens_al.template_dir()` — directory of the shipped SLURM body template
   `body_jaxrens.sh.j2` (the `jaxrens run` job body). Copy it into your
   `REMOTE_HANDLER_SLURM_TEMPLATES` dir alongside your cluster header.
-- `jaxrens_al.run_layout` — reads a remote_handler run's artifacts
+- `jaxrens_al.dashboard.run_layout` — reads a remote_handler run's artifacts
   (`AL_progress.json` + the `calchome` tree). **Reads files only; does not
   import remote_handler** — the dashboard is coupled to the orchestrator's
   output *format*, not its code.
@@ -36,7 +36,7 @@ interface for `jaxrens` — it does *not* use `remote_handler`'s own deprecated
   dashboard for a run. Panels are registered **only when their inputs exist**,
   so a fresh/stub run yields a small board and a full run a richer one; the
   grid auto-sizes.
-- `jaxrens_al.panels` — project panels. Each takes an alviz skeleton (an
+- `jaxrens_al.dashboard.panels` — project panels. Each takes an alviz skeleton (an
   abstract `ParityPanel`/`HeatmapPanel`, or the base `Entry`) and equips it
   with computation that reads the run's artifacts. Generic `Extxyz*` readers
   belong in `alviz`. Current panels:
@@ -64,7 +64,7 @@ interface for `jaxrens` — it does *not* use `remote_handler`'s own deprecated
     volume vs temperature, via `jaxrens.postprocess.Monitor` on the NS
     `.energies` + `.final.checkpoint.h5` (NumPy postprocess — no JAX needed
     to build the dashboard).
-- `jaxrens_al.reference_db` — builds a **starting/reference structure
+- `jaxrens_al.run.reference_db` — builds a **starting/reference structure
   database** for iteration zero: fetch an element's experimentally observed
   phases from the Materials Project (`fetch_mp_elemental`), expand each into a
   cloud of rattled, volume-scaled supercells (`rattle_atoms`), and write an
@@ -87,7 +87,7 @@ The private dependencies are pinned in `pyproject.toml` as **SSH** git URLs:
 | `jaxrens` | GitHub (`nunglert/jaxrens`) | `[run]` |
 
 An extra `[refdb]` (`mp_api` + `pymatgen`) is needed only to fetch starting
-structures from the Materials Project via `jaxrens_al.reference_db`.
+structures from the Materials Project via `jaxrens_al.run.reference_db`.
 
 **Normal install (SSH keys)** — on any machine whose SSH keys are registered
 with GitLab (and GitHub, for `jaxrens`) — your laptop, a cluster like musica —
@@ -133,7 +133,7 @@ jaxrens-al-refdb Si si_start.extxyz --target-cutoff 3 \
 or programmatically:
 
 ```python
-from jaxrens_al.reference_db import build_reference_database
+from jaxrens_al.run.reference_db import build_reference_database
 
 configs = build_reference_database(
     "Si", target_cutoff=3.0, output="si_start.extxyz"
