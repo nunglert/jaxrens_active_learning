@@ -242,33 +242,15 @@ class EquationOfStatePanel(ReferenceConsumer, ModelEvalConsumer, Entry):
 
     def _evaluate(self, model_file, atoms_list) -> list:
         """Total energies (eV) of each structure under the model (seam)."""
-        from jaxrens.backends.loader import load_backend
-        from jaxrens.io.formats import ase_atoms_to_walker
+        from jaxrens_al.panels.model_eval import score_atoms
 
-        if self._backend_type == "mace":
-            backend = load_backend("mace", model_path=model_file)
-        else:
-            backend = load_backend(self._backend_type, pickle_file=model_file)
-
-        symbol_map = getattr(backend, "symbol_map", None)
-        if symbol_map is None:
-            from ase.data import chemical_symbols
-
-            symbol_map = {
-                chemical_symbols[int(z)]: i
-                for i, z in enumerate(backend.atomic_numbers)
-            }
-
-        energies = []
-        for atoms in atoms_list:
-            w = ase_atoms_to_walker(atoms, symbol_map)
-            energies.append(
-                float(
-                    backend(w.positions, w.types, w.cell, self._max_neighbors)[
-                        0
-                    ]
-                )
-            )
+        energies, _ = score_atoms(
+            model_file,
+            self._backend_type,
+            atoms_list,
+            want_forces=False,
+            max_neighbors=self._max_neighbors,
+        )
         return energies
 
     def allocate_panels(self, fig):

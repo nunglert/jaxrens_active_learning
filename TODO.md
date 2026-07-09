@@ -1,3 +1,4 @@
 - [ ] Parity plots in dashboard
 - [ ] EoS plots in dashboard
 - [ ] Clean root src dir, maybe new dashboard subpackage
+- [ ] score_atoms needs to automatically determine max_neighbors instead of hardcoding or requiring as input

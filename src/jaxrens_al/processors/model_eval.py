@@ -79,42 +79,26 @@ def run(atoms_list, args, calcpath=None):
     ``want_forces``, ``atoms.arrays[forces_key]`` (``(n_atoms, 3)``) -- the keys
     the EOS / model-parity reader panels expect.
     """
-    import numpy as np
-    from ase.data import chemical_symbols
-    from jaxrens.backends.base import eval_energy_and_forces
-    from jaxrens.backends.loader import load_backend
-    from jaxrens.io.formats import ase_atoms_to_walker
+    from jaxrens_al.panels.model_eval import score_atoms
 
     backend_type = args["backend"]
     model_path = _materialise_model(args, calcpath)
-    if backend_type == "mace":
-        backend = load_backend("mace", model_path=model_path)
-    else:
-        backend = load_backend(backend_type, pickle_file=model_path)
-
-    symbol_map = getattr(backend, "symbol_map", None)
-    if symbol_map is None:
-        symbol_map = {
-            chemical_symbols[int(z)]: i
-            for i, z in enumerate(backend.atomic_numbers)
-        }
-
     energy_key = args["energy_key"]
     forces_key = args.get("forces_key", "model_forces")
     want_forces = bool(args.get("want_forces", False))
     max_neighbors = int(args.get("max_neighbors", 50))
 
-    for atoms in atoms_list:
-        w = ase_atoms_to_walker(atoms, symbol_map)
+    energies, forces = score_atoms(
+        model_path,
+        backend_type,
+        atoms_list,
+        want_forces=want_forces,
+        max_neighbors=max_neighbors,
+    )
+    for i, atoms in enumerate(atoms_list):
+        atoms.info[energy_key] = energies[i]
         if want_forces:
-            res = eval_energy_and_forces(
-                backend, w.positions, w.types, w.cell, max_neighbors
-            )
-            atoms.info[energy_key] = float(res.energy)
-            atoms.new_array(forces_key, np.asarray(res.forces, dtype=float))
-        else:
-            res = backend(w.positions, w.types, w.cell, max_neighbors)
-            atoms.info[energy_key] = float(res[0])
+            atoms.new_array(forces_key, forces[i])
     return atoms_list
 
 

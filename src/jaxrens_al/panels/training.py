@@ -221,42 +221,15 @@ class ModelParityPanel(ModelEvalConsumer, ParityPanel):
         (eV); ``forces`` a list of ``(n_atoms, 3)`` arrays, or ``None`` when
         ``show_forces`` is off.
         """
-        from ase.data import chemical_symbols
-        from jaxrens.backends.base import eval_energy_and_forces
-        from jaxrens.backends.loader import load_backend
-        from jaxrens.io.formats import ase_atoms_to_walker
+        from jaxrens_al.panels.model_eval import score_atoms
 
-        if self._backend_type == "mace":
-            backend = load_backend("mace", model_path=model_file)
-        else:
-            backend = load_backend(self._backend_type, pickle_file=model_file)
-
-        symbol_map = getattr(backend, "symbol_map", None)
-        if symbol_map is None:
-            symbol_map = {
-                chemical_symbols[int(z)]: i
-                for i, z in enumerate(backend.atomic_numbers)
-            }
-
-        energies, forces = [], []
-        for atoms in atoms_list:
-            w = ase_atoms_to_walker(atoms, symbol_map)
-            if self._show_forces:
-                res = eval_energy_and_forces(
-                    backend,
-                    w.positions,
-                    w.types,
-                    w.cell,
-                    self._max_neighbors,
-                )
-                energies.append(float(res.energy))
-                forces.append(np.asarray(res.forces, dtype=float))
-            else:
-                res = backend(
-                    w.positions, w.types, w.cell, self._max_neighbors
-                )
-                energies.append(float(res[0]))
-        return energies, (forces if self._show_forces else None)
+        return score_atoms(
+            model_file,
+            self._backend_type,
+            atoms_list,
+            want_forces=self._show_forces,
+            max_neighbors=self._max_neighbors,
+        )
 
     def _predict_remote(self, frames):
         """Read model energies/forces the cluster wrote onto the frames."""

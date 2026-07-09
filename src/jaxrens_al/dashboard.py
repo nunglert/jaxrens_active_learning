@@ -253,34 +253,39 @@ def iteration_context(
 # ---------------------------------------------------------------------------
 # Assemble + select: the one builder for both views.
 # ---------------------------------------------------------------------------
-def assemble(ctx: RunContext, *, panel_config=None) -> list:
-    """Panels whose inputs exist in ``ctx`` (summary or single iteration).
+def assemble(ctx: RunContext, *, specs=None, panel_config=None) -> list:
+    """Panels whose inputs exist in ``ctx`` (summary, iteration, or section).
 
-    Builds the curated default spec list (:func:`panel_specs.default_specs`,
-    in historical render order) and lets a ``panel_config`` layer on top --
+    Resolves a curated spec seed against an optional ``panel_config`` layer --
     ``{"disable": [...], "add": [PanelSpec...], "panels": [PanelSpec...]}`` (see
-    ``alviz.resolve_panel_list``). A Steinhardt heatmap is just an ``add`` entry
-    (there is no CLI flag). Each spec's builder self-gates on its inputs, so
-    absent-input / wrong-view panels drop out and the grid auto-sizes -- exactly
-    as the old hand-wired ``assemble`` did.
+    ``alviz.resolve_panel_list``) -- fills each spec's unset globals from the
+    ctx, and builds the entries; every builder self-gates on its inputs, so
+    absent-input / wrong-view panels drop out and the grid auto-sizes.
+
+    ``specs`` is the seed list; it defaults to the AL page's
+    :func:`panel_specs.default_specs`. The standalone NS/DFT/training
+    ``sections`` pass their own curated seed (``ns``/``dft``/
+    ``training_default_specs``) so all four consumers share this one
+    resolve -> globals -> build pipeline.
     """
     from alviz import build_entries, resolve_panel_list
 
     from jaxrens_al.panel_specs import apply_ctx_globals, default_specs
 
+    if specs is None:
+        specs = default_specs(ctx)
     cfg = panel_config or {}
-    add = list(cfg.get("add") or [])
-    specs = resolve_panel_list(
-        default_specs(ctx),
+    resolved = resolve_panel_list(
+        specs,
         panels=cfg.get("panels"),
-        add=add,
+        add=list(cfg.get("add") or []),
         disable=cfg.get("disable"),
     )
     # Each spec inherits unset global settings (swap_axes/k_B/temperatures)
     # from the context; explicit per-panel values survive.
-    specs = apply_ctx_globals(specs, ctx)
+    resolved = apply_ctx_globals(resolved, ctx)
     return build_entries(
-        specs,
+        resolved,
         ctx,
         datapath=ctx.datapath,
         force_recompute=ctx.force_recompute,

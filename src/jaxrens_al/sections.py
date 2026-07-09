@@ -33,9 +33,9 @@ from jaxrens_al.keys import (
     SURROGATE_ENERGY_KEY,
 )
 
-# jax-loadable model artifacts, best match first: a mace-jax ``.bundle`` dir
-# (``config.json`` + ``params.msgpack``), a ``*-jax.pkl`` / ``*.pkl`` bundle.
-_MODEL_PATTERNS = ("*.bundle", "*-jax.pkl", "*.pkl")
+# Raw-dir model discovery lives in run_layout (the filesystem-reading layer);
+# re-exported here for the training section + backwards compatibility.
+from jaxrens_al.run_layout import find_model  # noqa: F401
 
 
 # ---------------------------------------------------------------------------
@@ -81,10 +81,8 @@ def ns_section(
     # (ns_dirs=[out_dir]) whose "sampled" configs are the per-replica
     # trajectories -- so the shared builders wire the section exactly as they
     # wire the AL page.
-    from alviz import build_entries, resolve_panel_list
-
-    from jaxrens_al.dashboard import RunContext
-    from jaxrens_al.panel_specs import apply_ctx_globals, ns_default_specs
+    from jaxrens_al.dashboard import RunContext, assemble
+    from jaxrens_al.panel_specs import ns_default_specs
 
     ctx = RunContext(
         calchome=out_dir,
@@ -100,19 +98,8 @@ def ns_section(
         re_stats=re_stats if re_stats.exists() else None,
         force_recompute=common.get("force_recompute", False),
     )
-    cfg = panel_config or {}
-    specs = resolve_panel_list(
-        ns_default_specs(per_run=per_run),
-        panels=cfg.get("panels"),
-        add=cfg.get("add"),
-        disable=cfg.get("disable"),
-    )
-    specs = apply_ctx_globals(specs, ctx)
-    return build_entries(
-        specs,
-        ctx,
-        datapath=ctx.datapath,
-        force_recompute=ctx.force_recompute,
+    return assemble(
+        ctx, specs=ns_default_specs(per_run=per_run), panel_config=panel_config
     )
 
 
@@ -144,10 +131,8 @@ def dft_section(
     if not files:
         return []
 
-    from alviz import build_entries, resolve_panel_list
-
-    from jaxrens_al.dashboard import RunContext
-    from jaxrens_al.panel_specs import apply_ctx_globals, dft_default_specs
+    from jaxrens_al.dashboard import RunContext, assemble
+    from jaxrens_al.panel_specs import dft_default_specs
 
     ctx = RunContext(
         calchome=files[0].parent,
@@ -160,58 +145,12 @@ def dft_section(
         surrogate_energy_key=pred_energy_key,
         force_recompute=common.get("force_recompute", False),
     )
-    cfg = panel_config or {}
-    specs = resolve_panel_list(
-        dft_default_specs(),
-        panels=cfg.get("panels"),
-        add=cfg.get("add"),
-        disable=cfg.get("disable"),
-    )
-    specs = apply_ctx_globals(specs, ctx)
-    return build_entries(
-        specs,
-        ctx,
-        datapath=ctx.datapath,
-        force_recompute=ctx.force_recompute,
-    )
+    return assemble(ctx, specs=dft_default_specs(), panel_config=panel_config)
 
 
 # ---------------------------------------------------------------------------
 # Training section (from scripts/training_dashboard.py).
 # ---------------------------------------------------------------------------
-def find_model(results, override=None):
-    """Locate the trained-model bundle to re-score (or None).
-
-    An explicit ``override`` wins (a ``.bundle`` is a directory, so any
-    existing path is accepted). Otherwise search the results tree, then a
-    sibling ``trainer_output/`` -- the staged handler writes the model there,
-    not under ``<i>/training/results`` -- found by walking up the parents.
-    """
-    if override:
-        p = Path(override)
-        return p if p.exists() else None
-
-    results = Path(results)
-
-    def _search(root: Path):
-        for pattern in _MODEL_PATTERNS:
-            hits = sorted(root.rglob(pattern))
-            if hits:
-                return hits[0]
-        return None
-
-    found = _search(results)
-    if found is not None:
-        return found
-    for ancestor in results.parents:
-        trainer_output = ancestor / "trainer_output"
-        if trainer_output.is_dir():
-            found = _search(trainer_output)
-            if found is not None:
-                return found
-    return None
-
-
 def training_section(
     results_dir,
     *,
@@ -269,15 +208,9 @@ def training_section(
     # Model re-score is for the no-.npz case (mainly MACE); NeuralIL's .npz
     # already carries real parity, so model_parity self-gates off then.
     model_file = None if npz_files else find_model(results, model)
-    default_backend = "mace" if mace_logs else "neuralil"
 
-    from alviz import build_entries, resolve_panel_list
-
-    from jaxrens_al.dashboard import RunContext
-    from jaxrens_al.panel_specs import (
-        apply_ctx_globals,
-        training_default_specs,
-    )
+    from jaxrens_al.dashboard import RunContext, assemble, detect_backend
+    from jaxrens_al.panel_specs import training_default_specs
 
     ctx = RunContext(
         calchome=results,
@@ -289,28 +222,23 @@ def training_section(
         train_sets=train_sets,
         valid_sets=valid_sets,
         model_file=model_file,
-        eos_backend=backend or default_backend,
+        eos_backend=backend or detect_backend(mace_logs, model_file),
         remote_model_eval=remote_model_eval,
         energy_key=energy_key,
         forces_key=forces_key,
         force_recompute=common.get("force_recompute", False),
     )
-    cfg = panel_config or {}
+    # ``include_parity=False`` folds into the panel_config as a disable, so the
+    # shared assemble handles it like any other config-driven drop.
+    cfg = dict(panel_config or {})
     disable = list(cfg.get("disable") or [])
     if not include_parity and "model_parity" not in disable:
         disable.append("model_parity")
-    specs = resolve_panel_list(
-        training_default_specs(
+    cfg["disable"] = disable
+    return assemble(
+        ctx,
+        specs=training_default_specs(
             show_forces=show_forces, max_neighbors=max_neighbors
         ),
-        panels=cfg.get("panels"),
-        add=cfg.get("add"),
-        disable=disable,
-    )
-    specs = apply_ctx_globals(specs, ctx)
-    return build_entries(
-        specs,
-        ctx,
-        datapath=ctx.datapath,
-        force_recompute=ctx.force_recompute,
+        panel_config=cfg,
     )

@@ -136,13 +136,6 @@ def selected_configs(calchome, progress=None) -> list:
     return _collect(calchome, progress, "selector_output")
 
 
-def trained_models(calchome, progress=None) -> list:
-    """Absolute paths to all trained-model files, in order."""
-    if progress is None:
-        progress = load_progress(calchome)
-    return _collect(calchome, progress, "trainer_output")
-
-
 def evaluated_configs_per_iteration(calchome, progress=None) -> list:
     """List (per iteration) of the evaluated-config paths for that iteration."""
     calchome = Path(calchome)
@@ -401,15 +394,54 @@ def training_npz_for_iteration(it_dir) -> list:
     return sorted(base.rglob("*.npz")) if base else []
 
 
+# jax-loadable model artifacts, best match first: a mace-jax ``.bundle`` dir,
+# a ``-jax.pkl`` bundle, then a plain neuralil ``.pkl``.
+_MODEL_PATTERNS = ("*.bundle", "*-jax.pkl", "*.pkl")
+
+
+def _search_model_tree(root):
+    """First model artifact under ``root`` (:data:`_MODEL_PATTERNS`), else None."""
+    for pattern in _MODEL_PATTERNS:
+        hits = sorted(Path(root).rglob(pattern))
+        if hits:
+            return hits[0]
+    return None
+
+
 def trained_model_for_iteration(it_dir):
-    """This iteration's trained-model bundle (a ``.pkl`` under the trainer
-    ``results`` dir), or None. Used by the EOS panel to evaluate the model.
-    Returns the first match if several are present."""
+    """This iteration's trained-model bundle under the trainer ``results`` dir,
+    or None. Used by the EOS / model-parity panels to evaluate the model.
+    Returns the first match (:data:`_MODEL_PATTERNS` order) if several exist.
+    """
     base = training_results_dir(it_dir)
-    if base is None:
-        return None
-    hits = sorted(base.rglob("*.pkl"))
-    return hits[0] if hits else None
+    return _search_model_tree(base) if base is not None else None
+
+
+def find_model(results, override=None):
+    """Locate the trained-model bundle to re-score under a raw ``results`` dir.
+
+    An explicit ``override`` wins (a ``.bundle`` is a directory, so any existing
+    path is accepted). Otherwise search the results tree, then a sibling
+    ``trainer_output/`` -- the staged handler writes the model there, not under
+    ``<i>/training/results`` -- found by walking up the parents. The raw-dir
+    counterpart to :func:`model_for_iteration` (which instead resolves the
+    recorded model from ``AL_progress.json``); both share
+    :data:`_MODEL_PATTERNS`.
+    """
+    if override:
+        p = Path(override)
+        return p if p.exists() else None
+    results = Path(results)
+    found = _search_model_tree(results)
+    if found is not None:
+        return found
+    for ancestor in results.parents:
+        trainer_output = ancestor / "trainer_output"
+        if trainer_output.is_dir():
+            found = _search_model_tree(trainer_output)
+            if found is not None:
+                return found
+    return None
 
 
 def model_for_iteration(calchome, index, it_dir=None, progress=None):

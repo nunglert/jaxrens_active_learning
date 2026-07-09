@@ -68,6 +68,61 @@ class ModelEvalNeed:
         )
 
 
+def score_atoms(
+    model_file,
+    backend_type,
+    atoms_list,
+    *,
+    want_forces: bool = False,
+    max_neighbors: int = 50,
+):
+    """Score configs with a trained model through the jaxrens backend.
+
+    Loads the model (a mace-jax bundle *dir* via ``model_path=`` or a neuralil
+    ``.pkl`` via ``pickle_file=``), builds the symbol map, and evaluates each
+    structure. Returns ``(energies, forces)``: ``energies`` a list of total
+    energies (eV); ``forces`` a list of ``(n_atoms, 3)`` arrays when
+    ``want_forces`` else ``None``.
+
+    The single home for the backend-load + walker-eval loop shared by the EOS
+    and model-parity reader panels (local re-score) and the ``model_eval``
+    cluster processor. jaxrens is imported lazily, so importing this module
+    stays cheap on the dashboard path.
+    """
+    import numpy as np
+    from ase.data import chemical_symbols
+    from jaxrens.backends.base import eval_energy_and_forces
+    from jaxrens.backends.loader import load_backend
+    from jaxrens.io.formats import ase_atoms_to_walker
+
+    if backend_type == "mace":
+        backend = load_backend("mace", model_path=model_file)
+    else:
+        backend = load_backend(backend_type, pickle_file=model_file)
+
+    symbol_map = getattr(backend, "symbol_map", None)
+    if symbol_map is None:
+        symbol_map = {
+            chemical_symbols[int(z)]: i
+            for i, z in enumerate(backend.atomic_numbers)
+        }
+
+    energies = []
+    forces = [] if want_forces else None
+    for atoms in atoms_list:
+        w = ase_atoms_to_walker(atoms, symbol_map)
+        if want_forces:
+            res = eval_energy_and_forces(
+                backend, w.positions, w.types, w.cell, max_neighbors
+            )
+            energies.append(float(res.energy))
+            forces.append(np.asarray(res.forces, dtype=float))
+        else:
+            res = backend(w.positions, w.types, w.cell, max_neighbors)
+            energies.append(float(res[0]))
+    return energies, forces
+
+
 def model_eval_keys(model) -> tuple:
     """The ``(energy_key, forces_key)`` a model's predictions are written under.
 
