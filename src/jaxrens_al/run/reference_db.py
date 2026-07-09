@@ -186,7 +186,7 @@ def eos_phase_scans(
     For each input phase a supercell hosting ``target_cutoff`` is built and
     scanned over ``vol_scalings`` with **no** position jitter (``rattle_atoms``
     with a single ``0.0`` strength), so each returned list is a clean E(V)
-    curve for one phase -- exactly what :class:`~jaxrens_al.panels.eos.
+    curve for one phase -- exactly what :class:`~jaxrens_al.dashboard.panels.eos.
     EquationOfStatePanel` fits (it reads the volume off each frame's cell and
     the DFT energy off ``REF_energy``, so no other provenance is needed).
 

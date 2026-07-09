@@ -1,4 +1,4 @@
-"""Tests for the starting-database builder (jaxrens_al.reference_db).
+"""Tests for the starting-database builder (jaxrens_al.run.reference_db).
 
 Only the numpy + ase half is exercised here -- the supercell search and the
 rattling -- since the Materials Project fetch needs network + the [refdb]
@@ -11,7 +11,7 @@ from ase import Atoms
 
 pytest.importorskip("ase")
 
-from jaxrens_al.reference_db import (  # noqa: E402
+from jaxrens_al.run.reference_db import (  # noqa: E402
     _hnf_diagonals,
     _max_cutoff,
     build_reference_database,
@@ -116,7 +116,7 @@ def test_rattle_scales_volume_and_is_seeded():
 
 
 def test_build_reference_database_writes_extxyz(tmp_path, monkeypatch):
-    import jaxrens_al.reference_db as refdb
+    import jaxrens_al.run.reference_db as refdb
 
     base = _bulk_si()
     monkeypatch.setattr(refdb, "fetch_mp_elemental", lambda *a, **k: [base])

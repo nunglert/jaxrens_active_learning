@@ -1,7 +1,7 @@
 """Tests for the section-dashboard CLI subcommands (ns/dft/training).
 
 The ``jaxrens-al-dashboard`` CLI dispatches its ``ns`` / ``dft`` / ``training``
-first-token subcommands to :mod:`jaxrens_al.section_dashboards`, which the thin
+first-token subcommands to :mod:`jaxrens_al.dashboard.section_dashboards`, which the thin
 ``scripts/{ns,dft,training}_dashboard.py`` wrappers also call. These tests
 cover the dispatch + guard paths (which return before any alviz import, so they
 run without the dashboard stack) and the config-file mechanism; a single render
@@ -120,7 +120,7 @@ def test_init_config_stdout_round_trips(flavor, tmp_path, capsys):
     # Every dumped key is a real option of that flavor's parser (drift guard),
     # so apply_config would accept the file without warning.
     from jaxrens_al.cli import _build_parser
-    from jaxrens_al.section_dashboards import (
+    from jaxrens_al.dashboard.section_dashboards import (
         build_dft_parser,
         build_ns_parser,
         build_training_parser,

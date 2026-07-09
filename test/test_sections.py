@@ -1,4 +1,4 @@
-"""Tests for the shared raw-directory section builders (jaxrens_al.sections).
+"""Tests for the shared raw-directory section builders (jaxrens_al.dashboard.sections).
 
 These are the single source of truth for the per-artifact panel wiring the
 standalone ``scripts/{ns,dft,training}_dashboard.py`` and the global CLI's
@@ -11,7 +11,11 @@ render -- so they need no jaxrens: an empty stub file is enough to be
 import numpy as np
 import pytest
 
-from jaxrens_al.sections import dft_section, ns_section, training_section
+from jaxrens_al.dashboard.sections import (
+    dft_section,
+    ns_section,
+    training_section,
+)
 
 pytestmark = pytest.mark.local
 
@@ -72,7 +76,7 @@ def test_ns_section_no_steinhardt_by_default(tmp_path):
 
 
 def test_ns_section_steinhardt_opt_in_via_config(tmp_path):
-    from jaxrens_al.panel_specs import SteinhardtSpec
+    from jaxrens_al.dashboard.panel_specs import SteinhardtSpec
 
     d = _make_ns_dir(tmp_path)
     entries = ns_section(
@@ -85,7 +89,7 @@ def test_ns_section_steinhardt_opt_in_via_config(tmp_path):
 
 
 def test_ns_section_multiple_steinhardts_via_config(tmp_path):
-    from jaxrens_al.panel_specs import SteinhardtSpec
+    from jaxrens_al.dashboard.panel_specs import SteinhardtSpec
 
     d = _make_ns_dir(tmp_path)
     entries = ns_section(

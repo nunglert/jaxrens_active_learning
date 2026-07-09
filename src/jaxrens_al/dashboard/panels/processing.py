@@ -4,7 +4,7 @@ A producer-backed panel does not annotate anything itself. It *declares* what
 processing its input trajectory needs (a :class:`ProcessingNeed`) and later
 *receives* the resolved annotated path. Both halves are pure data / attribute
 assignment -- no ``remote_handler``, no cluster -- so panels stay light and
-dashboard-side. The run-side :mod:`jaxrens_al.processing_resolver` is what
+dashboard-side. The run-side :mod:`jaxrens_al.run.processing_resolver` is what
 collects needs across a dashboard, runs a single processing job, and delivers
 the results back.
 

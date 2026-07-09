@@ -55,7 +55,7 @@ from remote_handler.core.tasks import SingleScriptTask
 from remote_handler.exceptions import FileSystemError, WorkflowError
 from remote_handler.workflows.active_learning_base import Sampler
 
-from jaxrens_al.templates import template_dir
+from jaxrens_al.run.templates import template_dir
 
 logger = logging.getLogger(__name__)
 

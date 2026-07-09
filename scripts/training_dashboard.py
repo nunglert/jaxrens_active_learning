@@ -27,7 +27,7 @@ The model bundle and validation set are auto-detected under ``results_dir``;
 override with ``--model`` / ``--valid-set`` / ``--backend``. If a
 ``db_train.extxyz`` training set is present, its energy/volume spread and
 descriptor diversity are shown as well. The real logic lives in
-:func:`jaxrens_al.section_dashboards.run_training`; when jaxrens_al is
+:func:`jaxrens_al.dashboard.section_dashboards.run_training`; when jaxrens_al is
 installed, prefer the console subcommand ``jaxrens-al-dashboard training``.
 Point at the training results dir, e.g.::
 
@@ -38,7 +38,7 @@ Flag defaults can also come from a ``dashboard.{yaml,yml,toml,json}`` beside
 the results dir (or ``--config PATH``); CLI flags still win.
 """
 
-from jaxrens_al.section_dashboards import run_training
+from jaxrens_al.dashboard.section_dashboards import run_training
 
 if __name__ == "__main__":
     raise SystemExit(run_training())

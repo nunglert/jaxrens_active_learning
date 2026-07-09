@@ -90,7 +90,7 @@ def _run_init_config(argv: list[str] | None) -> int:
         parser = _build_parser()
         title = "jaxrens-al-dashboard"
     else:
-        from jaxrens_al.section_dashboards import (
+        from jaxrens_al.dashboard.section_dashboards import (
             build_dft_parser,
             build_ns_parser,
             build_training_parser,
@@ -193,7 +193,7 @@ def _resolve_remote_needs(entries, args, datapath):
     if not (has_proc or has_eval or has_phase):
         return
 
-    from jaxrens_al.processing_resolver import (
+    from jaxrens_al.run.processing_resolver import (
         execution_context,
         resolve_model_evaluations,
         resolve_phase_labeling,
@@ -362,10 +362,10 @@ def main(argv: list[str] | None = None) -> int:
     if argv is None:
         argv = sys.argv[1:]
     # Section subcommands (ns/dft/training) render a single raw artifact set;
-    # dispatch to jaxrens_al.section_dashboards. Bare ``<calchome>`` (no known
+    # dispatch to jaxrens_al.dashboard.section_dashboards. Bare ``<calchome>`` (no known
     # subcommand as the first token) falls through to the AL run flow below.
     if argv and argv[0] in _SECTION_COMMANDS:
-        from jaxrens_al.section_dashboards import SECTION_COMMANDS
+        from jaxrens_al.dashboard.section_dashboards import SECTION_COMMANDS
 
         return SECTION_COMMANDS[argv[0]](argv[1:])
     # ``init-config <flavor>`` scaffolds a starter dashboard config (all default
@@ -418,7 +418,7 @@ def main(argv: list[str] | None = None) -> int:
     from alviz import Dashboard, merge_pdfs
 
     from jaxrens_al.dashboard import build_iteration_dashboard
-    from jaxrens_al.run_layout import (
+    from jaxrens_al.dashboard.run_layout import (
         detect_ns_prefix,
         evaluated_configs_per_iteration,
         iteration_dir,
@@ -428,7 +428,11 @@ def main(argv: list[str] | None = None) -> int:
         sampled_configs_per_iteration,
         training_results_dir,
     )
-    from jaxrens_al.sections import dft_section, ns_section, training_section
+    from jaxrens_al.dashboard.sections import (
+        dft_section,
+        ns_section,
+        training_section,
+    )
 
     progress = load_progress(calchome)
     n_iter = len(progress)
@@ -453,7 +457,7 @@ def main(argv: list[str] | None = None) -> int:
     # A config's structured panel keys (add / disable / panels), parsed into
     # specs against the panel registry; layered onto every iteration page. A
     # Steinhardt heatmap is one such `add:` entry -- there is no CLI flag.
-    from jaxrens_al.panel_specs import parse_panel_config
+    from jaxrens_al.dashboard.panel_specs import parse_panel_config
 
     panel_config = parse_panel_config(getattr(args, "panel_config_raw", None))
 

@@ -19,7 +19,7 @@ Two consumers share them:
 These are **dashboard-side**: ase + alviz only, no ``remote_handler`` import.
 The Steinhardt heatmap a section may emit is a pure reader that merely
 *declares* a processing need; running that need is the caller's job (via
-:func:`jaxrens_al.processing_resolver.resolve_processing`), off this import
+:func:`jaxrens_al.run.processing_resolver.resolve_processing`), off this import
 path.
 """
 
@@ -27,15 +27,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
+# Raw-dir model discovery lives in run_layout (the filesystem-reading layer);
+# re-exported here for the training section + backwards compatibility.
+from jaxrens_al.dashboard.run_layout import find_model  # noqa: F401
 from jaxrens_al.keys import (
     REF_ENERGY_KEY,
     REF_FORCES_KEY,
     SURROGATE_ENERGY_KEY,
 )
-
-# Raw-dir model discovery lives in run_layout (the filesystem-reading layer);
-# re-exported here for the training section + backwards compatibility.
-from jaxrens_al.run_layout import find_model  # noqa: F401
 
 
 # ---------------------------------------------------------------------------
@@ -82,7 +81,7 @@ def ns_section(
     # trajectories -- so the shared builders wire the section exactly as they
     # wire the AL page.
     from jaxrens_al.dashboard import RunContext, assemble
-    from jaxrens_al.panel_specs import ns_default_specs
+    from jaxrens_al.dashboard.panel_specs import ns_default_specs
 
     ctx = RunContext(
         calchome=out_dir,
@@ -132,7 +131,7 @@ def dft_section(
         return []
 
     from jaxrens_al.dashboard import RunContext, assemble
-    from jaxrens_al.panel_specs import dft_default_specs
+    from jaxrens_al.dashboard.panel_specs import dft_default_specs
 
     ctx = RunContext(
         calchome=files[0].parent,
@@ -210,7 +209,7 @@ def training_section(
     model_file = None if npz_files else find_model(results, model)
 
     from jaxrens_al.dashboard import RunContext, assemble, detect_backend
-    from jaxrens_al.panel_specs import training_default_specs
+    from jaxrens_al.dashboard.panel_specs import training_default_specs
 
     ctx = RunContext(
         calchome=results,

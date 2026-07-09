@@ -20,12 +20,15 @@ import numpy as np
 # ---------------------------------------------------------------------------
 from alviz import Entry, JsonDict, PanelSpec, register_panel
 
-from jaxrens_al.panels.model_eval import (
+from jaxrens_al.dashboard.panels.model_eval import (
     ModelEvalConsumer,
     ModelEvalNeed,
     model_eval_keys,
 )
-from jaxrens_al.panels.reference import ReferenceConsumer, ReferenceNeed
+from jaxrens_al.dashboard.panels.reference import (
+    ReferenceConsumer,
+    ReferenceNeed,
+)
 
 # 1 eV / Angstrom^3 expressed in GPa.
 _EVA3_TO_GPA = 160.21766208
@@ -119,7 +122,7 @@ class EquationOfStatePanel(ReferenceConsumer, ModelEvalConsumer, Entry):
     Two ways to supply the per-phase volume scans (give exactly one):
 
       * ``references`` -- explicit, already-DFT-labelled scan files; or
-      * ``element`` -- declare a :class:`~jaxrens_al.panels.reference.
+      * ``element`` -- declare a :class:`~jaxrens_al.dashboard.panels.reference.
         ReferenceNeed` the run-side ``resolve_references`` fetches (Materials
         Project) + DFT-labels for you, filling the files via
         :meth:`receive_references` before rendering.
@@ -127,7 +130,7 @@ class EquationOfStatePanel(ReferenceConsumer, ModelEvalConsumer, Entry):
     The **model** energy curve is computed either locally (loading the backend
     in-process, the default for CPU backends) or -- when ``remote_eval`` -- on a
     GPU cluster: the panel declares a
-    :class:`~jaxrens_al.panels.model_eval.ModelEvalNeed` and reads the model
+    :class:`~jaxrens_al.dashboard.panels.model_eval.ModelEvalNeed` and reads the model
     energy back from the annotated reference files. A MACE-jax bundle needs the
     latter (its ``cuequivariance`` build is GPU-only).
 
@@ -243,7 +246,7 @@ class EquationOfStatePanel(ReferenceConsumer, ModelEvalConsumer, Entry):
 
     def _evaluate(self, model_file, atoms_list) -> list:
         """Total energies (eV) of each structure under the model (seam)."""
-        from jaxrens_al.panels.model_eval import score_atoms
+        from jaxrens_al.dashboard.panels.model_eval import score_atoms
 
         energies, _ = score_atoms(
             model_file,

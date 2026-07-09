@@ -15,7 +15,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 # ---------------------------------------------------------------------------
-# Panel spec: this panel wired from a RunContext (see jaxrens_al.panel_specs).
+# Panel spec: this panel wired from a RunContext (see jaxrens_al.dashboard.panel_specs).
 # ---------------------------------------------------------------------------
 from alviz import Entry, JsonDict, register_simple
 

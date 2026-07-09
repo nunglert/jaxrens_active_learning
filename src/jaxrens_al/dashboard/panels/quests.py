@@ -2,7 +2,7 @@
 
 When the jaxrens NS sampler selects candidates with a ``QUESTSSelector`` it
 leaves two per-iteration artifacts under ``<i>/ns_sampler/results/`` (located
-via :mod:`jaxrens_al.run_layout`):
+via :mod:`jaxrens_al.dashboard.run_layout`):
 
 * ``quests_pca.json`` -- every candidate's PCA-projected descriptor + a
   ``selected`` flag (written by the selector). Read by :class:`QuestsPCAPanel`.

@@ -4,7 +4,7 @@ The standalone ``scripts/{ns,dft,training}_dashboard.py`` and the global
 ``jaxrens-al-dashboard`` CLI expose overlapping flags -- output/cache options,
 the NS temperature grid, the Steinhardt block, the reference-key options.
 Defining each group once here keeps every consumer in step (a new Steinhardt
-flag lands in all of them at once) and mirrors :mod:`jaxrens_al.sections`,
+flag lands in all of them at once) and mirrors :mod:`jaxrens_al.dashboard.sections`,
 which unifies the panel wiring those same flags feed. argparse only -- no
 heavy imports, safe on the dashboard import path.
 

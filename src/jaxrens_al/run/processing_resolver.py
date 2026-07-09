@@ -1,7 +1,7 @@
 """Run-side resolver: annotate a dashboard's trajectories in one job.
 
 Producer-backed panels declare *needs* (plain
-:class:`~jaxrens_al.panels.processing.ProcessingNeed` data -- what annotation
+:class:`~jaxrens_al.dashboard.panels.processing.ProcessingNeed` data -- what annotation
 their input trajectory requires). :func:`resolve_processing` collects those
 across a whole dashboard, deduplicates them into a minimal set of processor
 steps, runs a **single** ``remote_handler`` trajectory-processing job (all
@@ -24,7 +24,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from jaxrens_al.resolver_base import (
+from jaxrens_al.run.resolver_base import (
     KindRegistry,
     collect_needs,
     deliver,
@@ -262,7 +262,7 @@ def resolve_model_evaluations(
     """Score a dashboard's configs with their trained models, on the cluster.
 
     Collects every panel's :meth:`model_eval_needs`
-    (:class:`~jaxrens_al.panels.model_eval.ModelEvalNeed`) and runs **one job per
+    (:class:`~jaxrens_al.dashboard.panels.model_eval.ModelEvalNeed`) and runs **one job per
     distinct model** (a ``model_eval`` processor over that model's config files),
     so a GPU-only MACE-jax bundle is evaluated on a GPU node rather than in the
     dashboard process. Predictions land under per-model keys, delivered back via
@@ -277,7 +277,7 @@ def resolve_model_evaluations(
         needs) -- keyed by model so panels sharing an input file (the EOS
         reference scans) each read their own model's annotation.
     """
-    from jaxrens_al.panels.model_eval import model_eval_keys
+    from jaxrens_al.dashboard.panels.model_eval import model_eval_keys
 
     consumers, needs = collect_needs(panels, "model_eval_needs")
     if not needs:
@@ -304,7 +304,7 @@ def resolve_model_evaluations(
         if todo:
             from remote_handler.processing import RemoteTrajectoryProcessor
 
-            from jaxrens_al.processors.model_eval import ModelEvalProcessor
+            from jaxrens_al.run.processors.model_eval import ModelEvalProcessor
 
             logger.info(
                 "resolve_model_evaluations: model %s over %d of %d file(s) "
@@ -364,7 +364,7 @@ def resolve_phase_labeling(
     """Relax + space-group-label a dashboard's NS pools, on the cluster.
 
     Collects every panel's :meth:`phase_needs`
-    (:class:`~jaxrens_al.panels.phase.PhaseNeed`) and runs **one job per
+    (:class:`~jaxrens_al.dashboard.panels.phase.PhaseNeed`) and runs **one job per
     distinct model** -- an ordered ``[relax, spacegroup]`` pipeline over that
     model's trajectories. Relaxation *mutates* structures, so this is its own
     job, isolated from the (annotation-only) Steinhardt / model-eval passes.
@@ -394,8 +394,10 @@ def resolve_phase_labeling(
         if todo:
             from remote_handler.processing import RemoteTrajectoryProcessor
 
-            from jaxrens_al.processors.relax import RelaxProcessor
-            from jaxrens_al.processors.spacegroup import SpaceGroupProcessor
+            from jaxrens_al.run.processors.relax import RelaxProcessor
+            from jaxrens_al.run.processors.spacegroup import (
+                SpaceGroupProcessor,
+            )
 
             logger.info(
                 "resolve_phase_labeling: model %s over %d of %d file(s) "
@@ -445,7 +447,7 @@ def _build_steinhardt(param_dicts: list):
     ``steinhardt`` name (and the ``q<l>`` output keys carry no cutoff), so it is
     rejected with a clear message rather than the cryptic pipeline error.
     """
-    from jaxrens_al.processors.steinhardt import SteinhardtProcessor
+    from jaxrens_al.run.processors.steinhardt import SteinhardtProcessor
 
     groups: dict = {}
     for p in param_dicts:

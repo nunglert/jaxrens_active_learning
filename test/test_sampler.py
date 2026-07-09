@@ -15,8 +15,8 @@ from remote_handler.core.cluster_handler import ClusterConfig  # noqa: E402
 from remote_handler.exceptions import WorkflowError  # noqa: E402
 from remote_handler.workflows.active_learning_base import Sampler  # noqa: E402
 
-from jaxrens_al.sampler import JaxrensNSSampler, _set_dotted  # noqa: E402
-from jaxrens_al.templates import template_dir  # noqa: E402
+from jaxrens_al.run.sampler import JaxrensNSSampler, _set_dotted  # noqa: E402
+from jaxrens_al.run.templates import template_dir  # noqa: E402
 
 # Run-side: needs the producer package (remote_handler), unlike the
 # dashboard-side suites which are all `local`.

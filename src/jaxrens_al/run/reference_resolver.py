@@ -1,8 +1,8 @@
 """Resolve a dashboard's *reference-resource* needs in one run-side pass.
 
-The sibling of :mod:`jaxrens_al.processing_resolver`. A panel that needs a
+The sibling of :mod:`jaxrens_al.run.processing_resolver`. A panel that needs a
 produced reference artifact declares a
-:class:`~jaxrens_al.panels.reference.ReferenceNeed`; this module collects those
+:class:`~jaxrens_al.dashboard.panels.reference.ReferenceNeed`; this module collects those
 needs across a dashboard, builds each distinct one once (with on-disk reuse),
 and delivers the produced files back via ``receive_references``. So the build
 orchestration lives in one place, not wired into each panel.
@@ -23,7 +23,7 @@ import json
 import logging
 from pathlib import Path
 
-from jaxrens_al.resolver_base import (
+from jaxrens_al.run.resolver_base import (
     KindRegistry,
     collect_needs,
     deliver,
@@ -112,7 +112,7 @@ def _build_eos_reference(params: dict, *, evaluator, out_dir, reuse: bool):
             )
             return listed
 
-    from jaxrens_al.reference_eval import build_eos_reference
+    from jaxrens_al.run.reference_eval import build_eos_reference
 
     files = build_eos_reference(
         evaluator,

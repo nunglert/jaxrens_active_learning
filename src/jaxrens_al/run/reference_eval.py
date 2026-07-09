@@ -95,7 +95,7 @@ def build_eos_reference(
 ) -> list[Path]:
     """Fetch, volume-scan, and DFT-label one element's EOS reference phases.
 
-    Composes the reference producers -- :func:`~jaxrens_al.reference_db.
+    Composes the reference producers -- :func:`~jaxrens_al.run.reference_db.
     fetch_mp_elemental` (Materials Project phases) -> ``eos_phase_scans``
     (zero-rattle volume scan per phase) -> :func:`evaluate_config_sets` (DFT
     label) -- and publishes one ``eos_<phase>.extxyz`` per phase, exactly what
@@ -122,7 +122,7 @@ def build_eos_reference(
     """
     import ase.io
 
-    from jaxrens_al.reference_db import eos_phase_scans, fetch_mp_elemental
+    from jaxrens_al.run.reference_db import eos_phase_scans, fetch_mp_elemental
 
     out_dir = Path(out_dir)
     workdir = Path(workdir) if workdir is not None else out_dir / "work"

@@ -1,7 +1,7 @@
 """The ``relax`` processor -- relax each structure with a trained MLIP remotely.
 
 A downstream processor for ``remote_handler``'s trajectory-processing framework
-(mirroring :mod:`jaxrens_al.processors.model_eval`). On the cluster it loads a
+(mirroring :mod:`jaxrens_al.run.processors.model_eval`). On the cluster it loads a
 trained model through the jaxrens backend, wraps it in a minimal ASE calculator,
 and LBFGS-relaxes each frame to its local minimum -- the basin representative the
 ``spacegroup`` step then labels. Unlike ``remote_handler``'s built-in

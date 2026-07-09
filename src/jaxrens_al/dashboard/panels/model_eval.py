@@ -9,14 +9,14 @@ the model and evaluate it. A MACE-jax bundle pulls in ``mace_jax`` /
 This is the seam that moves that evaluation off the dashboard: a panel
 *declares* a :class:`ModelEvalNeed` (which configs, which model, which backend,
 whether it also needs forces) and later *receives* the annotated files back.
-The run-side :func:`jaxrens_al.processing_resolver.resolve_model_evaluations`
+The run-side :func:`jaxrens_al.run.processing_resolver.resolve_model_evaluations`
 collects the needs, runs one cluster job per distinct model (the
 ``model_eval`` processor writes each frame's model energy/forces into per-model
 ``info``/``arrays`` keys), and delivers ``{input -> annotated}`` back. Both
 halves here are pure data / attribute assignment -- no ``remote_handler``, no
 cluster -- so the panels stay light, dashboard-side readers.
 
-Mirrors :mod:`jaxrens_al.panels.processing` (the Steinhardt seam); a separate
+Mirrors :mod:`jaxrens_al.dashboard.panels.processing` (the Steinhardt seam); a separate
 method (``model_eval_needs``) keeps the two resolvers from crossing wires.
 """
 

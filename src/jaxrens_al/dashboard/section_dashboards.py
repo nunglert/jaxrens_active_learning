@@ -11,7 +11,7 @@ So a section dashboard has a single ``build_*_parser`` (its argparse, built on
 the shared :mod:`jaxrens_al.cli_args` groups) and a single ``run_*`` (parse ->
 apply a ``dashboard.*`` config -> build the section -> render), whether invoked
 through the installed CLI or a checkout script -- mirroring how
-:mod:`jaxrens_al.sections` unifies the *panel* wiring those same commands feed.
+:mod:`jaxrens_al.dashboard.sections` unifies the *panel* wiring those same commands feed.
 
 Each command auto-discovers a ``dashboard.{yaml,yml,toml,json}`` beside its
 input (or takes ``--config PATH``); CLI flags still win. Pure dashboard-side
@@ -65,7 +65,7 @@ def _resolve_section_needs(entries, args, datapath) -> None:
     if not (proc or eval_ or phase):
         return
 
-    from jaxrens_al.processing_resolver import (
+    from jaxrens_al.run.processing_resolver import (
         execution_context,
         resolve_model_evaluations,
         resolve_phase_labeling,
@@ -182,7 +182,7 @@ def run_ns(argv: list[str] | None = None, prog: str | None = None) -> int:
     # Prefix: honour --prefix / config, else sniff it off the output dir's
     # <prefix>.run*.energies (a MACE run wrote 'mace_sn16', not 'ns').
     if args.prefix is None:
-        from jaxrens_al.run_layout import ns_prefix_from_dir
+        from jaxrens_al.dashboard.run_layout import ns_prefix_from_dir
 
         args.prefix = ns_prefix_from_dir(out_dir, default="ns")
         logger.info(f"NS out_file_prefix: {args.prefix!r} (auto-detected).")
@@ -199,8 +199,8 @@ def run_ns(argv: list[str] | None = None, prog: str | None = None) -> int:
     import numpy as np
     from alviz import Dashboard
 
-    from jaxrens_al.panel_specs import parse_panel_config
-    from jaxrens_al.sections import ns_section
+    from jaxrens_al.dashboard.panel_specs import parse_panel_config
+    from jaxrens_al.dashboard.sections import ns_section
 
     # Default the PDF (and its data cache) one dir *above* the NS output dir,
     # so the artifact lands beside the run rather than buried in the deep
@@ -308,8 +308,8 @@ def run_dft(argv: list[str] | None = None, prog: str | None = None) -> int:
 
     from alviz import Dashboard
 
-    from jaxrens_al.panel_specs import parse_panel_config
-    from jaxrens_al.sections import dft_section
+    from jaxrens_al.dashboard.panel_specs import parse_panel_config
+    from jaxrens_al.dashboard.sections import dft_section
 
     output = (
         Path(args.output)
@@ -435,8 +435,8 @@ def run_training(
 
     from alviz import Dashboard
 
-    from jaxrens_al.panel_specs import parse_panel_config
-    from jaxrens_al.sections import training_section
+    from jaxrens_al.dashboard.panel_specs import parse_panel_config
+    from jaxrens_al.dashboard.sections import training_section
 
     output = (
         Path(args.output)

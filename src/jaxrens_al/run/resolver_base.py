@@ -1,7 +1,7 @@
 """Shared skeleton for the run-side *needs* resolvers.
 
-Both :mod:`jaxrens_al.processing_resolver` and
-:mod:`jaxrens_al.reference_resolver` have the same shape: collect a dashboard's
+Both :mod:`jaxrens_al.run.processing_resolver` and
+:mod:`jaxrens_al.run.reference_resolver` have the same shape: collect a dashboard's
 panels' declared *needs*, look up how each need's ``kind`` is produced in a
 registry, derive a short stable tag per distinct step, and deliver the results
 back to the panels. Those four mechanics live here so the two resolvers share

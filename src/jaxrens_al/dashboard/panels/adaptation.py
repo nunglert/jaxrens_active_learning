@@ -10,7 +10,7 @@ identical to ``jaxrens plot`` -- the mean across replicas with a shaded spread
 (``per_run=False``), or one line per replica (``per_run=True``).
 
 This is distinct from
-:class:`~jaxrens_al.panels.acceptance.MoveAcceptancePanel`, which reads a
+:class:`~jaxrens_al.dashboard.panels.acceptance.MoveAcceptancePanel`, which reads a
 separate ``<prefix>.acc_rates.h5`` log; the adaptation trace is what current
 multi-run NS jobs emit.
 

@@ -1,6 +1,6 @@
 """Panel *reference-resource* requirements -- plain data, resolved run-side.
 
-The sibling of :mod:`jaxrens_al.panels.processing`, for a panel that needs a
+The sibling of :mod:`jaxrens_al.dashboard.panels.processing`, for a panel that needs a
 whole reference *artifact produced for it* rather than an existing trajectory
 annotated. The EOS panel is the first consumer: it needs a DFT-labelled,
 per-phase volume scan it cannot itself compute (Materials-Project fetch +
@@ -14,7 +14,7 @@ trajectory ``Processor`` (shard analysis). A ``ReferenceNeed`` has **no** input
 file -- its identity is its parameters (element, DFT level, volume grid) -- and
 is fulfilled by *DFT evaluation* (a different ``remote_handler`` subsystem). So
 the two get parallel need/consumer types and parallel run-side resolvers
-(:func:`jaxrens_al.reference_resolver.resolve_references`), while both keep the
+(:func:`jaxrens_al.run.reference_resolver.resolve_references`), while both keep the
 panel pure data / attribute assignment (no ``remote_handler``, dashboard-side).
 """
 

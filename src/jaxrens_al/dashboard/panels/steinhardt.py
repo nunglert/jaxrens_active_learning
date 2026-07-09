@@ -1,7 +1,7 @@
 """Project panels: Steinhardt order parameters, computed once and reused.
 
 The (expensive, remote) Steinhardt computation lives in the run-side
-:class:`jaxrens_al.processors.steinhardt.SteinhardtProcessor` (a
+:class:`jaxrens_al.run.processors.steinhardt.SteinhardtProcessor` (a
 ``remote_handler`` trajectory-processing step), run via
 ``remote_handler.processing.RemoteTrajectoryProcessor``; it writes an annotated
 trajectory (per-atom ``q<l>`` / ``w<l>`` arrays + per-frame ``q<l>_mean`` /
@@ -12,9 +12,9 @@ Each panel gets its data from one of two sources:
 
   * ``annotated_file=`` -- an already-annotated extxyz (pure read); or
   * ``configs=`` + Steinhardt params (``r_cut`` ...) -- the *raw* pool to
-    annotate. The panel then declares a :class:`~jaxrens_al.panels.processing.
+    annotate. The panel then declares a :class:`~jaxrens_al.dashboard.panels.processing.
     ProcessingNeed` (plain data, no cluster), and the run-side
-    :func:`jaxrens_al.processing_resolver.resolve_processing` -- called once
+    :func:`jaxrens_al.run.processing_resolver.resolve_processing` -- called once
     over the whole dashboard -- runs a single processing job and hands the
     annotated path back via ``receive_annotations``. Identical needs across
     panels deduplicate to one step, so the panels below share one job.
@@ -33,7 +33,7 @@ Panels:
 
 The first two are pure ase+numpy readers. :class:`SteinhardtExpectationHeatmap`
 additionally uses the jaxrens ``Monitor`` (deferred behind a ``_load_monitors``
-seam, as in :mod:`jaxrens_al.panels.thermodynamics`), so building the dashboard
+seam, as in :mod:`jaxrens_al.dashboard.panels.thermodynamics`), so building the dashboard
 still pulls in no JAX -- only the actual NS postprocessing does.
 """
 
@@ -51,7 +51,10 @@ import numpy as np
 from alviz import Entry, JsonDict, PanelSpec, register_panel
 from alviz.panels import HeatmapData, HeatmapPanel, heatmap_pcolormesh
 
-from jaxrens_al.panels.processing import ProcessingConsumer, ProcessingNeed
+from jaxrens_al.dashboard.panels.processing import (
+    ProcessingConsumer,
+    ProcessingNeed,
+)
 
 _PARAMS = ("q", "w")
 
@@ -362,7 +365,7 @@ class SteinhardtExpectationHeatmap(ProcessingConsumer, HeatmapPanel):
     per-config means over two arbitrary keys, it reweights a Steinhardt
     observable onto a temperature grid with each replica's jaxrens ``Monitor``
     -- the same machinery as
-    :class:`~jaxrens_al.panels.thermodynamics.NSThermodynamicsHeatmap`, but
+    :class:`~jaxrens_al.dashboard.panels.thermodynamics.NSThermodynamicsHeatmap`, but
     with ``<q_l>`` / ``<w_l>`` as the observable instead of ``C_v`` / ``<V>``.
 
     The panel is self-sufficient about its inputs: from each result dir it
@@ -460,7 +463,7 @@ class SteinhardtExpectationHeatmap(ProcessingConsumer, HeatmapPanel):
         """Monitors for one NS output dir, one per replica (test seam).
 
         Same seam/loader as
-        :meth:`~jaxrens_al.panels.thermodynamics.NSThermodynamicsHeatmap.
+        :meth:`~jaxrens_al.dashboard.panels.thermodynamics.NSThermodynamicsHeatmap.
         _load_monitors`; a single-run output is the one-replica edge case.
         """
         from jaxrens.postprocess import MonitorCollection

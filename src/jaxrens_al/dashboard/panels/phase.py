@@ -2,16 +2,16 @@
 
 Each NS dead point is relaxed to its local minimum and labelled by its space
 group (the ``relax`` -> ``spacegroup`` cluster pipeline; see
-:func:`jaxrens_al.processing_resolver.resolve_phase_labeling`). This panel reads
+:func:`jaxrens_al.run.processing_resolver.resolve_phase_labeling`). This panel reads
 the labelled pool, pairs it with the jaxrens ``Monitor`` (exactly as
-:class:`~jaxrens_al.panels.steinhardt.SteinhardtExpectationHeatmap` does), and
+:class:`~jaxrens_al.dashboard.panels.steinhardt.SteinhardtExpectationHeatmap` does), and
 reweights a per-phase indicator over a temperature grid: ``<1[sg==g]>(T)`` is the
 NS population (basin free-energy weight) of phase ``g`` at ``T``. The stable
 phase in each ``(P, T)`` cell -- ``argmax_g`` population -- gives a P-T phase
 diagram over the phases that actually appear in the run's dead points.
 
 Producer/reader split like the Steinhardt panels: this pure reader declares a
-:class:`~jaxrens_al.panels.phase.PhaseNeed`; the run-side resolver runs the
+:class:`~jaxrens_al.dashboard.panels.phase.PhaseNeed`; the run-side resolver runs the
 relax+spacegroup job (with *this iteration's* model) and delivers the labelled
 trajectory back via :meth:`receive_phase_labels`.
 

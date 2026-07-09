@@ -1,9 +1,9 @@
 """Composition of the AL dashboard's panel set (registry glue only).
 
 Each panel registers its own :class:`alviz.PanelSpec` + builder **in its own
-module** (``jaxrens_al.panels.*``; the generic Extxyz panels register in
+module** (``jaxrens_al.dashboard.panels.*``; the generic Extxyz panels register in
 ``panels.dft_config``), so the panel-specific knowledge lives with the panel.
-Importing :mod:`jaxrens_al.panels` runs those registrations -- this module just
+Importing :mod:`jaxrens_al.dashboard.panels` runs those registrations -- this module just
 imports it and then *composes*: the curated default order, the NS-section
 subset, and the ``dashboard.*`` config -> spec plumbing. No panel-specific
 wiring lives here.
@@ -17,11 +17,11 @@ from alviz import PanelSpec
 
 # Importing the panels package runs every panel module's ``register_panel``
 # call, populating the alviz panel registry this module composes over.
-import jaxrens_al.panels  # noqa: F401
+import jaxrens_al.dashboard.panels  # noqa: F401
 
 # Re-exported for callers that construct one directly (sections, tests). The
 # authoritative definition lives with the panel, in panels.steinhardt.
-from jaxrens_al.panels.steinhardt import SteinhardtSpec
+from jaxrens_al.dashboard.panels.steinhardt import SteinhardtSpec
 
 __all__ = [
     "SteinhardtSpec",

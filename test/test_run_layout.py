@@ -1,4 +1,4 @@
-"""Tests for the run-layout bridge (jaxrens_al.run_layout).
+"""Tests for the run-layout bridge (jaxrens_al.dashboard.run_layout).
 
 This layer only *reads* a run's on-disk artifacts (AL_progress.json + the
 calchome tree); it imports neither alviz nor remote_handler. Tests assert the
@@ -10,7 +10,7 @@ import json
 
 import pytest
 
-from jaxrens_al.run_layout import (
+from jaxrens_al.dashboard.run_layout import (
     evaluated_configs,
     evaluated_configs_per_iteration,
     iteration_dir,
@@ -82,7 +82,7 @@ def test_staged_and_classic_accessors_agree(make_calchome, tmp_path):
 
 
 def test_selected_configs_reads_selector_stage(tmp_path):
-    from jaxrens_al.run_layout import (
+    from jaxrens_al.dashboard.run_layout import (
         selected_configs,
         selected_configs_per_iteration,
     )
@@ -147,7 +147,7 @@ def test_training_accessors_empty_when_no_artifacts(make_calchome, tmp_path):
 
 def test_model_for_iteration_prefers_local_pkl(make_calchome, tmp_path):
     # A NeuralIL run writes a .pkl under <i>/training/results -- unchanged.
-    from jaxrens_al.run_layout import model_for_iteration
+    from jaxrens_al.dashboard.run_layout import model_for_iteration
 
     calchome = make_calchome(tmp_path, n_iter=2, with_model=True)
     m = model_for_iteration(calchome, 1)
@@ -157,7 +157,7 @@ def test_model_for_iteration_prefers_local_pkl(make_calchome, tmp_path):
 def test_model_for_iteration_falls_back_to_recorded_bundle(tmp_path):
     # A MACE-jax run has no .pkl; its model is the recorded trainer output
     # bundle DIR under trainer_output/, resolved from AL_progress.json.
-    from jaxrens_al.run_layout import (
+    from jaxrens_al.dashboard.run_layout import (
         model_for_iteration,
         trained_models_per_iteration,
     )
@@ -181,14 +181,14 @@ def test_model_for_iteration_falls_back_to_recorded_bundle(tmp_path):
 def test_model_for_iteration_none_when_nothing_recorded(
     make_calchome, tmp_path
 ):
-    from jaxrens_al.run_layout import model_for_iteration
+    from jaxrens_al.dashboard.run_layout import model_for_iteration
 
     calchome = make_calchome(tmp_path, n_iter=1, with_model=False)
     assert model_for_iteration(calchome, 0) is None
 
 
 def test_resampling_artifacts_none_when_absent(make_calchome, tmp_path):
-    from jaxrens_al.run_layout import (
+    from jaxrens_al.dashboard.run_layout import (
         quests_pca_json,
         resampled_provenance_json,
     )
@@ -200,7 +200,7 @@ def test_resampling_artifacts_none_when_absent(make_calchome, tmp_path):
 
 
 def test_resampling_artifacts_found_when_present(make_calchome, tmp_path):
-    from jaxrens_al.run_layout import (
+    from jaxrens_al.dashboard.run_layout import (
         quests_pca_json,
         resampled_provenance_json,
     )
@@ -233,7 +233,7 @@ def test_iteration_dirs_numeric_sorted(make_calchome, tmp_path):
 
 def test_training_results_dir_prefers_train_then_training(tmp_path):
     """The trainer working dir is 'train' (staged) or 'training' (older)."""
-    from jaxrens_al.run_layout import training_results_dir
+    from jaxrens_al.dashboard.run_layout import training_results_dir
 
     it = tmp_path / "0"
     assert training_results_dir(it) is None  # neither present
@@ -248,7 +248,7 @@ def test_training_results_dir_prefers_train_then_training(tmp_path):
 
 def test_training_accessors_read_the_train_dir(tmp_path, write_mace_train_log):
     """MACE logs under <i>/train/results are found (staged layout)."""
-    from jaxrens_al.run_layout import training_mace_for_iteration
+    from jaxrens_al.dashboard.run_layout import training_mace_for_iteration
 
     res = tmp_path / "0" / "train" / "results" / "calcdirs" / "0" / "results"
     res.mkdir(parents=True)
@@ -259,7 +259,7 @@ def test_training_accessors_read_the_train_dir(tmp_path, write_mace_train_log):
 
 def test_detect_ns_prefix_reads_mace_prefix(tmp_path):
     """The prefix is sniffed off <prefix>.run*.energies (e.g. mace_sn16)."""
-    from jaxrens_al.run_layout import detect_ns_prefix
+    from jaxrens_al.dashboard.run_layout import detect_ns_prefix
 
     out = tmp_path / "0" / "ns_sampler" / "results" / "output"
     out.mkdir(parents=True)
@@ -269,6 +269,6 @@ def test_detect_ns_prefix_reads_mace_prefix(tmp_path):
 
 
 def test_detect_ns_prefix_default_when_absent(tmp_path):
-    from jaxrens_al.run_layout import detect_ns_prefix
+    from jaxrens_al.dashboard.run_layout import detect_ns_prefix
 
     assert detect_ns_prefix(tmp_path / "0", default="ns") == "ns"

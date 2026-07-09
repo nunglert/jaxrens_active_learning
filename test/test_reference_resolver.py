@@ -11,8 +11,11 @@ from pathlib import Path
 
 import pytest
 
-from jaxrens_al.panels.reference import ReferenceConsumer, ReferenceNeed
-from jaxrens_al.reference_resolver import (
+from jaxrens_al.dashboard.panels.reference import (
+    ReferenceConsumer,
+    ReferenceNeed,
+)
+from jaxrens_al.run.reference_resolver import (
     _build_eos_reference,
     register_reference_kind,
     resolve_references,
@@ -86,7 +89,7 @@ def _fake_eos_build(monkeypatch):
         return files
 
     monkeypatch.setattr(
-        "jaxrens_al.reference_eval.build_eos_reference", _build
+        "jaxrens_al.run.reference_eval.build_eos_reference", _build
     )
     return calls
 

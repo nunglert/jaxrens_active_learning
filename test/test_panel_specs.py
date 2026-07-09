@@ -1,4 +1,4 @@
-"""Tests for the registry-driven panel wiring (jaxrens_al.panel_specs).
+"""Tests for the registry-driven panel wiring (jaxrens_al.dashboard.panel_specs).
 
 These lock the behaviour of ``dashboard.assemble`` after it was rebuilt on
 ``alviz``'s spec/registry machinery: the curated default set + gating must match
@@ -9,7 +9,7 @@ panels) must layer on top -- including several Steinhardt heatmaps at once.
 import pytest
 
 from jaxrens_al.dashboard import assemble, iteration_context, summary_context
-from jaxrens_al.panel_specs import SteinhardtSpec, default_specs
+from jaxrens_al.dashboard.panel_specs import SteinhardtSpec, default_specs
 
 pytestmark = pytest.mark.local
 
@@ -141,7 +141,7 @@ def test_authoritative_panels_replace_defaults(rich):
 # parse_panel_config: raw config dicts -> specs
 # ---------------------------------------------------------------------------
 def test_parse_panel_config_builds_specs():
-    from jaxrens_al.panel_specs import parse_panel_config
+    from jaxrens_al.dashboard.panel_specs import parse_panel_config
 
     raw = {
         "disable": ["ns_thermodynamics"],
@@ -158,14 +158,14 @@ def test_parse_panel_config_builds_specs():
 
 
 def test_parse_panel_config_none_when_empty():
-    from jaxrens_al.panel_specs import parse_panel_config
+    from jaxrens_al.dashboard.panel_specs import parse_panel_config
 
     assert parse_panel_config(None) is None
     assert parse_panel_config({"add": None, "disable": None}) is None
 
 
 def test_parse_panel_config_unknown_type_raises():
-    from jaxrens_al.panel_specs import parse_panel_config
+    from jaxrens_al.dashboard.panel_specs import parse_panel_config
 
     with pytest.raises(ValueError, match="Unknown panel type"):
         parse_panel_config({"add": [{"type": "bogus"}]})

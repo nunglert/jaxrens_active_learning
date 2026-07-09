@@ -36,7 +36,7 @@ from remote_handler.workflows import (
 from remote_handler.workflows.selectors import UniformSelector
 
 from jaxrens_al import template_dir
-from jaxrens_al.sampler import JaxrensNSSampler
+from jaxrens_al.run.sampler import JaxrensNSSampler
 
 logging.basicConfig(level=logging.INFO, stream=sys.stdout)
 

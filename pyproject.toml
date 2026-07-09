@@ -46,13 +46,13 @@ dev = [
 
 [project.scripts]
 jaxrens-al-dashboard = "jaxrens_al.cli:main"
-jaxrens-al-refdb = "jaxrens_al.reference_db:main"
+jaxrens-al-refdb = "jaxrens_al.run.reference_db:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
 [tool.setuptools.package-data]
-jaxrens_al = ["templates/*.j2"]
+jaxrens_al = ["run/templates/*.j2"]
 
 [tool.pytest.ini_options]
 testpaths = ["test"]

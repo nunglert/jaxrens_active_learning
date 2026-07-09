@@ -10,7 +10,7 @@ This script wires the *same* project / alviz panels the AL dashboard uses
 directly onto one extxyz of DFT-labelled configs (``REF_energy`` /
 ``REF_forces``, the keys ``remote_handler``'s evaluators write), so there is no
 panel logic here, only wiring. The real logic lives in
-:func:`jaxrens_al.section_dashboards.run_dft`; when jaxrens_al is installed,
+:func:`jaxrens_al.dashboard.section_dashboards.run_dft`; when jaxrens_al is installed,
 prefer the console subcommand ``jaxrens-al-dashboard dft``. Point it at the
 evaluator output, e.g.::
 
@@ -24,7 +24,7 @@ defaults can also come from a ``dashboard.{yaml,yml,toml,json}`` beside the
 first input file (or ``--config PATH``); CLI flags still win.
 """
 
-from jaxrens_al.section_dashboards import run_dft
+from jaxrens_al.dashboard.section_dashboards import run_dft
 
 if __name__ == "__main__":
     raise SystemExit(run_dft())

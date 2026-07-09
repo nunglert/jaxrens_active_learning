@@ -18,7 +18,7 @@ from remote_handler.processing.registry import (  # noqa: E402
     validate_args,
 )
 
-from jaxrens_al.processors import (  # noqa: E402
+from jaxrens_al.run.processors import (  # noqa: E402
     SteinhardtArgs,
     SteinhardtProcessor,
 )
@@ -39,7 +39,7 @@ def test_registration_module_defaults_to_this_module():
     """The framework auto-resolves it -- driver imports this to register."""
     assert (
         SteinhardtProcessor.registration_module
-        == "jaxrens_al.processors.steinhardt"
+        == "jaxrens_al.run.processors.steinhardt"
     )
 
 
@@ -110,11 +110,11 @@ def test_resolve_processing_dedups_into_one_job_and_delivers(
     import ase.io
     from ase import Atoms
 
-    from jaxrens_al.panels.steinhardt import (
+    from jaxrens_al.dashboard.panels.steinhardt import (
         SteinhardtDistributionPanel,
         SteinhardtHeatmapPanel,
     )
-    from jaxrens_al.processing_resolver import resolve_processing
+    from jaxrens_al.run.processing_resolver import resolve_processing
 
     pool = tmp_path / "pool.extxyz"
     ase.io.write(
@@ -179,7 +179,9 @@ def _write_pool(path):
 
 def _fresh_panel(configs, tmp_path):
     """A brand-new panel object, as a re-render would build."""
-    from jaxrens_al.panels.steinhardt import SteinhardtDistributionPanel
+    from jaxrens_al.dashboard.panels.steinhardt import (
+        SteinhardtDistributionPanel,
+    )
 
     return SteinhardtDistributionPanel(
         configs=configs, r_cut=3.5, l_values=(6,), datapath=tmp_path
@@ -190,7 +192,7 @@ def test_resolve_processing_only_annotates_missing_inputs(
     monkeypatch, tmp_path
 ):
     """A re-render with an added trajectory annotates only the new one."""
-    from jaxrens_al.processing_resolver import resolve_processing
+    from jaxrens_al.run.processing_resolver import resolve_processing
 
     pool_a = tmp_path / "a.extxyz"
     _write_pool(pool_a)
@@ -220,7 +222,7 @@ def test_resolve_processing_reannotates_when_input_is_newer(
     """A trajectory that changed after its annotation is re-processed."""
     import os
 
-    from jaxrens_al.processing_resolver import resolve_processing
+    from jaxrens_al.run.processing_resolver import resolve_processing
 
     pool = tmp_path / "pool.extxyz"
     _write_pool(pool)
@@ -243,7 +245,7 @@ def test_execution_context_selects_local_or_config(tmp_path):
     """'local' builds a local context; a name goes to from_file."""
     from remote_handler.exceptions import ConfigurationError
 
-    from jaxrens_al.processing_resolver import execution_context
+    from jaxrens_al.run.processing_resolver import execution_context
 
     ctx = execution_context("local", tmp_path / "wd")
     assert ctx["cluster_config"].executor == "direct"
@@ -261,7 +263,7 @@ def test_run_annotates_atoms():
     import numpy as np
     from ase import Atoms
 
-    from jaxrens_al.processors import steinhardt
+    from jaxrens_al.run.processors import steinhardt
 
     rng = np.random.default_rng(0)
     atoms = Atoms(
@@ -284,8 +286,8 @@ def test_steps_merge_steinhardt_needs_by_cutoff():
     processors by their fixed name), so needs sharing a cutoff must fold into one
     processor whose l_values are the union -- computed in a single pass.
     """
-    from jaxrens_al.panels.processing import ProcessingNeed
-    from jaxrens_al.processing_resolver import _steps_from_needs
+    from jaxrens_al.dashboard.panels.processing import ProcessingNeed
+    from jaxrens_al.run.processing_resolver import _steps_from_needs
 
     needs = [
         ProcessingNeed.make(
@@ -307,8 +309,8 @@ def test_steps_merge_steinhardt_needs_by_cutoff():
 
 def test_steps_reject_multiple_steinhardt_cutoffs():
     """Distinct r_cut can't coexist (cutoff-free q<l> keys) -> clear error."""
-    from jaxrens_al.panels.processing import ProcessingNeed
-    from jaxrens_al.processing_resolver import _steps_from_needs
+    from jaxrens_al.dashboard.panels.processing import ProcessingNeed
+    from jaxrens_al.run.processing_resolver import _steps_from_needs
 
     needs = [
         ProcessingNeed.make(
@@ -330,7 +332,7 @@ def test_steps_reject_multiple_steinhardt_cutoffs():
 # model_eval processor + resolver (remote MLIP evaluation for EOS / parity).
 # ---------------------------------------------------------------------------
 def test_model_eval_processor_is_a_processor_spec(tmp_path):
-    from jaxrens_al.processors import ModelEvalArgs, ModelEvalProcessor
+    from jaxrens_al.run.processors import ModelEvalArgs, ModelEvalProcessor
 
     # A bundle *directory* is staged as a single .tar.
     bundle = tmp_path / "trainer_it0.bundle"
@@ -354,7 +356,7 @@ def test_model_eval_processor_is_a_processor_spec(tmp_path):
 
 
 def test_model_eval_processor_stages_plain_file(tmp_path):
-    from jaxrens_al.processors import ModelEvalProcessor
+    from jaxrens_al.run.processors import ModelEvalProcessor
 
     pkl = tmp_path / "model.pkl"
     pkl.write_bytes(b"\x00")
@@ -408,8 +410,8 @@ def _refs(tmp_path, name):
 
 def test_resolve_model_evaluations_one_job_per_model(monkeypatch, tmp_path):
     """Two panels sharing a model -> one job; a second model -> a second job."""
-    from jaxrens_al.panels.model_eval import ModelEvalNeed
-    from jaxrens_al.processing_resolver import resolve_model_evaluations
+    from jaxrens_al.dashboard.panels.model_eval import ModelEvalNeed
+    from jaxrens_al.run.processing_resolver import resolve_model_evaluations
 
     ref = _refs(tmp_path, "eos_a.extxyz")
     _FakeModelEvalHandler.calls.clear()
@@ -455,7 +457,7 @@ def test_run_model_eval_annotates_atoms(tmp_path):
     import numpy as np
     from ase import Atoms
 
-    from jaxrens_al.processors import model_eval
+    from jaxrens_al.run.processors import model_eval
 
     atoms = Atoms(
         "Cu2", positions=[[0, 0, 0], [1.5, 0, 0]], cell=[6, 6, 6], pbc=True
@@ -500,7 +502,7 @@ def test_spacegroup_run_labels_structures():
     pytest.importorskip("spglib")
     from ase.build import bulk
 
-    from jaxrens_al.processors import spacegroup
+    from jaxrens_al.run.processors import spacegroup
 
     atoms = bulk("Cu", "fcc", a=3.6, cubic=True)  # -> Fm-3m (225)
     out = spacegroup.run([atoms], {"symprec": 1e-3})
@@ -509,7 +511,7 @@ def test_spacegroup_run_labels_structures():
 
 
 def test_spacegroup_processor_spec():
-    from jaxrens_al.processors import SpaceGroupArgs, SpaceGroupProcessor
+    from jaxrens_al.run.processors import SpaceGroupArgs, SpaceGroupProcessor
 
     proc = SpaceGroupProcessor(symprec=1e-2)
     assert isinstance(proc, Processor) and proc.name == "spacegroup"
@@ -520,7 +522,7 @@ def test_spacegroup_processor_spec():
 
 
 def test_relax_processor_stages_bundle_dir(tmp_path):
-    from jaxrens_al.processors import RelaxArgs, RelaxProcessor
+    from jaxrens_al.run.processors import RelaxArgs, RelaxProcessor
 
     bundle = tmp_path / "trainer_it0.bundle"
     bundle.mkdir()
@@ -565,8 +567,8 @@ class _FakePhaseHandler:
 def test_resolve_phase_labeling_one_job_per_model(monkeypatch, tmp_path):
     """Relax+spacegroup is one [relax, spacegroup] job per model; delivered
     per-model so shared inputs don't clobber."""
-    from jaxrens_al.panels.phase import PhaseNeed
-    from jaxrens_al.processing_resolver import resolve_phase_labeling
+    from jaxrens_al.dashboard.panels.phase import PhaseNeed
+    from jaxrens_al.run.processing_resolver import resolve_phase_labeling
 
     traj = _refs(tmp_path, "ns.run00.traj.extxyz")
     _FakePhaseHandler.calls.clear()

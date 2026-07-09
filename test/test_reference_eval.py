@@ -1,6 +1,6 @@
 """Tests for the one-shot reference evaluation orchestration.
 
-``jaxrens_al.reference_eval`` drives a ground-truth evaluator over named config
+``jaxrens_al.run.reference_eval`` drives a ground-truth evaluator over named config
 sets purely through the ``update`` / ``get_evaluated_configs`` contract, so a
 tiny fake evaluator (no ``remote_handler``, no VASP) exercises the whole flow --
 per-set working dirs, labelling, and the concatenation into one reference db.
@@ -14,7 +14,7 @@ from ase import Atoms
 
 pytest.importorskip("ase")
 
-from jaxrens_al.reference_eval import (  # noqa: E402
+from jaxrens_al.run.reference_eval import (  # noqa: E402
     concatenate_configs,
     evaluate_config_sets,
 )
@@ -85,8 +85,8 @@ def test_concatenate_configs_merges_labelled_files(tmp_path):
 def test_build_eos_reference_writes_per_phase_files(tmp_path, monkeypatch):
     import ase.io
 
-    import jaxrens_al.reference_db as refdb
-    from jaxrens_al.reference_eval import build_eos_reference
+    import jaxrens_al.run.reference_db as refdb
+    from jaxrens_al.run.reference_eval import build_eos_reference
 
     def _phase(mp_id):
         at = Atoms(

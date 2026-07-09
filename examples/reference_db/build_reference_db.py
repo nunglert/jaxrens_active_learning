@@ -3,7 +3,7 @@
 Two dashboard panels want a *reference* set of configs the AL loop does not
 itself produce:
 
-  * the **EOS** panel (``jaxrens_al.panels.eos``) needs, per crystalline phase,
+  * the **EOS** panel (``jaxrens_al.dashboard.panels.eos``) needs, per crystalline phase,
     a volume scan with DFT energies -- E(V) / H(P) it fits Birch-Murnaghan to;
   * the **atomic-environments PCA** (``atomic_envs``) is far more informative
     when *fitted on a proper reference database* (spanning phases + volumes +
@@ -60,12 +60,15 @@ from remote_handler.core.cluster_handler import ClusterConfig
 from remote_handler.core.file_handler import RemoteFileSystem
 from remote_handler.workflows import evaluators
 
-from jaxrens_al.reference_db import (
+from jaxrens_al.run.reference_db import (
     eos_phase_scans,
     fetch_mp_elemental,
     rattle_atoms,
 )
-from jaxrens_al.reference_eval import concatenate_configs, evaluate_config_sets
+from jaxrens_al.run.reference_eval import (
+    concatenate_configs,
+    evaluate_config_sets,
+)
 
 logging.basicConfig(level=logging.INFO, stream=sys.stdout)
 

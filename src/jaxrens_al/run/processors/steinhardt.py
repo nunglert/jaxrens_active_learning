@@ -23,7 +23,7 @@ Requires ``jaxrens_al`` installed in the cluster analysis env.
 Use it like any processor, e.g. on its own or after a relaxation::
 
     from remote_handler.processing import RemoteTrajectoryProcessor
-    from jaxrens_al.processors import SteinhardtProcessor
+    from jaxrens_al.run.processors import SteinhardtProcessor
 
     RemoteTrajectoryProcessor(
         traj_files, ..., processors=[SteinhardtProcessor(r_cut=3.5)]
@@ -31,7 +31,7 @@ Use it like any processor, e.g. on its own or after a relaxation::
 
 The annotated trajectory (per-atom ``q<l>`` / ``w<l>`` arrays + per-frame
 ``q<l>_mean`` / ``w<l>_mean`` in ``atoms.info``) is read back by the pure
-:mod:`jaxrens_al.panels.steinhardt` reader panels.
+:mod:`jaxrens_al.dashboard.panels.steinhardt` reader panels.
 """
 
 from __future__ import annotations

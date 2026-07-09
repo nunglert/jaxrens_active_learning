@@ -6,10 +6,10 @@ run: it reads ``AL_progress.json`` and shows cross-iteration progress
 as far as the iteration-0 NS sampling -- e.g. it died pulling output back --
 there is no ``AL_progress.json`` and no AL progress to show, so the CLI bails.
 
-This script reuses the *same* project panels (``jaxrens_al.panels``) the AL
+This script reuses the *same* project panels (``jaxrens_al.dashboard.panels``) the AL
 dashboard uses, wired directly onto one multi-run NS output directory (the
 ``<prefix>.runNN.energies`` layout) -- so there is no panel logic here, only
-wiring. The real logic lives in :func:`jaxrens_al.section_dashboards.run_ns`;
+wiring. The real logic lives in :func:`jaxrens_al.dashboard.section_dashboards.run_ns`;
 when jaxrens_al is installed, prefer the equivalent console subcommand
 ``jaxrens-al-dashboard ns``. Run it in an env with jaxrens installed, e.g.::
 
@@ -27,7 +27,7 @@ defaults can also come from a ``dashboard.{yaml,yml,toml,json}`` beside the
 output dir (or ``--config PATH``); CLI flags still win.
 """
 
-from jaxrens_al.section_dashboards import run_ns
+from jaxrens_al.dashboard.section_dashboards import run_ns
 
 if __name__ == "__main__":
     raise SystemExit(run_ns())

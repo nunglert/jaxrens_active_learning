@@ -365,7 +365,7 @@ def eos_reference():
     """
 
     def _make(path):
-        from jaxrens_al.panels.eos import _birch_murnaghan
+        from jaxrens_al.dashboard.panels.eos import _birch_murnaghan
 
         frames = []
         for a in np.linspace(5.4, 6.6, 9):
@@ -396,7 +396,9 @@ def fake_ns_monitor(monkeypatch):
     ``_load_monitors`` seam (one Monitor per replica) lets a full-dashboard
     render include it without jaxrens or a real ``.energies``/``.checkpoint``.
     """
-    from jaxrens_al.panels.thermodynamics import NSThermodynamicsHeatmap
+    from jaxrens_al.dashboard.panels.thermodynamics import (
+        NSThermodynamicsHeatmap,
+    )
 
     class _FakeMonitor:
         def __init__(self, *args):
@@ -422,7 +424,7 @@ def fake_ns_traces(monkeypatch):
     Two fake Monitors carrying ``iteration_trace`` / ``energy_trace`` so the
     per-replica energy-vs-iteration panel renders without jaxrens.
     """
-    from jaxrens_al.panels.traces import NSEnergyTracePanel
+    from jaxrens_al.dashboard.panels.traces import NSEnergyTracePanel
 
     class _FakeTraceMonitor:
         def __init__(self, label):
@@ -445,7 +447,7 @@ def fake_adaptation_log(monkeypatch):
     stub ``.adaptation.h5`` without h5py. Shapes match the real
     ``AdaptationLog``: ``(n_records, n_runs, n_moves)``.
     """
-    from jaxrens_al.panels.adaptation import _AdaptationTracePanel
+    from jaxrens_al.dashboard.panels.adaptation import _AdaptationTracePanel
 
     class _FakeAdaptLog:
         iterations = np.array([0, 10, 20])
@@ -469,7 +471,7 @@ def fake_acc_log(monkeypatch):
     Lets the move-acceptance panel compute/render from a stub
     ``.acc_rates.h5`` without jaxrens or h5py.
     """
-    from jaxrens_al.panels.acceptance import MoveAcceptancePanel
+    from jaxrens_al.dashboard.panels.acceptance import MoveAcceptancePanel
 
     class _FakeAccLog:
         iterations = np.array([0, 10, 20])
@@ -495,7 +497,7 @@ def fake_acc_log(monkeypatch):
 @pytest.fixture
 def fake_re_log(monkeypatch):
     """Patch the RE-swap panel's jaxrens reader with a fake RE log."""
-    from jaxrens_al.panels.acceptance import RESwapAcceptancePanel
+    from jaxrens_al.dashboard.panels.acceptance import RESwapAcceptancePanel
 
     class _FakeRELog:
         iterations = np.array([0, 100, 200])
@@ -521,7 +523,7 @@ def fake_quests_descriptors(monkeypatch):
     Returns one fake per-atom descriptor row per atom, so PCA + plotting run
     without the ``quests`` package installed.
     """
-    from jaxrens_al.panels.environments import AtomicEnvsPanel
+    from jaxrens_al.dashboard.panels.environments import AtomicEnvsPanel
 
     rng = np.random.default_rng(3)
 
@@ -539,7 +541,10 @@ def fake_eos_eval(monkeypatch):
     Returns a smooth synthetic energy per structure (quadratic in volume), so
     the panel computes/renders without loading a real model.
     """
-    from jaxrens_al.panels.eos import EquationOfStatePanel, _birch_murnaghan
+    from jaxrens_al.dashboard.panels.eos import (
+        EquationOfStatePanel,
+        _birch_murnaghan,
+    )
 
     def _fake(self, model_file, atoms_list):
         # BM curve (slightly off the DFT one) so the model fit also converges.
@@ -564,7 +569,7 @@ def fake_model_parity_eval(monkeypatch):
     slightly perturbed -- so the panel computes/renders a non-trivial parity
     without loading a real model.
     """
-    from jaxrens_al.panels.training import ModelParityPanel
+    from jaxrens_al.dashboard.panels.training import ModelParityPanel
 
     def _fake(self, model_file, atoms_list):
         energies = [

@@ -15,16 +15,20 @@ import pytest
 pytest.importorskip("alviz")
 from alviz.panels import HeatmapData, ParityData  # noqa: E402
 
-from jaxrens_al.panels.progress import DatasetGrowthPanel  # noqa: E402
-from jaxrens_al.panels.quests import (  # noqa: E402
+from jaxrens_al.dashboard.panels.progress import (  # noqa: E402
+    DatasetGrowthPanel,
+)
+from jaxrens_al.dashboard.panels.quests import (  # noqa: E402
     QuestsPCAPanel,
     ResampledGridPanel,
 )
-from jaxrens_al.panels.sampling import NSSampledEnergyPanel  # noqa: E402
-from jaxrens_al.panels.thermodynamics import (  # noqa: E402
+from jaxrens_al.dashboard.panels.sampling import (  # noqa: E402
+    NSSampledEnergyPanel,
+)
+from jaxrens_al.dashboard.panels.thermodynamics import (  # noqa: E402
     NSThermodynamicsHeatmap,
 )
-from jaxrens_al.panels.training import (  # noqa: E402
+from jaxrens_al.dashboard.panels.training import (  # noqa: E402
     MaceTrainingCurve,
     ModelParityPanel,
     NeuralILParityPanel,
@@ -250,7 +254,7 @@ def test_thermodynamics_swap_axes_orientation(tmp_path):
 # Adaptation-trace panels + energy trace (tested through their seams)
 # --------------------------------------------------------------------------
 def test_step_size_panel_reads_adaptation(tmp_path, fake_adaptation_log):
-    from jaxrens_al.panels.adaptation import StepSizePanel
+    from jaxrens_al.dashboard.panels.adaptation import StepSizePanel
 
     panel = StepSizePanel(adaptation_file="x.h5", datapath=tmp_path)
     data = panel.compute_data({})
@@ -264,7 +268,9 @@ def test_step_size_panel_reads_adaptation(tmp_path, fake_adaptation_log):
 def test_adaptation_acceptance_panel_reads_adaptation(
     tmp_path, fake_adaptation_log
 ):
-    from jaxrens_al.panels.adaptation import AdaptationAcceptancePanel
+    from jaxrens_al.dashboard.panels.adaptation import (
+        AdaptationAcceptancePanel,
+    )
 
     panel = AdaptationAcceptancePanel(
         adaptation_file="x.h5", datapath=tmp_path
@@ -275,7 +281,7 @@ def test_adaptation_acceptance_panel_reads_adaptation(
 
 
 def test_energy_trace_panel_per_replica(tmp_path, fake_ns_traces):
-    from jaxrens_al.panels.traces import NSEnergyTracePanel
+    from jaxrens_al.dashboard.panels.traces import NSEnergyTracePanel
 
     panel = NSEnergyTracePanel(
         result_dirs=[tmp_path / "out"], prefix="ns", datapath=tmp_path
@@ -302,7 +308,10 @@ def test_quests_pca_panel_reads_structures(make_calchome, tmp_path):
 
 
 def test_eos_panel_multi_phase(eos_reference, tmp_path):
-    from jaxrens_al.panels.eos import EquationOfStatePanel, _birch_murnaghan
+    from jaxrens_al.dashboard.panels.eos import (
+        EquationOfStatePanel,
+        _birch_murnaghan,
+    )
 
     # Two phases (same scan here) -> two fitted curves.
     ref_a = eos_reference(tmp_path / "phase_a.extxyz")
@@ -330,8 +339,11 @@ def test_eos_panel_remote_eval_declares_need_and_reads_annotation(
 ):
     import ase.io
 
-    from jaxrens_al.panels.eos import EquationOfStatePanel
-    from jaxrens_al.panels.model_eval import ModelEvalNeed, model_eval_keys
+    from jaxrens_al.dashboard.panels.eos import EquationOfStatePanel
+    from jaxrens_al.dashboard.panels.model_eval import (
+        ModelEvalNeed,
+        model_eval_keys,
+    )
 
     ref = eos_reference(tmp_path / "eos_a.extxyz")
     panel = EquationOfStatePanel(
@@ -365,7 +377,7 @@ def test_eos_panel_remote_eval_declares_need_and_reads_annotation(
 def test_eos_panel_remote_eval_errors_without_annotation(
     eos_reference, tmp_path
 ):
-    from jaxrens_al.panels.eos import EquationOfStatePanel
+    from jaxrens_al.dashboard.panels.eos import EquationOfStatePanel
 
     ref = eos_reference(tmp_path / "eos_a.extxyz")
     panel = EquationOfStatePanel(
@@ -382,8 +394,8 @@ def test_eos_panel_remote_eval_errors_without_annotation(
 def test_model_parity_remote_eval_reads_annotation(tmp_path, write_configs):
     import ase.io
 
-    from jaxrens_al.panels.model_eval import model_eval_keys
-    from jaxrens_al.panels.training import ModelParityPanel
+    from jaxrens_al.dashboard.panels.model_eval import model_eval_keys
+    from jaxrens_al.dashboard.panels.training import ModelParityPanel
 
     cfg = tmp_path / "db_val.extxyz"
     write_configs(
@@ -414,8 +426,8 @@ def test_model_parity_remote_eval_reads_annotation(tmp_path, write_configs):
 
 
 def test_eos_panel_element_mode_declares_and_receives_need(tmp_path):
-    from jaxrens_al.panels.eos import EquationOfStatePanel
-    from jaxrens_al.panels.reference import ReferenceNeed
+    from jaxrens_al.dashboard.panels.eos import EquationOfStatePanel
+    from jaxrens_al.dashboard.panels.reference import ReferenceNeed
 
     panel = EquationOfStatePanel(
         model_file="m.pkl",
@@ -435,7 +447,7 @@ def test_eos_panel_element_mode_declares_and_receives_need(tmp_path):
 
 
 def test_eos_panel_explicit_mode_declares_no_need(tmp_path):
-    from jaxrens_al.panels.eos import EquationOfStatePanel
+    from jaxrens_al.dashboard.panels.eos import EquationOfStatePanel
 
     panel = EquationOfStatePanel(
         references=["a.extxyz"], model_file="m.pkl", datapath=tmp_path
@@ -446,7 +458,7 @@ def test_eos_panel_explicit_mode_declares_no_need(tmp_path):
 def test_eos_panel_references_directory_is_expanded(eos_reference, tmp_path):
     import os
 
-    from jaxrens_al.panels.eos import EquationOfStatePanel
+    from jaxrens_al.dashboard.panels.eos import EquationOfStatePanel
 
     # A directory of per-phase scans -> the panel expands it to the sorted
     # eos_*.extxyz files, so a user can point at the dir instead of listing.
@@ -466,7 +478,7 @@ def test_eos_panel_references_directory_is_expanded(eos_reference, tmp_path):
 
 
 def test_eos_panel_empty_reference_directory_raises(tmp_path):
-    from jaxrens_al.panels.eos import EquationOfStatePanel
+    from jaxrens_al.dashboard.panels.eos import EquationOfStatePanel
 
     (tmp_path / "empty").mkdir()
     with pytest.raises(ValueError, match="no .*extxyz"):
@@ -478,7 +490,7 @@ def test_eos_panel_empty_reference_directory_raises(tmp_path):
 
 
 def test_eos_panel_needs_exactly_one_source(tmp_path):
-    from jaxrens_al.panels.eos import EquationOfStatePanel
+    from jaxrens_al.dashboard.panels.eos import EquationOfStatePanel
 
     with pytest.raises(ValueError, match="exactly one"):
         EquationOfStatePanel(model_file="m.pkl", datapath=tmp_path)
@@ -494,7 +506,7 @@ def test_eos_panel_needs_exactly_one_source(tmp_path):
 def test_atomic_envs_panel_pca(
     make_calchome, tmp_path, fake_quests_descriptors
 ):
-    from jaxrens_al.panels.environments import AtomicEnvsPanel
+    from jaxrens_al.dashboard.panels.environments import AtomicEnvsPanel
 
     calchome = make_calchome(tmp_path, n_iter=1)
     sampled = calchome / "sampler_output" / "s0.extxyz"
@@ -511,7 +523,7 @@ def test_atomic_envs_panel_subsamples_large_pool(
 ):
     # The sampler is a pure producer: a big pool must be thinned before the
     # (expensive) descriptor step, not mapped in full.
-    from jaxrens_al.panels.environments import AtomicEnvsPanel
+    from jaxrens_al.dashboard.panels.environments import AtomicEnvsPanel
 
     calchome = make_calchome(tmp_path, n_iter=1, n_sampled=40)
     sampled = calchome / "sampler_output" / "s0.extxyz"
@@ -530,7 +542,7 @@ def _write_annotated(src, dest, l_values, seed=0):
 
     Attaches the same per-atom ``q<l>``/``w<l>`` arrays + per-frame
     ``q<l>_mean``/``w<l>_mean`` layout the real
-    :class:`jaxrens_al.processors.steinhardt.SteinhardtProcessor` produces, so
+    :class:`jaxrens_al.run.processors.steinhardt.SteinhardtProcessor` produces, so
     the pure reader panels can be exercised with no jaxrens/cluster. ``q_l`` is
     drawn from a two-cluster mixture in [0, 1]; ``w_l`` a small signed value.
     """
@@ -556,7 +568,9 @@ def test_steinhardt_distribution_panel_reads_annotation(
     make_calchome, tmp_path
 ):
     """Distribution panel reads an annotated artifact."""
-    from jaxrens_al.panels.steinhardt import SteinhardtDistributionPanel
+    from jaxrens_al.dashboard.panels.steinhardt import (
+        SteinhardtDistributionPanel,
+    )
 
     calchome = make_calchome(tmp_path, n_iter=1)
     sampled = calchome / "sampler_output" / "s0.extxyz"
@@ -582,7 +596,7 @@ def test_steinhardt_heatmap_panel_reads_same_artifact(make_calchome, tmp_path):
     """
     from alviz.panels import HeatmapData
 
-    from jaxrens_al.panels.steinhardt import (
+    from jaxrens_al.dashboard.panels.steinhardt import (
         SteinhardtDistributionPanel,
         SteinhardtHeatmapPanel,
     )
@@ -616,7 +630,9 @@ def test_steinhardt_distribution_joint_scatter_renders(
 ):
     import matplotlib.pyplot as plt
 
-    from jaxrens_al.panels.steinhardt import SteinhardtDistributionPanel
+    from jaxrens_al.dashboard.panels.steinhardt import (
+        SteinhardtDistributionPanel,
+    )
 
     calchome = make_calchome(tmp_path, n_iter=1)
     sampled = calchome / "sampler_output" / "s0.extxyz"
@@ -640,7 +656,9 @@ def test_steinhardt_distribution_joint_scatter_renders(
 
 def test_steinhardt_panel_missing_array_errors(make_calchome, tmp_path):
     """A plain (un-annotated) trajectory trips the helpful read-back error."""
-    from jaxrens_al.panels.steinhardt import SteinhardtDistributionPanel
+    from jaxrens_al.dashboard.panels.steinhardt import (
+        SteinhardtDistributionPanel,
+    )
 
     calchome = make_calchome(tmp_path, n_iter=1)
     sampled = calchome / "sampler_output" / "s0.extxyz"
@@ -689,7 +707,9 @@ class _NDeadMonitor:
 def test_steinhardt_expectation_heatmap_rows_per_replica(tmp_path):
     """One row per replica; the panel discovers the per-replica trajectories
     itself (r_cut=None -> read as already annotated) and reweights each."""
-    from jaxrens_al.panels.steinhardt import SteinhardtExpectationHeatmap
+    from jaxrens_al.dashboard.panels.steinhardt import (
+        SteinhardtExpectationHeatmap,
+    )
 
     d = _write_run_trajs(
         tmp_path / "nsdir",
@@ -719,7 +739,9 @@ def test_steinhardt_expectation_heatmap_rows_per_replica(tmp_path):
 def test_steinhardt_expectation_heatmap_handles_subsampled_traj(tmp_path):
     """A trajectory subsampled vs the dead points is held piecewise-constant
     over its slice windows (via 'iter') to a full per-dead-point observable."""
-    from jaxrens_al.panels.steinhardt import SteinhardtExpectationHeatmap
+    from jaxrens_al.dashboard.panels.steinhardt import (
+        SteinhardtExpectationHeatmap,
+    )
 
     # 4 retained configs at dead-point indices 0,2,4,6 of an 8-dead-point run.
     d = _write_run_trajs(
@@ -737,7 +759,9 @@ def test_steinhardt_expectation_heatmap_handles_subsampled_traj(tmp_path):
 
 def test_steinhardt_expectation_subsampled_without_iter_errors(tmp_path):
     """Subsampled trajectory with no 'iter' index -> actionable error."""
-    from jaxrens_al.panels.steinhardt import SteinhardtExpectationHeatmap
+    from jaxrens_al.dashboard.panels.steinhardt import (
+        SteinhardtExpectationHeatmap,
+    )
 
     d = _write_run_trajs(tmp_path / "nsdir", "ns", {0: [0.1, 0.2]})
     panel = SteinhardtExpectationHeatmap(
@@ -749,7 +773,9 @@ def test_steinhardt_expectation_subsampled_without_iter_errors(tmp_path):
 
 
 def test_steinhardt_expectation_heatmap_input_errors(tmp_path):
-    from jaxrens_al.panels.steinhardt import SteinhardtExpectationHeatmap
+    from jaxrens_al.dashboard.panels.steinhardt import (
+        SteinhardtExpectationHeatmap,
+    )
 
     # No result dirs.
     empty = SteinhardtExpectationHeatmap(
@@ -783,7 +809,9 @@ def test_steinhardt_expectation_heatmap_input_errors(tmp_path):
 def test_steinhardt_expectation_declares_need_per_traj(tmp_path):
     """With r_cut, the panel declares a need per discovered trajectory; the
     resolver delivers annotated paths back via receive_annotations."""
-    from jaxrens_al.panels.steinhardt import SteinhardtExpectationHeatmap
+    from jaxrens_al.dashboard.panels.steinhardt import (
+        SteinhardtExpectationHeatmap,
+    )
 
     d = _write_run_trajs(tmp_path / "nsdir", "ns", {0: [0.1, 0.2], 1: [0.3]})
     trajs = [str(d / "ns.run00.traj.extxyz"), str(d / "ns.run01.traj.extxyz")]
@@ -807,8 +835,10 @@ def test_steinhardt_expectation_declares_need_per_traj(tmp_path):
 
 def test_steinhardt_panel_declares_need_and_receives(make_calchome, tmp_path):
     """configs= declares a plain need; the resolver later delivers the path."""
-    from jaxrens_al.panels.processing import ProcessingNeed
-    from jaxrens_al.panels.steinhardt import SteinhardtDistributionPanel
+    from jaxrens_al.dashboard.panels.processing import ProcessingNeed
+    from jaxrens_al.dashboard.panels.steinhardt import (
+        SteinhardtDistributionPanel,
+    )
 
     calchome = make_calchome(tmp_path, n_iter=1)
     sampled = calchome / "sampler_output" / "s0.extxyz"
@@ -835,7 +865,7 @@ def test_steinhardt_panel_declares_need_and_receives(make_calchome, tmp_path):
 
 
 def test_move_acceptance_panel_reads_log(tmp_path, fake_acc_log):
-    from jaxrens_al.panels.acceptance import MoveAcceptancePanel
+    from jaxrens_al.dashboard.panels.acceptance import MoveAcceptancePanel
 
     panel = MoveAcceptancePanel(acc_rates_file="x.h5", datapath=tmp_path)
     data = panel.compute_data({})
@@ -847,7 +877,7 @@ def test_move_acceptance_panel_reads_log(tmp_path, fake_acc_log):
 
 
 def test_re_swap_panel_reads_log(tmp_path, fake_re_log):
-    from jaxrens_al.panels.acceptance import RESwapAcceptancePanel
+    from jaxrens_al.dashboard.panels.acceptance import RESwapAcceptancePanel
 
     panel = RESwapAcceptancePanel(re_stats_file="x.h5", datapath=tmp_path)
     data = panel.compute_data({})
@@ -891,7 +921,7 @@ def _write_labelled_trajs(dirpath, prefix, sgs_by_run):
 
 
 def test_phase_diagram_panel_declares_need_and_reads_labels(tmp_path):
-    from jaxrens_al.panels.phase import PhaseDiagramPanel, PhaseNeed
+    from jaxrens_al.dashboard.panels.phase import PhaseDiagramPanel, PhaseNeed
 
     nsdir = tmp_path / "nsdir"
     # Raw NS trajectories the panel discovers + declares a need over.
@@ -931,7 +961,7 @@ def test_phase_diagram_panel_declares_need_and_reads_labels(tmp_path):
 
 
 def test_phase_diagram_panel_errors_without_labels(tmp_path):
-    from jaxrens_al.panels.phase import PhaseDiagramPanel
+    from jaxrens_al.dashboard.panels.phase import PhaseDiagramPanel
 
     nsdir = tmp_path / "nsdir"
     _write_run_trajs(nsdir, "ns", {0: [0.0, 0.0]})

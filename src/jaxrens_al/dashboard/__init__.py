@@ -1,9 +1,9 @@
 """Assemble an alviz dashboard for a remote_handler active-learning run.
 
 This is the heart of the composition root: it knows *where* remote_handler /
-jaxrens put a run's artifacts (via :mod:`jaxrens_al.run_layout`) and feeds
+jaxrens put a run's artifacts (via :mod:`jaxrens_al.dashboard.run_layout`) and feeds
 those paths into panels -- generic ``Extxyz*`` readers from ``alviz.panels``
-plus this project's own panels (``jaxrens_al.panels``). Neither alviz nor
+plus this project's own panels (``jaxrens_al.dashboard.panels``). Neither alviz nor
 remote_handler knows about the other; this module is the only bridge.
 
 The same logic serves two views:
@@ -26,13 +26,7 @@ from typing import Optional
 
 from alviz import Dashboard
 
-# Config keys live in one place -- jaxrens_al.keys.
-from jaxrens_al.keys import (
-    REF_ENERGY_KEY,
-    REF_FORCES_KEY,
-    SURROGATE_ENERGY_KEY,
-)
-from jaxrens_al.run_layout import (
+from jaxrens_al.dashboard.run_layout import (
     acc_rates_file,
     adaptation_file,
     evaluated_configs,
@@ -53,6 +47,13 @@ from jaxrens_al.run_layout import (
     training_mace_logs,
     training_npz_files,
     training_npz_for_iteration,
+)
+
+# Config keys live in one place -- jaxrens_al.keys.
+from jaxrens_al.keys import (
+    REF_ENERGY_KEY,
+    REF_FORCES_KEY,
+    SURROGATE_ENERGY_KEY,
 )
 
 
@@ -139,7 +140,7 @@ def detect_backend(mace_logs=None, model_file=None) -> str:
     MACE writes ``*_train.txt`` logs and a ``.bundle`` / ``-jax.pkl`` model;
     NeuralIL writes ``error_*.txt`` / ``.npz`` and a plain ``.pkl``. Mirrors the
     section path's ``"mace" if mace_logs else "neuralil"``
-    (:func:`jaxrens_al.sections.training_section`) and additionally sniffs the
+    (:func:`jaxrens_al.dashboard.sections.training_section`) and additionally sniffs the
     model artifact, so a MACE bundle is recognised even when its logs weren't
     kept. The AL-page context builders use this so the backend need not be set
     by hand -- an explicit ``eos_backend`` still overrides it.
@@ -270,7 +271,10 @@ def assemble(ctx: RunContext, *, specs=None, panel_config=None) -> list:
     """
     from alviz import build_entries, resolve_panel_list
 
-    from jaxrens_al.panel_specs import apply_ctx_globals, default_specs
+    from jaxrens_al.dashboard.panel_specs import (
+        apply_ctx_globals,
+        default_specs,
+    )
 
     if specs is None:
         specs = default_specs(ctx)

@@ -32,7 +32,7 @@ import numpy as np
 from alviz import Entry, JsonDict, PanelSpec, register_panel, register_simple
 from alviz.panels import ParityData, ParityPanel
 
-from jaxrens_al.panels.model_eval import (
+from jaxrens_al.dashboard.panels.model_eval import (
     ModelEvalConsumer,
     ModelEvalNeed,
     model_eval_keys,
@@ -222,7 +222,7 @@ class ModelParityPanel(ModelEvalConsumer, ParityPanel):
         (eV); ``forces`` a list of ``(n_atoms, 3)`` arrays, or ``None`` when
         ``show_forces`` is off.
         """
-        from jaxrens_al.panels.model_eval import score_atoms
+        from jaxrens_al.dashboard.panels.model_eval import score_atoms
 
         return score_atoms(
             model_file,

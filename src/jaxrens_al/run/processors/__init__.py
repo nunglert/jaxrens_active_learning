@@ -14,13 +14,16 @@ Importing this package pulls in ``remote_handler`` (the ``[run]`` extra) --
 keep it off the dashboard import path (the reader panels never import it).
 """
 
-from jaxrens_al.processors.model_eval import ModelEvalArgs, ModelEvalProcessor
-from jaxrens_al.processors.relax import RelaxArgs, RelaxProcessor
-from jaxrens_al.processors.spacegroup import (
+from jaxrens_al.run.processors.model_eval import (
+    ModelEvalArgs,
+    ModelEvalProcessor,
+)
+from jaxrens_al.run.processors.relax import RelaxArgs, RelaxProcessor
+from jaxrens_al.run.processors.spacegroup import (
     SpaceGroupArgs,
     SpaceGroupProcessor,
 )
-from jaxrens_al.processors.steinhardt import (
+from jaxrens_al.run.processors.steinhardt import (
     SteinhardtArgs,
     SteinhardtProcessor,
 )

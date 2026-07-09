@@ -17,7 +17,7 @@ import numpy as np
 # ---------------------------------------------------------------------------
 from alviz import Entry, JsonDict, register_simple
 
-from jaxrens_al.run_layout import sampled_configs_per_iteration
+from jaxrens_al.dashboard.run_layout import sampled_configs_per_iteration
 
 
 class NSSampledEnergyPanel(Entry):

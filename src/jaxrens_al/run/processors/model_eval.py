@@ -1,16 +1,16 @@
 """The ``model_eval`` processor -- score configs with a trained MLIP remotely.
 
 A downstream processor for ``remote_handler``'s trajectory-processing framework
-(mirroring :mod:`jaxrens_al.processors.steinhardt`). On the cluster it loads a
+(mirroring :mod:`jaxrens_al.run.processors.steinhardt`). On the cluster it loads a
 trained model through the jaxrens backend and annotates each frame with the
 model's energy (and optionally per-atom forces), so a GPU-only model (a MACE-jax
 bundle needing ``cuequivariance``) is evaluated on a GPU node instead of in the
 CPU dashboard process.
 
 Both the EOS panel (energy curve) and
-:class:`~jaxrens_al.panels.training.ModelParityPanel` (re-scored parity) read
+:class:`~jaxrens_al.dashboard.panels.training.ModelParityPanel` (re-scored parity) read
 the result back -- one processor serves both. The predictions land under
-per-model ``info``/``arrays`` keys (:func:`jaxrens_al.panels.model_eval.
+per-model ``info``/``arrays`` keys (:func:`jaxrens_al.dashboard.panels.model_eval.
 model_eval_keys`) so distinct iterations' models never collide on a shared
 config file.
 
@@ -79,7 +79,7 @@ def run(atoms_list, args, calcpath=None):
     ``want_forces``, ``atoms.arrays[forces_key]`` (``(n_atoms, 3)``) -- the keys
     the EOS / model-parity reader panels expect.
     """
-    from jaxrens_al.panels.model_eval import score_atoms
+    from jaxrens_al.dashboard.panels.model_eval import score_atoms
 
     backend_type = args["backend"]
     model_path = _materialise_model(args, calcpath)
