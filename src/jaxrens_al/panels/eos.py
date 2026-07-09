@@ -18,7 +18,9 @@ import numpy as np
 # ---------------------------------------------------------------------------
 # Panel spec.
 # ---------------------------------------------------------------------------
-from alviz import Entry, JsonDict, register_simple
+from alviz import Entry, JsonDict, PanelSpec, register_panel
+
+from jaxrens_al.panels.reference import ReferenceConsumer, ReferenceNeed
 
 # 1 eV / Angstrom^3 expressed in GPa.
 _EVA3_TO_GPA = 160.21766208
@@ -73,13 +75,25 @@ def _fit_enthalpy(volumes, energies):
     )(_P_GRID)
 
 
-class EquationOfStatePanel(Entry):
+class EquationOfStatePanel(ReferenceConsumer, Entry):
     """Multi-phase EOS: E(V), H(P) and relative enthalpy under the model + DFT.
 
+    Two ways to supply the per-phase volume scans (give exactly one):
+
+      * ``references`` -- explicit, already-DFT-labelled scan files; or
+      * ``element`` -- declare a :class:`~jaxrens_al.panels.reference.
+        ReferenceNeed` the run-side ``resolve_references`` fetches (Materials
+        Project) + DFT-labels for you, filling the files via
+        :meth:`receive_references` before rendering.
+
     Args:
-        references: One path or a list of paths -- each is a phase's
-            volume-scan extxyz; ``REF_energy`` on each frame is the DFT energy.
-        model_file: This iteration's trained-model bundle.
+        model_file: This iteration's trained-model bundle (the model curve).
+        references: One path or a list of per-phase volume-scan extxyz;
+            ``REF_energy`` on each frame is the DFT energy.
+        element: Chemical symbol -> declare an EOS reference need instead.
+        vol_scalings, target_cutoff, level: parameters of the declared need
+            (the volume grid, the supercell cutoff, and an opaque DFT-level tag
+            used only to key the build for reuse).
         labels: Optional phase labels (default: the reference file stems).
         backend_type: jaxrens backend to load the model with.
         max_neighbors: Static neighbor-buffer size for the backend call.
@@ -90,9 +104,13 @@ class EquationOfStatePanel(Entry):
 
     def __init__(
         self,
-        references,
-        model_file,
         *args,
+        model_file,
+        references=None,
+        element: str | None = None,
+        vol_scalings=None,
+        target_cutoff: float = 4.0,
+        level: str = "dft",
         labels=None,
         backend_type: str = "neuralil",
         max_neighbors: int = 50,
@@ -101,17 +119,58 @@ class EquationOfStatePanel(Entry):
         super().__init__(*args, **kwargs)
         from pathlib import Path
 
+        if (references is None) == (element is None):
+            raise ValueError(
+                "EOS panel needs exactly one of references= (explicit "
+                "per-phase scans) or element= (declare a reference need)."
+            )
         if isinstance(references, (str, Path)):
             references = [references]
-        self._references = [str(p) for p in references]
-        self._model_file = str(model_file)
-        self._labels = (
-            list(labels)
-            if labels is not None
-            else [Path(p).stem for p in self._references]
+        self._references = (
+            [str(p) for p in references] if references is not None else None
         )
+        self._model_file = str(model_file)
+        self._labels_override = list(labels) if labels is not None else None
         self._backend_type = backend_type
         self._max_neighbors = max_neighbors
+        # Need-mode inputs: the resolver fetches + DFT-labels these and fills
+        # ``_references`` via ``receive_references``.
+        self._element = element
+        self._vol_scalings = (
+            [float(v) for v in vol_scalings]
+            if vol_scalings is not None
+            else None
+        )
+        self._target_cutoff = float(target_cutoff)
+        self._level = level
+
+    def _need(self) -> ReferenceNeed:
+        params = {
+            "element": self._element,
+            "target_cutoff": self._target_cutoff,
+            "level": self._level,
+        }
+        if self._vol_scalings is not None:
+            params["vol_scalings"] = self._vol_scalings
+        return ReferenceNeed.make("eos", params)
+
+    def reference_needs(self) -> list:
+        if self._element is None or self._references is not None:
+            return []
+        return [self._need()]
+
+    def receive_references(self, mapping: dict) -> None:
+        if self._element is not None and self._references is None:
+            self._references = [str(p) for p in mapping[self._need()]]
+
+    def _refs(self) -> list:
+        if self._references is None:
+            raise RuntimeError(
+                "EOS panel has no references yet: pass references=, or run "
+                "resolve_references() over the dashboard (element= declares "
+                "the need)."
+            )
+        return self._references
 
     def _evaluate(self, model_file, atoms_list) -> list:
         """Total energies (eV) of each structure under the model (seam)."""
@@ -168,9 +227,13 @@ class EquationOfStatePanel(Entry):
         )
 
     def compute_data(self, shared_ressources: dict) -> JsonDict:
-        phases = [self._phase_data(f) for f in self._references]
+        from pathlib import Path
+
+        refs = self._refs()
+        labels = self._labels_override or [Path(p).stem for p in refs]
+        phases = [self._phase_data(f) for f in refs]
         return JsonDict(
-            labels=self._labels,
+            labels=labels,
             p_grid=_P_GRID.tolist(),
             phases=phases,
         )
@@ -230,15 +293,53 @@ class EquationOfStatePanel(Entry):
         self.ax_dh.set_title(r"$\Delta H(P)$")
 
 
-def _build_eos(ctx, c):
-    if ctx.eos_reference and ctx.model_file:
+class EOSSpec(PanelSpec):
+    """Equation-of-state panel: explicit references or a declared build.
+
+    Set ``references`` (per-phase volume-scan extxyz, already DFT-labelled) to
+    read them directly, or ``element`` to declare a reference need the run-side
+    ``resolve_references`` fetches + DFT-labels (with on-disk reuse). With
+    neither, the run-global ``--eos-reference`` files are used if present.
+    ``backend`` inherits the run's ``eos_backend`` when unset.
+    """
+
+    type: str = "eos"
+    references: list | None = None
+    element: str | None = None
+    vol_scalings: list | None = None
+    n_vol: int = 11
+    vol_min: float = 0.9
+    vol_max: float = 1.1
+    target_cutoff: float = 4.0
+    level: str = "dft"
+    backend: str | None = None
+    max_neighbors: int = 50
+
+
+def _build_eos(spec, ctx, c):
+    if not ctx.model_file:
+        return None
+    common = dict(
+        model_file=ctx.model_file,
+        backend_type=spec.backend or ctx.eos_backend,
+        max_neighbors=spec.max_neighbors,
+        **c,
+    )
+    if spec.element:
+        vol = spec.vol_scalings
+        if vol is None:
+            vol = np.linspace(spec.vol_min, spec.vol_max, spec.n_vol).tolist()
         return EquationOfStatePanel(
-            references=ctx.eos_reference,
-            model_file=ctx.model_file,
-            backend_type=ctx.eos_backend,
-            **c,
+            element=spec.element,
+            vol_scalings=vol,
+            target_cutoff=spec.target_cutoff,
+            level=spec.level,
+            **common,
         )
+    references = spec.references or ctx.eos_reference
+    if references:
+        return EquationOfStatePanel(references=references, **common)
     return None
 
 
-register_simple("eos", _build_eos)
+register_panel("eos", EOSSpec, _build_eos)

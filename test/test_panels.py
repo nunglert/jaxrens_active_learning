@@ -325,6 +325,50 @@ def test_eos_panel_multi_phase(eos_reference, tmp_path):
     assert len(ph["h_nnff"]) == len(data["p_grid"])
 
 
+def test_eos_panel_element_mode_declares_and_receives_need(tmp_path):
+    from jaxrens_al.panels.eos import EquationOfStatePanel
+    from jaxrens_al.panels.reference import ReferenceNeed
+
+    panel = EquationOfStatePanel(
+        model_file="m.pkl",
+        element="Sn",
+        vol_scalings=[0.98, 1.0, 1.02],
+        target_cutoff=4.0,
+        datapath=tmp_path,
+    )
+    (need,) = panel.reference_needs()
+    assert isinstance(need, ReferenceNeed) and need.kind == "eos"
+    assert need.params_dict["element"] == "Sn"
+    # No references until the resolver delivers them.
+    with pytest.raises(RuntimeError, match="no references yet"):
+        panel._refs()
+    panel.receive_references({need: ["eos_a.extxyz", "eos_b.extxyz"]})
+    assert panel._refs() == ["eos_a.extxyz", "eos_b.extxyz"]
+
+
+def test_eos_panel_explicit_mode_declares_no_need(tmp_path):
+    from jaxrens_al.panels.eos import EquationOfStatePanel
+
+    panel = EquationOfStatePanel(
+        references=["a.extxyz"], model_file="m.pkl", datapath=tmp_path
+    )
+    assert panel.reference_needs() == []
+
+
+def test_eos_panel_needs_exactly_one_source(tmp_path):
+    from jaxrens_al.panels.eos import EquationOfStatePanel
+
+    with pytest.raises(ValueError, match="exactly one"):
+        EquationOfStatePanel(model_file="m.pkl", datapath=tmp_path)
+    with pytest.raises(ValueError, match="exactly one"):
+        EquationOfStatePanel(
+            references=["a.extxyz"],
+            element="Sn",
+            model_file="m.pkl",
+            datapath=tmp_path,
+        )
+
+
 def test_atomic_envs_panel_pca(
     make_calchome, tmp_path, fake_quests_descriptors
 ):
