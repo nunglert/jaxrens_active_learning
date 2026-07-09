@@ -19,15 +19,21 @@ no-evaluator fallback.
 
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 from pathlib import Path
 
+from jaxrens_al.resolver_base import (
+    KindRegistry,
+    collect_needs,
+    deliver,
+    stable_tag,
+)
+
 logger = logging.getLogger(__name__)
 
 # kind -> builder(params_dict, *, evaluator, out_dir, reuse) -> list[Path]
-_REFERENCE_KIND_BUILDERS: dict = {}
+_REGISTRY = KindRegistry("reference")
 
 
 def register_reference_kind(kind: str, builder) -> None:
@@ -38,7 +44,7 @@ def register_reference_kind(kind: str, builder) -> None:
     honouring ``reuse`` (return existing files without rebuilding). Called
     run-side (may import ``remote_handler`` / the upstream).
     """
-    _REFERENCE_KIND_BUILDERS[kind] = builder
+    _REGISTRY.register(kind, builder)
 
 
 def resolve_references(
@@ -60,8 +66,7 @@ def resolve_references(
     Returns:
         The ``{need -> [files]}`` mapping (empty if no needs).
     """
-    consumers = [p for p in panels if hasattr(p, "reference_needs")]
-    needs = [n for p in consumers for n in p.reference_needs()]
+    consumers, needs = collect_needs(panels, "reference_needs")
     if not needs:
         return {}
 
@@ -70,13 +75,8 @@ def resolve_references(
     for need in needs:
         if need in delivered:  # identical needs build once
             continue
-        builder = _REFERENCE_KIND_BUILDERS.get(need.kind)
-        if builder is None:
-            raise ValueError(
-                f"No reference builder registered for kind {need.kind!r}; "
-                f"known: {sorted(_REFERENCE_KIND_BUILDERS)}."
-            )
-        tag = need.kind + "_" + _need_tag(need)
+        builder = _REGISTRY.builder(need.kind)  # raises on unknown kind
+        tag = stable_tag(need.kind + "_", (need.kind, need.params))
         out_dir = workdir / tag
         logger.info(
             "resolve_references: %s need %s -> %s",
@@ -88,15 +88,8 @@ def resolve_references(
             need.params_dict, evaluator=evaluator, out_dir=out_dir, reuse=reuse
         )
 
-    for panel in consumers:
-        panel.receive_references(delivered)
+    deliver(consumers, "receive_references", delivered)
     return delivered
-
-
-def _need_tag(need) -> str:
-    """A short, stable dir tag from a need's (kind, params)."""
-    key = repr((need.kind, need.params)).encode()
-    return hashlib.sha1(key).hexdigest()[:10]
 
 
 def _build_eos_reference(params: dict, *, evaluator, out_dir, reuse: bool):
@@ -119,7 +112,7 @@ def _build_eos_reference(params: dict, *, evaluator, out_dir, reuse: bool):
             )
             return listed
 
-    from jaxrens_al.processors.eos_reference import build_eos_reference
+    from jaxrens_al.reference_eval import build_eos_reference
 
     files = build_eos_reference(
         evaluator,

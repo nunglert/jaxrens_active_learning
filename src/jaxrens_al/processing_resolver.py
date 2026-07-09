@@ -21,14 +21,20 @@ first consumer.
 
 from __future__ import annotations
 
-import hashlib
 import logging
 from pathlib import Path
+
+from jaxrens_al.resolver_base import (
+    KindRegistry,
+    collect_needs,
+    deliver,
+    stable_tag,
+)
 
 logger = logging.getLogger(__name__)
 
 # kind (registry name) -> callable(params: dict) -> remote_handler Processor.
-_KIND_BUILDERS: dict = {}
+_REGISTRY = KindRegistry("processor")
 
 
 def local_execution_context(workdir) -> dict:
@@ -127,7 +133,7 @@ def register_processor_kind(kind: str, builder) -> None:
     must fold them into one (e.g. Steinhardt unions its ``l_values``). Called
     run-side (may import ``remote_handler`` / the upstream).
     """
-    _KIND_BUILDERS[kind] = builder
+    _REGISTRY.register(kind, builder)
 
 
 def _steps_from_needs(needs):
@@ -138,16 +144,15 @@ def _steps_from_needs(needs):
         if key in seen:
             continue
         seen.add(key)
-        if need.kind not in _KIND_BUILDERS:
-            raise ValueError(
-                f"No processor builder registered for kind {need.kind!r}; "
-                f"known: {sorted(_KIND_BUILDERS)}."
-            )
+        if need.kind not in _REGISTRY:
+            _REGISTRY.builder(
+                need.kind
+            )  # raise the uniform unknown-kind error
         by_kind.setdefault(need.kind, []).append(need.params_dict)
 
     steps = []
     for kind, param_dicts in by_kind.items():
-        built = _KIND_BUILDERS[kind](param_dicts)
+        built = _REGISTRY.builder(kind)(param_dicts)
         steps.extend(built if isinstance(built, list) else [built])
     return steps
 
@@ -183,8 +188,7 @@ def resolve_processing(
     Returns:
         The ``{input_file -> annotated_file}`` mapping (empty if no needs).
     """
-    consumers = [p for p in panels if hasattr(p, "processing_needs")]
-    needs = [n for p in consumers for n in p.processing_needs()]
+    consumers, needs = collect_needs(panels, "processing_needs")
     if not needs:
         return {}
 
@@ -193,8 +197,7 @@ def resolve_processing(
 
     # A tag keyed by the step-set, so a different pipeline writes different
     # output files (no stale reuse) and an identical one reuses.
-    step_key = sorted({(n.kind, n.params) for n in needs})
-    tag = "proc" + hashlib.sha1(repr(step_key).encode()).hexdigest()[:10]
+    tag = stable_tag("proc", sorted({(n.kind, n.params) for n in needs}))
 
     from remote_handler.core.atoms_shard import front_tag
 
@@ -239,8 +242,7 @@ def resolve_processing(
         )
 
     delivered = {f: mapping[f] for f in inputs}
-    for panel in consumers:
-        panel.receive_annotations(delivered)
+    deliver(consumers, "receive_annotations", delivered)
     return delivered
 
 
@@ -271,12 +273,13 @@ def resolve_model_evaluations(
     model's configs. Args mirror :func:`resolve_processing`.
 
     Returns:
-        The ``{input_file -> annotated_file}`` mapping (empty if no needs).
+        A ``{model -> {input_file -> annotated_file}}`` mapping (empty if no
+        needs) -- keyed by model so panels sharing an input file (the EOS
+        reference scans) each read their own model's annotation.
     """
     from jaxrens_al.panels.model_eval import model_eval_keys
 
-    consumers = [p for p in panels if hasattr(p, "model_eval_needs")]
-    needs = [n for p in consumers for n in p.model_eval_needs()]
+    consumers, needs = collect_needs(panels, "model_eval_needs")
     if not needs:
         return {}
 
@@ -293,12 +296,7 @@ def resolve_model_evaluations(
     for (model, backend, want_forces, max_nb), input_set in groups.items():
         inputs = sorted(input_set)
         energy_key, forces_key = model_eval_keys(model)
-        tag = (
-            "meval"
-            + hashlib.sha1(
-                repr((model, backend, want_forces, max_nb)).encode()
-            ).hexdigest()[:10]
-        )
+        tag = stable_tag("meval", (model, backend, want_forces, max_nb))
         mapping = {f: Path(front_tag(f, tag)) for f in inputs}
         todo = [
             f for f in inputs if not (reuse and _up_to_date(f, mapping[f]))
@@ -340,10 +338,13 @@ def resolve_model_evaluations(
                 loop_time=loop_time,
                 every=1,
             ).run()
-        delivered.update({f: mapping[f] for f in inputs})
+        # Keyed by model, not input: distinct iterations' models annotate the
+        # *same* (shared) reference files into differently-tagged outputs, so a
+        # flat {input -> annotated} map would let the last model overwrite the
+        # rest. ``{model -> {input -> annotated}}`` keeps each panel's own.
+        delivered.setdefault(model, {}).update({f: mapping[f] for f in inputs})
 
-    for panel in consumers:
-        panel.receive_model_eval(delivered)
+    deliver(consumers, "receive_model_eval", delivered)
     return delivered
 
 

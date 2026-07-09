@@ -81,3 +81,63 @@ def concatenate_configs(paths, output) -> int:
     output.parent.mkdir(parents=True, exist_ok=True)
     ase.io.write(str(output), frames)
     return len(frames)
+
+
+def build_eos_reference(
+    evaluator,
+    *,
+    element: str,
+    vol_scalings=None,
+    target_cutoff: float = 4.0,
+    out_dir,
+    workdir=None,
+    api_key: str | None = None,
+) -> list[Path]:
+    """Fetch, volume-scan, and DFT-label one element's EOS reference phases.
+
+    Composes the reference producers -- :func:`~jaxrens_al.reference_db.
+    fetch_mp_elemental` (Materials Project phases) -> ``eos_phase_scans``
+    (zero-rattle volume scan per phase) -> :func:`evaluate_config_sets` (DFT
+    label) -- and publishes one ``eos_<phase>.extxyz`` per phase, exactly what
+    the EOS panel reads. Not a ``remote_handler`` ``Processor`` (the executor is
+    the passed-in evaluator), so it lives beside its collaborators here rather
+    than in ``processors``.
+
+    Args:
+        evaluator: A configured ``GroundTruthEvaluator`` (duck-typed; reuse the
+            one from your AL loop so the DFT level matches).
+        element: Chemical symbol to build the reference for.
+        vol_scalings: Cell-vector scale factors for the scan (default: the
+            ``eos_phase_scans`` grid).
+        target_cutoff: Supercell cutoff (Å) -- set to the model's ``r_cut`` so
+            the EOS panel's model re-score is exact (jaxrens uses a
+            minimum-image neighbour list valid only when the cell hosts it).
+        out_dir: Where the per-phase ``eos_<phase>.extxyz`` files are written.
+        workdir: Scratch dir for the evaluator's per-phase calc dirs (default:
+            ``out_dir/work``).
+        api_key: Materials Project key (default: ``$MP_API_KEY``).
+
+    Returns:
+        The per-phase labelled scan paths, one ``eos_<phase>.extxyz`` each.
+    """
+    import ase.io
+
+    from jaxrens_al.reference_db import eos_phase_scans, fetch_mp_elemental
+
+    out_dir = Path(out_dir)
+    workdir = Path(workdir) if workdir is not None else out_dir / "work"
+
+    phases = fetch_mp_elemental(element, api_key=api_key)
+    scans = eos_phase_scans(
+        phases, vol_scalings=vol_scalings, target_cutoff=target_cutoff
+    )
+    sets = {f"eos_{label}": scan for label, scan in scans.items()}
+    labelled = evaluate_config_sets(evaluator, sets, workdir)
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    files: list[Path] = []
+    for label, path in labelled.items():
+        dest = out_dir / f"{label}.extxyz"
+        ase.io.write(str(dest), ase.io.read(str(path), index=":"))
+        files.append(dest)
+    return files

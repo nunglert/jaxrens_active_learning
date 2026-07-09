@@ -80,3 +80,51 @@ def test_concatenate_configs_merges_labelled_files(tmp_path):
     n = concatenate_configs(list(labelled.values()), ref_db)
     assert n == 3 and ref_db.exists()
     assert len(ase.io.read(str(ref_db), index=":")) == 3
+
+
+def test_build_eos_reference_writes_per_phase_files(tmp_path, monkeypatch):
+    import ase.io
+
+    import jaxrens_al.reference_db as refdb
+    from jaxrens_al.reference_eval import build_eos_reference
+
+    def _phase(mp_id):
+        at = Atoms(
+            "Sn2", positions=np.zeros((2, 3)), cell=np.eye(3) * 6, pbc=True
+        )
+        at.info["mp_id"] = mp_id
+        return at
+
+    monkeypatch.setattr(
+        refdb,
+        "fetch_mp_elemental",
+        lambda *a, **k: [_phase("mp-1"), _phase("mp-2")],
+    )
+
+    class _EosEvaluator:
+        def update(self, calcdir, evaluator_input, **kw):
+            self._in = str(evaluator_input)
+            self._out = tmp_path / "out" / str(len(str(calcdir))) / "e.extxyz"
+
+        def get_evaluated_configs(self):
+            frames = ase.io.read(self._in, index=":")
+            for at in frames:
+                at.info["REF_energy"] = -1.0 * len(at)
+                at.arrays["REF_forces"] = np.zeros((len(at), 3))
+            self._out.parent.mkdir(parents=True, exist_ok=True)
+            ase.io.write(str(self._out), frames)
+            return self._out
+
+    files = build_eos_reference(
+        _EosEvaluator(),
+        element="Sn",
+        vol_scalings=[0.98, 1.0, 1.02],
+        target_cutoff=2.0,
+        out_dir=tmp_path / "ref",
+        workdir=tmp_path / "work",
+    )
+    assert {f.name for f in files} == {"eos_mp-1.extxyz", "eos_mp-2.extxyz"}
+    for f in files:
+        frames = ase.io.read(str(f), index=":")
+        assert len(frames) == 3  # one per volume scaling
+        assert all("REF_energy" in at.info for at in frames)

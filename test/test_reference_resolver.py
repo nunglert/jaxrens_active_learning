@@ -86,7 +86,7 @@ def _fake_eos_build(monkeypatch):
         return files
 
     monkeypatch.setattr(
-        "jaxrens_al.processors.eos_reference.build_eos_reference", _build
+        "jaxrens_al.reference_eval.build_eos_reference", _build
     )
     return calls
 

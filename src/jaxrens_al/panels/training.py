@@ -210,8 +210,9 @@ class ModelParityPanel(ModelEvalConsumer, ParityPanel):
 
     def receive_model_eval(self, mapping: dict) -> None:
         if self._remote_eval:
+            by_model = mapping.get(self._model_file, {})
             self._model_eval_annotated = {
-                f: mapping[f] for f in self._config_files if f in mapping
+                f: by_model[f] for f in self._config_files if f in by_model
             }
 
     def _evaluate(self, model_file, atoms_list):

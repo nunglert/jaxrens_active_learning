@@ -356,7 +356,7 @@ def test_eos_panel_remote_eval_declares_need_and_reads_annotation(
         at.info[e_key] = float(at.info["REF_energy"]) - 0.5
     ase.io.write(str(annotated), frames)
 
-    panel.receive_model_eval({str(ref): annotated})
+    panel.receive_model_eval({"bundle_dir": {str(ref): annotated}})
     data = panel.compute_data({})
     ph = data["phases"][0]
     assert len(ph["e_nnff"]) == 9 and len(ph["e_dft"]) == 9
@@ -407,7 +407,7 @@ def test_model_parity_remote_eval_reads_annotation(tmp_path, write_configs):
         at.new_array(f_key, np.asarray(at.arrays["REF_forces"]) + 0.02)
     ase.io.write(str(annotated), frames)
 
-    panel.receive_model_eval({str(cfg): annotated})
+    panel.receive_model_eval({"bundle_dir": {str(cfg): annotated}})
     data = panel.compute_data({})
     assert len(data.e_pred) == 3
     assert data.f_pred is not None and len(data.f_pred) == 3 * 3 * 3

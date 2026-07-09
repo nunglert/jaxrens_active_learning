@@ -227,8 +227,9 @@ class EquationOfStatePanel(ReferenceConsumer, ModelEvalConsumer, Entry):
 
     def receive_model_eval(self, mapping: dict) -> None:
         if self._remote_eval and self._references is not None:
+            by_model = mapping.get(self._model_file, {})
             self._model_eval_annotated = {
-                r: mapping[r] for r in self._refs() if r in mapping
+                r: by_model[r] for r in self._refs() if r in by_model
             }
 
     def _refs(self) -> list:

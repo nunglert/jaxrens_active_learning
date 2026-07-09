@@ -327,60 +327,6 @@ def test_steps_reject_multiple_steinhardt_cutoffs():
 
 
 # ---------------------------------------------------------------------------
-# EOS reference producer (build_eos_reference) -- a DFT-eval producer, not a
-# trajectory Processor; lives in the same run-side subpackage.
-# ---------------------------------------------------------------------------
-def test_build_eos_reference_writes_per_phase_files(tmp_path, monkeypatch):
-    import ase.io
-    import numpy as np
-    from ase import Atoms
-
-    import jaxrens_al.reference_db as refdb
-    from jaxrens_al.processors.eos_reference import build_eos_reference
-
-    def _phase(mp_id):
-        at = Atoms(
-            "Sn2", positions=np.zeros((2, 3)), cell=np.eye(3) * 6, pbc=True
-        )
-        at.info["mp_id"] = mp_id
-        return at
-
-    monkeypatch.setattr(
-        refdb,
-        "fetch_mp_elemental",
-        lambda *a, **k: [_phase("mp-1"), _phase("mp-2")],
-    )
-
-    class _FakeEvaluator:
-        def update(self, calcdir, evaluator_input, **kw):
-            self._in = str(evaluator_input)
-            self._out = tmp_path / "out" / str(len(str(calcdir))) / "e.extxyz"
-
-        def get_evaluated_configs(self):
-            frames = ase.io.read(self._in, index=":")
-            for at in frames:
-                at.info["REF_energy"] = -1.0 * len(at)
-                at.arrays["REF_forces"] = np.zeros((len(at), 3))
-            self._out.parent.mkdir(parents=True, exist_ok=True)
-            ase.io.write(str(self._out), frames)
-            return self._out
-
-    files = build_eos_reference(
-        _FakeEvaluator(),
-        element="Sn",
-        vol_scalings=[0.98, 1.0, 1.02],
-        target_cutoff=2.0,
-        out_dir=tmp_path / "ref",
-        workdir=tmp_path / "work",
-    )
-    assert {f.name for f in files} == {"eos_mp-1.extxyz", "eos_mp-2.extxyz"}
-    for f in files:
-        frames = ase.io.read(str(f), index=":")
-        assert len(frames) == 3  # one per volume scaling
-        assert all("REF_energy" in at.info for at in frames)
-
-
-# ---------------------------------------------------------------------------
 # model_eval processor + resolver (remote MLIP evaluation for EOS / parity).
 # ---------------------------------------------------------------------------
 def test_model_eval_processor_is_a_processor_spec(tmp_path):
@@ -474,6 +420,7 @@ def test_resolve_model_evaluations_one_job_per_model(monkeypatch, tmp_path):
 
     class _Panel:
         def __init__(self, model):
+            self._model = model
             self._need = ModelEvalNeed.make([ref], model, "mace")
             self.received = None
 
@@ -481,7 +428,8 @@ def test_resolve_model_evaluations_one_job_per_model(monkeypatch, tmp_path):
             return [self._need]
 
         def receive_model_eval(self, mapping):
-            self.received = mapping.get(str(ref))
+            # Nested {model -> {input -> annotated}}: read our own model's map.
+            self.received = mapping.get(self._model, {}).get(str(ref))
 
     ctx = dict(cluster_config=None, remote_fs=None, remote_savepath="/remote")
     p1, p2 = _Panel("bundleA"), _Panel("bundleA")  # same model
@@ -489,10 +437,16 @@ def test_resolve_model_evaluations_one_job_per_model(monkeypatch, tmp_path):
     assert len(_FakeModelEvalHandler.calls) == 1  # deduped to one job
     assert p1.received is not None and p1.received == p2.received
 
-    # A distinct model triggers a second job; reuse skips already-annotated.
-    p3 = _Panel("bundleB")
-    resolve_model_evaluations([p1, p2, p3], **ctx)
-    assert len(_FakeModelEvalHandler.calls) == 2  # only bundleB ran
+    # A distinct model on the SAME shared input triggers a second job; each
+    # panel must read ITS model's annotation, not the last one written (the
+    # EOS-across-iterations bug: shared reference files, per-iteration models).
+    p1b, p3 = _Panel("bundleA"), _Panel("bundleB")
+    resolve_model_evaluations([p1b, p3], **ctx)
+    assert len(_FakeModelEvalHandler.calls) == 2  # only bundleB ran (A reused)
+    # Each panel reads its own model's annotation (distinct tags); the shared
+    # reference file did NOT get overwritten to bundleB for the bundleA panel.
+    assert p1b.received != p3.received
+    assert p1b.received == p1.received  # same model+input -> same annotation
 
 
 def test_run_model_eval_annotates_atoms(tmp_path):
