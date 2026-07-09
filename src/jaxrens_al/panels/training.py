@@ -32,6 +32,12 @@ import numpy as np
 from alviz import Entry, JsonDict, PanelSpec, register_panel, register_simple
 from alviz.panels import ParityData, ParityPanel
 
+from jaxrens_al.panels.model_eval import (
+    ModelEvalConsumer,
+    ModelEvalNeed,
+    model_eval_keys,
+)
+
 
 def _rmse(a, b):
     return float(np.sqrt(np.mean((a - b) ** 2)))
@@ -129,7 +135,7 @@ class NeuralILParityPanel(ParityPanel):
         return counts
 
 
-class ModelParityPanel(ParityPanel):
+class ModelParityPanel(ModelEvalConsumer, ParityPanel):
     """Trained-model predictions vs DFT reference, by *re-scoring* a set.
 
     Loads the freshly trained model through the jaxrens backend (mirroring the
@@ -137,6 +143,11 @@ class ModelParityPanel(ParityPanel):
     parity bundle from the trainer -- the case for **MACE**, which writes none.
     (For NeuralIL prefer :class:`NeuralILParityPanel`, which reads the
     already-computed ``.npz`` bundle instead of re-running the model.)
+
+    Like the EOS panel, the model re-score runs either in-process (CPU
+    backends) or -- when ``remote_eval`` -- on a GPU cluster via the shared
+    ``model_eval`` processor (required for a MACE-jax bundle); the predicted
+    energy/forces are then read back from the annotated config files.
 
     Args:
         config_files: One or more labelled extxyz paths (e.g. the validation
@@ -146,6 +157,7 @@ class ModelParityPanel(ParityPanel):
         backend_type: jaxrens backend to load the model with (``mace`` /
             ``neuralil``).
         energy_ref_key / forces_ref_key: info/array keys of the DFT reference.
+        remote_eval: Evaluate the model on a GPU cluster instead of in-process.
         max_neighbors: Static neighbor-buffer size for the backend call.
     """
 
@@ -161,6 +173,7 @@ class ModelParityPanel(ParityPanel):
         forces_ref_key: str = "REF_forces",
         per_atom: bool = True,
         show_forces: bool = True,
+        remote_eval: bool = False,
         max_neighbors: int = 50,
         plot_kwargs: dict = None,
         **kwargs,
@@ -177,7 +190,29 @@ class ModelParityPanel(ParityPanel):
         self._energy_ref_key = energy_ref_key
         self._forces_ref_key = forces_ref_key
         self._per_atom = per_atom
+        self._remote_eval = bool(remote_eval)
+        self._model_eval_annotated: dict = {}
         self._max_neighbors = max_neighbors
+
+    def model_eval_needs(self) -> list:
+        """Score the config set with the model on the cluster (remote mode)."""
+        if not self._remote_eval:
+            return []
+        return [
+            ModelEvalNeed.make(
+                self._config_files,
+                self._model_file,
+                self._backend_type,
+                want_forces=self._show_forces,
+                max_neighbors=self._max_neighbors,
+            )
+        ]
+
+    def receive_model_eval(self, mapping: dict) -> None:
+        if self._remote_eval:
+            self._model_eval_annotated = {
+                f: mapping[f] for f in self._config_files if f in mapping
+            }
 
     def _evaluate(self, model_file, atoms_list):
         """Predicted totals under the model (seam; patched in tests).
@@ -223,14 +258,44 @@ class ModelParityPanel(ParityPanel):
                 energies.append(float(res[0]))
         return energies, (forces if self._show_forces else None)
 
+    def _predict_remote(self, frames):
+        """Read model energies/forces the cluster wrote onto the frames."""
+        energy_key, forces_key = model_eval_keys(self._model_file)
+        energies = [float(at.info[energy_key]) for at in frames]
+        forces = None
+        if self._show_forces:
+            forces = [
+                np.asarray(at.arrays[forces_key], dtype=float) for at in frames
+            ]
+        return energies, forces
+
     def compute_data(self, shared_ressources: dict) -> ParityData:
         import ase.io
 
-        frames = []
-        for path in self._config_files:
-            frames.extend(ase.io.read(path, index=":"))
+        # In remote mode read the annotated config files (they carry the model
+        # predictions + the DFT reference keys); otherwise the raw config files.
+        sources = self._config_files
+        if self._remote_eval:
+            if not self._model_eval_annotated:
+                raise RuntimeError(
+                    "model_parity is remote_eval but its configs are not "
+                    "annotated yet: run resolve_model_evaluations() over the "
+                    "dashboard before rendering."
+                )
+            sources = [
+                self._model_eval_annotated[f] for f in self._config_files
+            ]
 
-        e_pred_tot, f_pred_arrays = self._evaluate(self._model_file, frames)
+        frames = []
+        for path in sources:
+            frames.extend(ase.io.read(str(path), index=":"))
+
+        if self._remote_eval:
+            e_pred_tot, f_pred_arrays = self._predict_remote(frames)
+        else:
+            e_pred_tot, f_pred_arrays = self._evaluate(
+                self._model_file, frames
+            )
 
         e_obs, e_pred = [], []
         f_obs, f_pred = [], []
@@ -485,6 +550,7 @@ class ModelParitySpec(PanelSpec):
     type: str = "model_parity"
     source: str = "eval_files"
     show_forces: bool = True
+    remote_eval: bool | None = None
     max_neighbors: int = 50
 
 
@@ -493,13 +559,20 @@ def _build_model_parity(spec, ctx, c):
     # already shows real predicted-vs-ref parity.
     files = getattr(ctx, spec.source, None)
     if ctx.model_file and files and not ctx.npz_files:
+        backend = ctx.eos_backend
+        remote_eval = (
+            spec.remote_eval
+            if spec.remote_eval is not None
+            else ctx.remote_model_eval
+        )
         return ModelParityPanel(
             config_files=files,
             model_file=ctx.model_file,
-            backend_type=ctx.eos_backend,
+            backend_type=backend,
             energy_ref_key=ctx.energy_key,
             forces_ref_key=ctx.forces_key,
             show_forces=spec.show_forces,
+            remote_eval=remote_eval,
             max_neighbors=spec.max_neighbors,
             **c,
         )

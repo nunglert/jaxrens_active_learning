@@ -378,3 +378,161 @@ def test_build_eos_reference_writes_per_phase_files(tmp_path, monkeypatch):
         frames = ase.io.read(str(f), index=":")
         assert len(frames) == 3  # one per volume scaling
         assert all("REF_energy" in at.info for at in frames)
+
+
+# ---------------------------------------------------------------------------
+# model_eval processor + resolver (remote MLIP evaluation for EOS / parity).
+# ---------------------------------------------------------------------------
+def test_model_eval_processor_is_a_processor_spec(tmp_path):
+    from jaxrens_al.processors import ModelEvalArgs, ModelEvalProcessor
+
+    # A bundle *directory* is staged as a single .tar.
+    bundle = tmp_path / "trainer_it0.bundle"
+    bundle.mkdir()
+    (bundle / "config.json").write_text("{}")
+    (bundle / "params.msgpack").write_bytes(b"\x00")
+
+    proc = ModelEvalProcessor(
+        bundle, backend="mace", energy_key="me", want_forces=True
+    )
+    assert isinstance(proc, Processor)
+    assert proc.name == "model_eval"
+    shared = proc.shared_files()
+    assert len(shared) == 1 and shared[0].endswith(".tar")
+
+    args = proc.build_args("/remote/savepath")
+    assert args["model_remote"] == "/remote/savepath/trainer_it0.bundle.tar"
+    assert args["is_archive"] is True and args["backend"] == "mace"
+    assert args["want_forces"] is True
+    ModelEvalArgs.from_dict(args).validate()
+
+
+def test_model_eval_processor_stages_plain_file(tmp_path):
+    from jaxrens_al.processors import ModelEvalProcessor
+
+    pkl = tmp_path / "model.pkl"
+    pkl.write_bytes(b"\x00")
+    proc = ModelEvalProcessor(pkl, backend="neuralil")
+    assert proc.shared_files() == [str(pkl)]
+    args = proc.build_args("/remote")
+    assert args["is_archive"] is False
+    assert args["model_remote"] == "/remote/model.pkl"
+
+
+class _FakeModelEvalHandler:
+    """Fake RemoteTrajectoryProcessor: writes each model's keys onto the frames
+    where the real handler's redistribute would (front_tag), so the resolver is
+    testable without a cluster or a real model."""
+
+    calls = []
+
+    def __init__(self, *, traj_files, processors, tag, **kw):
+        self.traj_files = traj_files
+        self.tag = tag
+        self.proc = processors[0]
+        _FakeModelEvalHandler.calls.append(
+            {"tag": tag, "n_traj": len(traj_files), "model": self.proc.model}
+        )
+
+    def run(self):
+        import ase.io
+        import numpy as np
+        from remote_handler.core.atoms_shard import front_tag
+
+        for src in self.traj_files:
+            frames = ase.io.read(src, index=":")
+            for at in frames:
+                at.info[self.proc.energy_key] = -1.0 * len(at)
+                if self.proc.want_forces:
+                    at.new_array(self.proc.forces_key, np.zeros((len(at), 3)))
+            ase.io.write(str(front_tag(src, self.tag)), frames)
+
+
+def _refs(tmp_path, name):
+    import ase.io
+    from ase import Atoms
+
+    path = tmp_path / name
+    ase.io.write(
+        str(path),
+        [Atoms("Cu", positions=[[0, 0, 0]], cell=[5, 5, 5], pbc=True)],
+    )
+    return path
+
+
+def test_resolve_model_evaluations_one_job_per_model(monkeypatch, tmp_path):
+    """Two panels sharing a model -> one job; a second model -> a second job."""
+    from jaxrens_al.panels.model_eval import ModelEvalNeed
+    from jaxrens_al.processing_resolver import resolve_model_evaluations
+
+    ref = _refs(tmp_path, "eos_a.extxyz")
+    _FakeModelEvalHandler.calls.clear()
+    monkeypatch.setattr(
+        "remote_handler.processing.RemoteTrajectoryProcessor",
+        _FakeModelEvalHandler,
+    )
+
+    class _Panel:
+        def __init__(self, model):
+            self._need = ModelEvalNeed.make([ref], model, "mace")
+            self.received = None
+
+        def model_eval_needs(self):
+            return [self._need]
+
+        def receive_model_eval(self, mapping):
+            self.received = mapping.get(str(ref))
+
+    ctx = dict(cluster_config=None, remote_fs=None, remote_savepath="/remote")
+    p1, p2 = _Panel("bundleA"), _Panel("bundleA")  # same model
+    resolve_model_evaluations([p1, p2], **ctx)
+    assert len(_FakeModelEvalHandler.calls) == 1  # deduped to one job
+    assert p1.received is not None and p1.received == p2.received
+
+    # A distinct model triggers a second job; reuse skips already-annotated.
+    p3 = _Panel("bundleB")
+    resolve_model_evaluations([p1, p2, p3], **ctx)
+    assert len(_FakeModelEvalHandler.calls) == 2  # only bundleB ran
+
+
+def test_run_model_eval_annotates_atoms(tmp_path):
+    """The cluster-side ``run`` writes model energy via jaxrens (self-skips)."""
+    pytest.importorskip("jaxrens")
+    import numpy as np
+    from ase import Atoms
+
+    from jaxrens_al.processors import model_eval
+
+    atoms = Atoms(
+        "Cu2", positions=[[0, 0, 0], [1.5, 0, 0]], cell=[6, 6, 6], pbc=True
+    )
+
+    def _fake_backend(*a, **k):
+        class _B:
+            atomic_numbers = [29]
+            symbol_map = {"Cu": 0}
+
+            def __call__(self, pos, types, cell, mn):
+                return (np.float64(-3.5),)
+
+        return _B()
+
+    import jaxrens.backends.loader as loader
+
+    orig = loader.load_backend
+    loader.load_backend = _fake_backend
+    try:
+        out = model_eval.run(
+            [atoms],
+            {
+                "backend": "mace",
+                "model_remote": "ignored",
+                "is_archive": False,
+                "energy_key": "me",
+                "want_forces": False,
+                "max_neighbors": 10,
+            },
+        )
+    finally:
+        loader.load_backend = orig
+    assert out[0].info["me"] == -3.5

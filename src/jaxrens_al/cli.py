@@ -171,6 +171,58 @@ def _setup_file_logging(log_file, calchome):
     return path
 
 
+def _resolve_remote_needs(entries, args, datapath):
+    """Run the cluster jobs the panels declare, before rendering.
+
+    Two independent remote passes over the panels (each skipped -- and
+    ``remote_handler`` unimported -- when nothing declares it): trajectory
+    annotation (Steinhardt) and trained-model evaluation (EOS / model-parity,
+    e.g. a GPU-only MACE-jax bundle). Both run on ``--cluster``.
+    """
+    has_proc = any(
+        hasattr(e, "processing_needs") and e.processing_needs()
+        for e in entries
+    )
+    has_eval = any(
+        hasattr(e, "model_eval_needs") and e.model_eval_needs()
+        for e in entries
+    )
+    if not (has_proc or has_eval):
+        return
+
+    from jaxrens_al.processing_resolver import (
+        execution_context,
+        resolve_model_evaluations,
+        resolve_processing,
+    )
+
+    knobs = dict(
+        shard_size=args.shard_size,
+        num_parallel=args.num_parallel,
+        n_processors=args.n_processors,
+    )
+    if has_proc:
+        logger.info(
+            f"Annotating trajectories via the processing machinery "
+            f"(cluster={args.cluster!r}); may be slow."
+        )
+        resolve_processing(
+            entries,
+            **knobs,
+            **execution_context(args.cluster, datapath / "processing"),
+        )
+    if has_eval:
+        logger.info(
+            f"Evaluating trained models on the cluster "
+            f"(cluster={args.cluster!r}); may be slow."
+        )
+        resolve_model_evaluations(
+            entries,
+            **knobs,
+            **execution_context(args.cluster, datapath / "model_eval"),
+        )
+
+
 # First-token subcommands that render a single raw artifact set instead of a
 # whole AL run. Dispatched in main() before the AL parser so bare
 # ``jaxrens-al-dashboard <calchome>`` stays the (backward-compatible) default.
@@ -251,14 +303,24 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         metavar="EXTXYZ",
         help="Reference volume-scan file(s) for the equation-of-state panel, "
-        "one per phase; each iteration's model is evaluated on them.",
+        "one per phase (or a directory holding them -- expanded to its sorted "
+        "eos_*.extxyz); each iteration's model is evaluated on them.",
     )
     parser.add_argument(
         "--eos-backend",
         type=str,
-        default="neuralil",
-        help="jaxrens backend used to load the model for the EOS panel "
-        "(default: neuralil).",
+        default=None,
+        help="jaxrens backend used to load the model for the EOS and "
+        "model-parity panels. Default: auto-detected per iteration from the "
+        "trainer artifacts (MACE logs / a .bundle model -> mace, else "
+        "neuralil). Set only to override.",
+    )
+    parser.add_argument(
+        "--remote-model-eval",
+        action="store_true",
+        default=False,
+        help="Evaluate trained models (EOS / model-parity) on --cluster "
+        "instead of in-process. Required for a GPU-only MACE-jax bundle.",
     )
     parser.add_argument(
         "--prefix",
@@ -398,6 +460,7 @@ def main(argv: list[str] | None = None) -> int:
             exclude=args.exclude,
             eos_reference=args.eos_reference,
             eos_backend=args.eos_backend,
+            remote_model_eval=args.remote_model_eval,
             ns_prefix=ns_prefix,
             ns_swap_axes=args.swap_pt,
             ns_k_B=args.k_B,
@@ -470,6 +533,7 @@ def main(argv: list[str] | None = None) -> int:
                 training_section(
                     results,
                     backend=args.eos_backend,
+                    remote_model_eval=args.remote_model_eval,
                     panel_config=panel_config,
                     datapath=dp,
                     force_recompute=args.force,
@@ -535,30 +599,13 @@ def main(argv: list[str] | None = None) -> int:
             logger.error("No iteration produced a page; nothing to write.")
             return 1
 
-        # One processing job over every panel that declares a need (e.g. the
-        # Steinhardt heatmaps), then render. Skipped -- and remote_handler
-        # unimported -- when nothing needs annotation.
+        # Remote jobs over every panel that declares a need, then render.
+        # Trajectory annotation (Steinhardt) and model evaluation (EOS /
+        # model-parity, e.g. a GPU-only MACE-jax bundle) each run on the
+        # cluster; skipped -- and remote_handler unimported -- when nothing
+        # needs them.
         all_entries = [e for _, board, _ in pages for e in board.entries]
-        if any(
-            hasattr(e, "processing_needs") and e.processing_needs()
-            for e in all_entries
-        ):
-            from jaxrens_al.processing_resolver import (
-                execution_context,
-                resolve_processing,
-            )
-
-            logger.info(
-                f"Annotating trajectories via the processing machinery "
-                f"(cluster={args.cluster!r}); may be slow."
-            )
-            resolve_processing(
-                all_entries,
-                shard_size=args.shard_size,
-                num_parallel=args.num_parallel,
-                n_processors=args.n_processors,
-                **execution_context(args.cluster, datapath / "processing"),
-            )
+        _resolve_remote_needs(all_entries, args, datapath)
 
         page_files = []
         for page, board, suptitle in pages:

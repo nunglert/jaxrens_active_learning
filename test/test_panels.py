@@ -325,6 +325,94 @@ def test_eos_panel_multi_phase(eos_reference, tmp_path):
     assert len(ph["h_nnff"]) == len(data["p_grid"])
 
 
+def test_eos_panel_remote_eval_declares_need_and_reads_annotation(
+    eos_reference, tmp_path
+):
+    import ase.io
+
+    from jaxrens_al.panels.eos import EquationOfStatePanel
+    from jaxrens_al.panels.model_eval import ModelEvalNeed, model_eval_keys
+
+    ref = eos_reference(tmp_path / "eos_a.extxyz")
+    panel = EquationOfStatePanel(
+        references=[ref],
+        model_file="bundle_dir",
+        backend_type="mace",
+        remote_eval=True,
+        datapath=tmp_path,
+    )
+    # It declares a model-eval need instead of evaluating in-process.
+    (need,) = panel.model_eval_needs()
+    assert isinstance(need, ModelEvalNeed)
+    assert need.model == "bundle_dir" and need.backend == "mace"
+    assert need.want_forces is False
+
+    # The cluster wrote the model energy onto the (annotated) reference frames;
+    # simulate that, deliver it, and check the panel reads both curves.
+    e_key, _ = model_eval_keys("bundle_dir")
+    annotated = tmp_path / "meval_eos_a.extxyz"
+    frames = ase.io.read(str(ref), index=":")
+    for at in frames:
+        at.info[e_key] = float(at.info["REF_energy"]) - 0.5
+    ase.io.write(str(annotated), frames)
+
+    panel.receive_model_eval({str(ref): annotated})
+    data = panel.compute_data({})
+    ph = data["phases"][0]
+    assert len(ph["e_nnff"]) == 9 and len(ph["e_dft"]) == 9
+
+
+def test_eos_panel_remote_eval_errors_without_annotation(
+    eos_reference, tmp_path
+):
+    from jaxrens_al.panels.eos import EquationOfStatePanel
+
+    ref = eos_reference(tmp_path / "eos_a.extxyz")
+    panel = EquationOfStatePanel(
+        references=[ref],
+        model_file="bundle_dir",
+        backend_type="mace",
+        remote_eval=True,
+        datapath=tmp_path,
+    )
+    with pytest.raises(RuntimeError, match="not annotated yet"):
+        panel.compute_data({})
+
+
+def test_model_parity_remote_eval_reads_annotation(tmp_path, write_configs):
+    import ase.io
+
+    from jaxrens_al.panels.model_eval import model_eval_keys
+    from jaxrens_al.panels.training import ModelParityPanel
+
+    cfg = tmp_path / "db_val.extxyz"
+    write_configs(
+        cfg, 3, lambda i: {"REF_energy": -9.0 + 0.1 * i}, with_forces=True
+    )
+    panel = ModelParityPanel(
+        config_files=[cfg],
+        model_file="bundle_dir",
+        backend_type="mace",
+        remote_eval=True,
+        datapath=tmp_path,
+    )
+    (need,) = panel.model_eval_needs()
+    assert need.want_forces is True  # parity needs forces
+
+    e_key, f_key = model_eval_keys("bundle_dir")
+    annotated = tmp_path / "meval_db_val.extxyz"
+    frames = ase.io.read(str(cfg), index=":")
+    for at in frames:
+        at.info[e_key] = float(at.info["REF_energy"]) + 0.1
+        at.new_array(f_key, np.asarray(at.arrays["REF_forces"]) + 0.02)
+    ase.io.write(str(annotated), frames)
+
+    panel.receive_model_eval({str(cfg): annotated})
+    data = panel.compute_data({})
+    assert len(data.e_pred) == 3
+    assert data.f_pred is not None and len(data.f_pred) == 3 * 3 * 3
+
+
 def test_eos_panel_element_mode_declares_and_receives_need(tmp_path):
     from jaxrens_al.panels.eos import EquationOfStatePanel
     from jaxrens_al.panels.reference import ReferenceNeed
@@ -353,6 +441,40 @@ def test_eos_panel_explicit_mode_declares_no_need(tmp_path):
         references=["a.extxyz"], model_file="m.pkl", datapath=tmp_path
     )
     assert panel.reference_needs() == []
+
+
+def test_eos_panel_references_directory_is_expanded(eos_reference, tmp_path):
+    import os
+
+    from jaxrens_al.panels.eos import EquationOfStatePanel
+
+    # A directory of per-phase scans -> the panel expands it to the sorted
+    # eos_*.extxyz files, so a user can point at the dir instead of listing.
+    refs = tmp_path / "eos"
+    refs.mkdir()
+    eos_reference(refs / "eos_mp-2.extxyz")
+    eos_reference(refs / "eos_mp-1.extxyz")
+    (refs / "notes.txt").write_text("ignored")
+
+    panel = EquationOfStatePanel(
+        references=refs, model_file="m.pkl", datapath=tmp_path
+    )
+    assert [os.path.basename(p) for p in panel._refs()] == [
+        "eos_mp-1.extxyz",
+        "eos_mp-2.extxyz",
+    ]
+
+
+def test_eos_panel_empty_reference_directory_raises(tmp_path):
+    from jaxrens_al.panels.eos import EquationOfStatePanel
+
+    (tmp_path / "empty").mkdir()
+    with pytest.raises(ValueError, match="no .*extxyz"):
+        EquationOfStatePanel(
+            references=tmp_path / "empty",
+            model_file="m.pkl",
+            datapath=tmp_path,
+        )
 
 
 def test_eos_panel_needs_exactly_one_source(tmp_path):

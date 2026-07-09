@@ -42,6 +42,55 @@ logger = logging.getLogger(__name__)
 K_BOLTZMANN_EV_PER_K = 8.617333262e-5
 
 
+def _resolve_section_needs(entries, args, datapath) -> None:
+    """Run the cluster jobs a section's panels declare, before rendering.
+
+    Trajectory annotation (Steinhardt) and trained-model evaluation (EOS /
+    model-parity, e.g. a GPU-only MACE-jax bundle) each run on ``--cluster``;
+    skipped -- and ``remote_handler`` unimported -- when nothing declares them.
+    """
+    proc = [
+        p
+        for p in entries
+        if hasattr(p, "processing_needs") and p.processing_needs()
+    ]
+    eval_ = [
+        p
+        for p in entries
+        if hasattr(p, "model_eval_needs") and p.model_eval_needs()
+    ]
+    if not (proc or eval_):
+        return
+
+    from jaxrens_al.processing_resolver import (
+        execution_context,
+        resolve_model_evaluations,
+        resolve_processing,
+    )
+
+    knobs = dict(
+        shard_size=args.shard_size,
+        num_parallel=args.num_parallel,
+        n_processors=args.n_processors,
+    )
+    print(
+        f"Running cluster jobs for the dashboard (cluster="
+        f"{args.cluster!r}); may be slow."
+    )
+    if proc:
+        resolve_processing(
+            entries,
+            **knobs,
+            **execution_context(args.cluster, datapath / "processing"),
+        )
+    if eval_:
+        resolve_model_evaluations(
+            entries,
+            **knobs,
+            **execution_context(args.cluster, datapath / "model_eval"),
+        )
+
+
 def _configure_logging() -> None:
     """Ensure INFO records show when a ``run_*`` is called directly.
 
@@ -173,28 +222,7 @@ def run_ns(argv: list[str] | None = None, prog: str | None = None) -> int:
         **common,
     )
 
-    # Run the real processing machinery over any panel that needs it (annotate
-    # trajectories), one step over the whole dashboard. Skipped (and
-    # remote_handler unimported) when nothing declares a need.
-    if any(
-        p.processing_needs() for p in entries if hasattr(p, "processing_needs")
-    ):
-        from jaxrens_al.processing_resolver import (
-            execution_context,
-            resolve_processing,
-        )
-
-        print(
-            f"Annotating via the processing machinery (cluster="
-            f"{args.cluster!r}); may be slow."
-        )
-        resolve_processing(
-            entries,
-            shard_size=args.shard_size,
-            num_parallel=args.num_parallel,
-            n_processors=args.n_processors,
-            **execution_context(args.cluster, datapath / "processing"),
-        )
+    _resolve_section_needs(entries, args, datapath)
 
     board = Dashboard.from_entries(
         entries, ncols=2, width_per_panel=5.0, height_per_panel=4.0
@@ -324,6 +352,7 @@ def build_training_parser(prog: str | None = None) -> argparse.ArgumentParser:
     add_config_arg(parser)
     add_output_args(parser)
     add_ref_key_args(parser)
+    add_processing_args(parser)
     parser.add_argument(
         "--model",
         default=None,
@@ -342,6 +371,13 @@ def build_training_parser(prog: str | None = None) -> argparse.ArgumentParser:
         default=None,
         help="jaxrens backend to load --model with (default: 'mace' for a "
         "MACE run, else 'neuralil').",
+    )
+    parser.add_argument(
+        "--remote-model-eval",
+        action="store_true",
+        default=False,
+        help="Evaluate the model on --cluster instead of in-process "
+        "(required for a GPU-only MACE-jax bundle).",
     )
     parser.add_argument(
         "--no-forces",
@@ -412,6 +448,7 @@ def run_training(
         model=args.model,
         valid_set=args.valid_set,
         backend=args.backend,
+        remote_model_eval=args.remote_model_eval,
         show_forces=not args.no_forces,
         max_neighbors=args.max_neighbors,
         include_parity=not args.no_parity,
@@ -428,6 +465,8 @@ def run_training(
         )
         return 1
     kind = "MACE" if sorted(results.rglob("*_train.txt")) else "NeuralIL"
+
+    _resolve_section_needs(entries, args, datapath)
 
     board = Dashboard.from_entries(
         entries, ncols=2, width_per_panel=5.0, height_per_panel=4.0

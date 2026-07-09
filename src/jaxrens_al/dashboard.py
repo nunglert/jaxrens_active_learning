@@ -39,6 +39,7 @@ from jaxrens_al.run_layout import (
     evaluated_configs_per_iteration,
     iteration_dir,
     load_progress,
+    model_for_iteration,
     ns_result_dir,
     ns_result_dirs,
     quests_pca_json,
@@ -46,7 +47,6 @@ from jaxrens_al.run_layout import (
     resampled_provenance_json,
     sampled_configs,
     sampled_configs_per_iteration,
-    trained_model_for_iteration,
     training_error_files,
     training_error_for_iteration,
     training_mace_for_iteration,
@@ -92,6 +92,9 @@ class RunContext:
     eos_reference: Optional[list] = None  # phase reference files
     model_file: Optional[Path] = None
     eos_backend: str = "neuralil"
+    # Evaluate trained models (EOS / model-parity) on the cluster instead of
+    # in-process -- required for a GPU-only MACE-jax bundle.
+    remote_model_eval: bool = False
     energy_key: str = REF_ENERGY_KEY
     forces_key: str = REF_FORCES_KEY
     surrogate_energy_key: str = SURROGATE_ENERGY_KEY
@@ -114,18 +117,60 @@ class RunContext:
         )
 
 
+def _coerce_paths(value):
+    """A single path or a list of them -> ``list[Path]`` (``None`` stays None).
+
+    Guards the EOS ``eos_reference`` input: a scalar string (a user pointing at
+    one file or one directory in the config) must not be iterated character by
+    character. Directory *expansion* to per-phase files happens later, in the
+    EOS panel, the one place both this global and a per-panel ``references=``
+    converge.
+    """
+    if value is None:
+        return None
+    if isinstance(value, (str, Path)):
+        value = [value]
+    return [Path(p) for p in value]
+
+
+def detect_backend(mace_logs=None, model_file=None) -> str:
+    """Infer the jaxrens backend from the trainer's on-disk artifacts.
+
+    MACE writes ``*_train.txt`` logs and a ``.bundle`` / ``-jax.pkl`` model;
+    NeuralIL writes ``error_*.txt`` / ``.npz`` and a plain ``.pkl``. Mirrors the
+    section path's ``"mace" if mace_logs else "neuralil"``
+    (:func:`jaxrens_al.sections.training_section`) and additionally sniffs the
+    model artifact, so a MACE bundle is recognised even when its logs weren't
+    kept. The AL-page context builders use this so the backend need not be set
+    by hand -- an explicit ``eos_backend`` still overrides it.
+    """
+    if mace_logs:
+        return "mace"
+    if model_file is not None:
+        name = Path(model_file).name
+        if name.endswith(".bundle") or name.endswith("-jax.pkl"):
+            return "mace"
+    return "neuralil"
+
+
 def summary_context(
     calchome,
     datapath,
     *,
+    eos_backend: Optional[str] = None,
     ns_prefix: str = "ns",
     ns_k_B: float = 1.0,
     ns_swap_axes: bool = False,
     force_recompute: bool = False,
 ) -> RunContext:
-    """Whole-run context: every iteration's artifacts, aggregated."""
+    """Whole-run context: every iteration's artifacts, aggregated.
+
+    ``eos_backend`` defaults to auto-detection from the trainer artifacts
+    (:func:`detect_backend`); pass a value to force it.
+    """
     calchome = Path(calchome)
     progress = load_progress(calchome)
+    mace_logs = training_mace_logs(calchome)
     return RunContext(
         calchome=calchome,
         datapath=Path(datapath),
@@ -133,8 +178,9 @@ def summary_context(
         sampled_files=sampled_configs(calchome, progress),
         npz_files=training_npz_files(calchome),
         error_files=training_error_files(calchome),
-        mace_logs=training_mace_logs(calchome),
+        mace_logs=mace_logs,
         ns_dirs=ns_result_dirs(calchome, prefix=ns_prefix),
+        eos_backend=eos_backend or detect_backend(mace_logs),
         iteration=None,
         ns_prefix=ns_prefix,
         ns_k_B=ns_k_B,
@@ -151,7 +197,8 @@ def iteration_context(
     eval_files=None,
     sampled_files=None,
     eos_reference=None,
-    eos_backend: str = "neuralil",
+    eos_backend: Optional[str] = None,
+    remote_model_eval: bool = False,
     ns_prefix: str = "ns",
     ns_k_B: float = 1.0,
     ns_swap_axes: bool = False,
@@ -162,6 +209,10 @@ def iteration_context(
 
     ``eval_files`` / ``sampled_files`` may be passed in (the CLI already has
     them per iteration) to avoid re-reading ``AL_progress.json`` each page.
+
+    ``eos_backend`` defaults to auto-detection from this iteration's trainer
+    artifacts (:func:`detect_backend` -- MACE logs / a ``.bundle`` model ->
+    ``mace``, else ``neuralil``); pass a value to force it.
     """
     calchome = Path(calchome)
     it_dir = iteration_dir(calchome, index)
@@ -170,6 +221,8 @@ def iteration_context(
     if sampled_files is None:
         sampled_files = sampled_configs_per_iteration(calchome)[index]
     ns_dir = ns_result_dir(it_dir, prefix=ns_prefix)
+    mace_logs = training_mace_for_iteration(it_dir)
+    model_file = model_for_iteration(calchome, index, it_dir=it_dir)
     return RunContext(
         calchome=calchome,
         datapath=Path(datapath),
@@ -177,18 +230,17 @@ def iteration_context(
         sampled_files=sampled_files,
         npz_files=training_npz_for_iteration(it_dir),
         error_files=training_error_for_iteration(it_dir),
-        mace_logs=training_mace_for_iteration(it_dir),
+        mace_logs=mace_logs,
         ns_dirs=[ns_dir] if ns_dir is not None else [],
         acc_rates=acc_rates_file(it_dir, prefix=ns_prefix),
         adaptation=adaptation_file(it_dir, prefix=ns_prefix),
         re_stats=re_stats_file(it_dir, prefix=ns_prefix),
         quests_pca=quests_pca_json(it_dir),
         resampled_provenance=resampled_provenance_json(it_dir),
-        eos_reference=(
-            [Path(p) for p in eos_reference] if eos_reference else None
-        ),
-        model_file=trained_model_for_iteration(it_dir),
-        eos_backend=eos_backend,
+        eos_reference=_coerce_paths(eos_reference),
+        model_file=model_file,
+        eos_backend=eos_backend or detect_backend(mace_logs, model_file),
+        remote_model_eval=remote_model_eval,
         iteration=index,
         ns_prefix=ns_prefix,
         ns_k_B=ns_k_B,
@@ -302,7 +354,8 @@ def build_iteration_dashboard(
     eval_files=None,
     sampled_files=None,
     eos_reference=None,
-    eos_backend: str = "neuralil",
+    eos_backend: Optional[str] = None,
+    remote_model_eval: bool = False,
     ncols: int = 3,
     width_per_panel: float = 4.0,
     height_per_panel: float = 4.0,
@@ -340,6 +393,7 @@ def build_iteration_dashboard(
         sampled_files=sampled_files,
         eos_reference=eos_reference,
         eos_backend=eos_backend,
+        remote_model_eval=remote_model_eval,
         ns_prefix=ns_prefix,
         ns_k_B=ns_k_B,
         ns_swap_axes=ns_swap_axes,

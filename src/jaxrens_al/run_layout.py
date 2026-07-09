@@ -179,6 +179,18 @@ def selected_configs_per_iteration(calchome, progress=None) -> list:
     return out
 
 
+def trained_models_per_iteration(calchome, progress=None) -> list:
+    """List (per iteration) of the recorded trained-model paths."""
+    calchome = Path(calchome)
+    if progress is None:
+        progress = load_progress(calchome)
+    out = []
+    for iteration in progress:
+        rels = iteration.get("trainer_output", []) or []
+        out.append([(calchome / rel).resolve() for rel in rels])
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Per-iteration *working* dirs.
 #
@@ -398,6 +410,27 @@ def trained_model_for_iteration(it_dir):
         return None
     hits = sorted(base.rglob("*.pkl"))
     return hits[0] if hits else None
+
+
+def model_for_iteration(calchome, index, it_dir=None, progress=None):
+    """The model the EOS panel evaluates for iteration ``index``, or None.
+
+    A NeuralIL run writes a ``.pkl`` under the iteration's ``train/results``
+    (found by :func:`trained_model_for_iteration`); a MACE-jax run's model is
+    the recorded trainer output -- a bundle *directory* under
+    ``trainer_output/`` that lives outside the iteration dir, so it is resolved
+    from ``AL_progress.json``. Prefer the local ``.pkl`` (unchanged behaviour),
+    else fall back to the recorded trainer output for this iteration.
+    """
+    if it_dir is None:
+        it_dir = iteration_dir(calchome, index)
+    pkl = trained_model_for_iteration(it_dir)
+    if pkl is not None:
+        return pkl
+    recorded = trained_models_per_iteration(calchome, progress=progress)
+    if 0 <= index < len(recorded) and recorded[index]:
+        return recorded[index][0]
+    return None
 
 
 def training_error_for_iteration(it_dir) -> list:

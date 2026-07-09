@@ -172,6 +172,46 @@ def test_model_parity_renders_via_seam(
     assert (dp / "model_parity.json").exists()
 
 
+def test_iteration_backend_autodetected_from_mace_logs(
+    make_calchome, tmp_path
+):
+    # A MACE iteration (its *_train.txt log present) -> backend auto-detects
+    # 'mace' with no eos_backend passed, so model_parity/EOS load correctly.
+    calchome = make_calchome(
+        tmp_path, n_iter=2, with_mace_training=True, with_model=True
+    )
+    ctx = iteration_context(calchome, tmp_path / "dp", 1)
+    assert ctx.eos_backend == "mace"
+
+
+def test_iteration_backend_autodetected_neuralil(make_calchome, tmp_path):
+    # A NeuralIL iteration (no MACE logs, a .pkl model) -> 'neuralil'.
+    calchome = make_calchome(
+        tmp_path, n_iter=2, with_training=True, with_model=True
+    )
+    ctx = iteration_context(calchome, tmp_path / "dp", 1)
+    assert ctx.eos_backend == "neuralil"
+
+
+def test_iteration_backend_explicit_override_wins(make_calchome, tmp_path):
+    # An explicit eos_backend overrides auto-detection.
+    calchome = make_calchome(
+        tmp_path, n_iter=2, with_mace_training=True, with_model=True
+    )
+    ctx = iteration_context(
+        calchome, tmp_path / "dp", 1, eos_backend="neuralil"
+    )
+    assert ctx.eos_backend == "neuralil"
+
+
+def test_summary_backend_autodetected_from_mace_logs(make_calchome, tmp_path):
+    calchome = make_calchome(
+        tmp_path, n_iter=2, with_mace_training=True, with_model=True
+    )
+    ctx = summary_context(calchome, tmp_path / "dp")
+    assert ctx.eos_backend == "mace"
+
+
 def test_summary_end_to_end_writes_pdf_and_caches(make_calchome, tmp_path):
     calchome = make_calchome(tmp_path, n_iter=2)
     board = build_dashboard(calchome)

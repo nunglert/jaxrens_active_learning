@@ -20,6 +20,11 @@ import numpy as np
 # ---------------------------------------------------------------------------
 from alviz import Entry, JsonDict, PanelSpec, register_panel
 
+from jaxrens_al.panels.model_eval import (
+    ModelEvalConsumer,
+    ModelEvalNeed,
+    model_eval_keys,
+)
 from jaxrens_al.panels.reference import ReferenceConsumer, ReferenceNeed
 
 # 1 eV / Angstrom^3 expressed in GPa.
@@ -28,6 +33,39 @@ _EVA3_TO_GPA = 160.21766208
 # Pressure grid (GPa) the per-phase enthalpies are interpolated onto, so all
 # phases share an x-axis for the H(P) / relative-H panels.
 _P_GRID = np.linspace(-2.0, 25.0, 100)
+
+
+def _expand_reference_paths(references):
+    """Normalise EOS reference input to a flat list of per-phase scan files.
+
+    Accepts a single path or a list. Any entry that is a **directory** is
+    expanded to its sorted ``eos_*.extxyz`` files (falling back to ``*.extxyz``
+    if none match that convention), so a user can point at *the directory the
+    reference scans live in* instead of listing each phase file. Plain-file
+    entries are kept as given. Returns ``None`` when ``references`` is None.
+    """
+    from pathlib import Path
+
+    if references is None:
+        return None
+    if isinstance(references, (str, Path)):
+        references = [references]
+    out: list = []
+    for entry in references:
+        p = Path(entry)
+        if p.is_dir():
+            files = sorted(p.glob("eos_*.extxyz")) or sorted(
+                p.glob("*.extxyz")
+            )
+            if not files:
+                raise ValueError(
+                    f"EOS reference directory {p} contains no *.extxyz scan "
+                    "files."
+                )
+            out.extend(str(f) for f in files)
+        else:
+            out.append(str(p))
+    return out
 
 
 def _birch_murnaghan(V, E0, V0, B0, B0p):
@@ -75,7 +113,7 @@ def _fit_enthalpy(volumes, energies):
     )(_P_GRID)
 
 
-class EquationOfStatePanel(ReferenceConsumer, Entry):
+class EquationOfStatePanel(ReferenceConsumer, ModelEvalConsumer, Entry):
     """Multi-phase EOS: E(V), H(P) and relative enthalpy under the model + DFT.
 
     Two ways to supply the per-phase volume scans (give exactly one):
@@ -86,16 +124,27 @@ class EquationOfStatePanel(ReferenceConsumer, Entry):
         Project) + DFT-labels for you, filling the files via
         :meth:`receive_references` before rendering.
 
+    The **model** energy curve is computed either locally (loading the backend
+    in-process, the default for CPU backends) or -- when ``remote_eval`` -- on a
+    GPU cluster: the panel declares a
+    :class:`~jaxrens_al.panels.model_eval.ModelEvalNeed` and reads the model
+    energy back from the annotated reference files. A MACE-jax bundle needs the
+    latter (its ``cuequivariance`` build is GPU-only).
+
     Args:
         model_file: This iteration's trained-model bundle (the model curve).
-        references: One path or a list of per-phase volume-scan extxyz;
-            ``REF_energy`` on each frame is the DFT energy.
+        references: One path or a list of per-phase volume-scan extxyz
+            (``REF_energy`` on each frame is the DFT energy), **or a dir**
+            holding them -- a directory is expanded to its sorted
+            ``eos_*.extxyz`` files.
         element: Chemical symbol -> declare an EOS reference need instead.
         vol_scalings, target_cutoff, level: parameters of the declared need
             (the volume grid, the supercell cutoff, and an opaque DFT-level tag
             used only to key the build for reuse).
         labels: Optional phase labels (default: the reference file stems).
         backend_type: jaxrens backend to load the model with.
+        remote_eval: Evaluate the model on a GPU cluster (via the ``model_eval``
+            processor) instead of in-process. Required for a MACE-jax bundle.
         max_neighbors: Static neighbor-buffer size for the backend call.
     """
 
@@ -113,6 +162,7 @@ class EquationOfStatePanel(ReferenceConsumer, Entry):
         level: str = "dft",
         labels=None,
         backend_type: str = "neuralil",
+        remote_eval: bool = False,
         max_neighbors: int = 50,
         **kwargs,
     ):
@@ -124,14 +174,12 @@ class EquationOfStatePanel(ReferenceConsumer, Entry):
                 "EOS panel needs exactly one of references= (explicit "
                 "per-phase scans) or element= (declare a reference need)."
             )
-        if isinstance(references, (str, Path)):
-            references = [references]
-        self._references = (
-            [str(p) for p in references] if references is not None else None
-        )
+        self._references = _expand_reference_paths(references)
         self._model_file = str(model_file)
         self._labels_override = list(labels) if labels is not None else None
         self._backend_type = backend_type
+        self._remote_eval = bool(remote_eval)
+        self._model_eval_annotated: dict = {}
         self._max_neighbors = max_neighbors
         # Need-mode inputs: the resolver fetches + DFT-labels these and fills
         # ``_references`` via ``receive_references``.
@@ -162,6 +210,26 @@ class EquationOfStatePanel(ReferenceConsumer, Entry):
     def receive_references(self, mapping: dict) -> None:
         if self._element is not None and self._references is None:
             self._references = [str(p) for p in mapping[self._need()]]
+
+    def model_eval_needs(self) -> list:
+        """Score the reference scans with this iteration's model, on cluster."""
+        if not self._remote_eval or self._references is None:
+            return []
+        return [
+            ModelEvalNeed.make(
+                self._refs(),
+                self._model_file,
+                self._backend_type,
+                want_forces=False,
+                max_neighbors=self._max_neighbors,
+            )
+        ]
+
+    def receive_model_eval(self, mapping: dict) -> None:
+        if self._remote_eval and self._references is not None:
+            self._model_eval_annotated = {
+                r: mapping[r] for r in self._refs() if r in mapping
+            }
 
     def _refs(self) -> list:
         if self._references is None:
@@ -213,11 +281,26 @@ class EquationOfStatePanel(ReferenceConsumer, Entry):
     def _phase_data(self, ref_file) -> dict:
         import ase.io
 
-        frames = ase.io.read(ref_file, index=":")
-        n = len(frames[0])
+        if self._remote_eval:
+            # Model energies were written onto the reference frames by the
+            # cluster job; read both curves from the annotated file.
+            annotated = self._model_eval_annotated.get(str(ref_file))
+            if annotated is None:
+                raise RuntimeError(
+                    "EOS panel is remote_eval but the reference scans are not "
+                    "annotated yet: run resolve_model_evaluations() over the "
+                    "dashboard before rendering."
+                )
+            energy_key, _ = model_eval_keys(self._model_file)
+            frames = ase.io.read(str(annotated), index=":")
+            n = len(frames[0])
+            e_nnff = [float(at.info[energy_key]) / n for at in frames]
+        else:
+            frames = ase.io.read(ref_file, index=":")
+            n = len(frames[0])
+            e_nnff = [e / n for e in self._evaluate(self._model_file, frames)]
         volumes = [at.get_volume() / n for at in frames]
         e_dft = [float(at.info["REF_energy"]) / n for at in frames]
-        e_nnff = [e / n for e in self._evaluate(self._model_file, frames)]
         return dict(
             volumes=volumes,
             e_dft=e_dft,
@@ -296,11 +379,13 @@ class EquationOfStatePanel(ReferenceConsumer, Entry):
 class EOSSpec(PanelSpec):
     """Equation-of-state panel: explicit references or a declared build.
 
-    Set ``references`` (per-phase volume-scan extxyz, already DFT-labelled) to
-    read them directly, or ``element`` to declare a reference need the run-side
-    ``resolve_references`` fetches + DFT-labels (with on-disk reuse). With
-    neither, the run-global ``--eos-reference`` files are used if present.
-    ``backend`` inherits the run's ``eos_backend`` when unset.
+    Set ``references`` (per-phase volume-scan extxyz, already DFT-labelled, or
+    a directory holding them) to read them directly, or ``element`` to declare
+    a reference need the run-side ``resolve_references`` fetches + DFT-labels
+    (with on-disk reuse). With neither, the run-global ``--eos-reference``
+    files/dir are used if present. ``backend`` inherits the run's
+    ``eos_backend`` when unset. ``remote_eval`` runs the model on a GPU cluster
+    (auto-on for the ``mace`` backend, which is GPU-only); ``None`` = auto.
     """
 
     type: str = "eos"
@@ -313,15 +398,23 @@ class EOSSpec(PanelSpec):
     target_cutoff: float = 4.0
     level: str = "dft"
     backend: str | None = None
+    remote_eval: bool | None = None
     max_neighbors: int = 50
 
 
 def _build_eos(spec, ctx, c):
     if not ctx.model_file:
         return None
+    backend = spec.backend or ctx.eos_backend
+    remote_eval = (
+        spec.remote_eval
+        if spec.remote_eval is not None
+        else ctx.remote_model_eval
+    )
     common = dict(
         model_file=ctx.model_file,
-        backend_type=spec.backend or ctx.eos_backend,
+        backend_type=backend,
+        remote_eval=remote_eval,
         max_neighbors=spec.max_neighbors,
         **c,
     )

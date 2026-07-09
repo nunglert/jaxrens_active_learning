@@ -145,6 +145,48 @@ def test_training_accessors_empty_when_no_artifacts(make_calchome, tmp_path):
     assert training_npz_for_iteration(iteration_dir(calchome, 0)) == []
 
 
+def test_model_for_iteration_prefers_local_pkl(make_calchome, tmp_path):
+    # A NeuralIL run writes a .pkl under <i>/training/results -- unchanged.
+    from jaxrens_al.run_layout import model_for_iteration
+
+    calchome = make_calchome(tmp_path, n_iter=2, with_model=True)
+    m = model_for_iteration(calchome, 1)
+    assert m is not None and m.match("*/training/results/*.pkl")
+
+
+def test_model_for_iteration_falls_back_to_recorded_bundle(tmp_path):
+    # A MACE-jax run has no .pkl; its model is the recorded trainer output
+    # bundle DIR under trainer_output/, resolved from AL_progress.json.
+    from jaxrens_al.run_layout import (
+        model_for_iteration,
+        trained_models_per_iteration,
+    )
+
+    calchome = tmp_path / "calchome"
+    (calchome / "trainer_output" / "trainer_it0_0.bundle").mkdir(parents=True)
+    (calchome / "trainer_output" / "trainer_it1_0.bundle").mkdir(parents=True)
+    progress = [
+        {"trainer_output": ["trainer_output/trainer_it0_0.bundle"]},
+        {"trainer_output": ["trainer_output/trainer_it1_0.bundle"]},
+    ]
+    (calchome / "AL_progress.json").write_text(json.dumps(progress))
+
+    recorded = trained_models_per_iteration(calchome)
+    assert [len(x) for x in recorded] == [1, 1]
+    m = model_for_iteration(calchome, 1)
+    assert m is not None
+    assert m.name == "trainer_it1_0.bundle" and m.is_dir()
+
+
+def test_model_for_iteration_none_when_nothing_recorded(
+    make_calchome, tmp_path
+):
+    from jaxrens_al.run_layout import model_for_iteration
+
+    calchome = make_calchome(tmp_path, n_iter=1, with_model=False)
+    assert model_for_iteration(calchome, 0) is None
+
+
 def test_resampling_artifacts_none_when_absent(make_calchome, tmp_path):
     from jaxrens_al.run_layout import (
         quests_pca_json,

@@ -244,6 +244,109 @@ def resolve_processing(
     return delivered
 
 
+def resolve_model_evaluations(
+    panels,
+    *,
+    cluster_config,
+    remote_fs,
+    remote_savepath,
+    shard_size: int = 512,
+    n_processors: int = 1,
+    num_parallel: int = 8,
+    loop_time: float = 30.0,
+    local_savepath=None,
+    reuse: bool = True,
+):
+    """Score a dashboard's configs with their trained models, on the cluster.
+
+    Collects every panel's :meth:`model_eval_needs`
+    (:class:`~jaxrens_al.panels.model_eval.ModelEvalNeed`) and runs **one job per
+    distinct model** (a ``model_eval`` processor over that model's config files),
+    so a GPU-only MACE-jax bundle is evaluated on a GPU node rather than in the
+    dashboard process. Predictions land under per-model keys, delivered back via
+    ``receive_model_eval``.
+
+    One job per model (not one merged job) both dodges the pipeline's
+    same-processor-name rule and avoids scoring every model on every other
+    model's configs. Args mirror :func:`resolve_processing`.
+
+    Returns:
+        The ``{input_file -> annotated_file}`` mapping (empty if no needs).
+    """
+    from jaxrens_al.panels.model_eval import model_eval_keys
+
+    consumers = [p for p in panels if hasattr(p, "model_eval_needs")]
+    needs = [n for p in consumers for n in p.model_eval_needs()]
+    if not needs:
+        return {}
+
+    from remote_handler.core.atoms_shard import front_tag
+
+    # Group by model identity (+ the eval knobs that change the annotation), so
+    # each distinct trained model is loaded and run once over its config union.
+    groups: dict = {}
+    for n in needs:
+        key = (n.model, n.backend, n.want_forces, n.max_neighbors)
+        groups.setdefault(key, set()).update(n.inputs)
+
+    delivered: dict = {}
+    for (model, backend, want_forces, max_nb), input_set in groups.items():
+        inputs = sorted(input_set)
+        energy_key, forces_key = model_eval_keys(model)
+        tag = (
+            "meval"
+            + hashlib.sha1(
+                repr((model, backend, want_forces, max_nb)).encode()
+            ).hexdigest()[:10]
+        )
+        mapping = {f: Path(front_tag(f, tag)) for f in inputs}
+        todo = [
+            f for f in inputs if not (reuse and _up_to_date(f, mapping[f]))
+        ]
+        if todo:
+            from remote_handler.processing import RemoteTrajectoryProcessor
+
+            from jaxrens_al.processors.model_eval import ModelEvalProcessor
+
+            logger.info(
+                "resolve_model_evaluations: model %s over %d of %d file(s) "
+                "(%d reused)",
+                Path(model).name,
+                len(todo),
+                len(inputs),
+                len(inputs) - len(todo),
+            )
+            RemoteTrajectoryProcessor(
+                traj_files=list(todo),
+                cluster_config=cluster_config,
+                remote_fs=remote_fs,
+                n_processors=n_processors,
+                shard_size=shard_size,
+                savepath=str(remote_savepath),
+                num_parallel=num_parallel,
+                processors=[
+                    ModelEvalProcessor(
+                        model,
+                        backend=backend,
+                        energy_key=energy_key,
+                        forces_key=forces_key,
+                        want_forces=want_forces,
+                        max_neighbors=max_nb,
+                    )
+                ],
+                tag=tag,
+                local_savepath=local_savepath,
+                jobname="AL_MODEL_EVAL",
+                loop_time=loop_time,
+                every=1,
+            ).run()
+        delivered.update({f: mapping[f] for f in inputs})
+
+    for panel in consumers:
+        panel.receive_model_eval(delivered)
+    return delivered
+
+
 def _build_steinhardt(param_dicts: list):
     """One ``SteinhardtProcessor`` per ``(r_cut, r_cut_min)``, l values unioned.
 
@@ -278,6 +381,7 @@ register_processor_kind("steinhardt", _build_steinhardt)
 
 __all__ = [
     "resolve_processing",
+    "resolve_model_evaluations",
     "register_processor_kind",
     "execution_context",
     "local_execution_context",

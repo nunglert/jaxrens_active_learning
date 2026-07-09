@@ -1,3 +1,3 @@
 - [ ] Parity plots in dashboard
 - [ ] EoS plots in dashboard
-- [ ]  plots in dashboard
+- [ ] Clean root src dir, maybe new dashboard subpackage
