@@ -59,12 +59,16 @@ def _resolve_section_needs(entries, args, datapath) -> None:
         for p in entries
         if hasattr(p, "model_eval_needs") and p.model_eval_needs()
     ]
-    if not (proc or eval_):
+    phase = [
+        p for p in entries if hasattr(p, "phase_needs") and p.phase_needs()
+    ]
+    if not (proc or eval_ or phase):
         return
 
     from jaxrens_al.processing_resolver import (
         execution_context,
         resolve_model_evaluations,
+        resolve_phase_labeling,
         resolve_processing,
     )
 
@@ -88,6 +92,12 @@ def _resolve_section_needs(entries, args, datapath) -> None:
             entries,
             **knobs,
             **execution_context(args.cluster, datapath / "model_eval"),
+        )
+    if phase:
+        resolve_phase_labeling(
+            entries,
+            **knobs,
+            **execution_context(args.cluster, datapath / "phase_label"),
         )
 
 

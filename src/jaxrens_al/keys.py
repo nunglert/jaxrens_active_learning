@@ -14,6 +14,11 @@ REF_ENERGY_KEY = "REF_energy"
 REF_FORCES_KEY = "REF_forces"
 SURROGATE_ENERGY_KEY = "ns_energy"
 
+# Space-group label the ``spacegroup`` processor writes and the phase panel
+# reads (relaxed-basin phase assignment).
+SPACEGROUP_KEY = "spacegroup"
+SPACEGROUP_SYMBOL_KEY = "spacegroup_symbol"
+
 
 def first_has_info_key(files, key) -> bool:
     """True if the first config of ``files`` carries ``key`` in its ``info``.

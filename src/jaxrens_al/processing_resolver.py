@@ -348,6 +348,93 @@ def resolve_model_evaluations(
     return delivered
 
 
+def resolve_phase_labeling(
+    panels,
+    *,
+    cluster_config,
+    remote_fs,
+    remote_savepath,
+    shard_size: int = 512,
+    n_processors: int = 1,
+    num_parallel: int = 8,
+    loop_time: float = 30.0,
+    local_savepath=None,
+    reuse: bool = True,
+):
+    """Relax + space-group-label a dashboard's NS pools, on the cluster.
+
+    Collects every panel's :meth:`phase_needs`
+    (:class:`~jaxrens_al.panels.phase.PhaseNeed`) and runs **one job per
+    distinct model** -- an ordered ``[relax, spacegroup]`` pipeline over that
+    model's trajectories. Relaxation *mutates* structures, so this is its own
+    job, isolated from the (annotation-only) Steinhardt / model-eval passes.
+    Delivers ``{model -> {input -> labelled_file}}`` back via
+    ``receive_phase_labels``. Args mirror :func:`resolve_processing`.
+    """
+    consumers, needs = collect_needs(panels, "phase_needs")
+    if not needs:
+        return {}
+
+    from remote_handler.core.atoms_shard import front_tag
+
+    groups: dict = {}
+    for n in needs:
+        key = (n.model, n.backend, n.fmax, n.steps, n.symprec, n.max_neighbors)
+        groups.setdefault(key, set()).update(n.inputs)
+
+    delivered: dict = {}
+    for key, input_set in groups.items():
+        model, backend, fmax, steps, symprec, max_nb = key
+        inputs = sorted(input_set)
+        tag = stable_tag("phase", key)
+        mapping = {f: Path(front_tag(f, tag)) for f in inputs}
+        todo = [
+            f for f in inputs if not (reuse and _up_to_date(f, mapping[f]))
+        ]
+        if todo:
+            from remote_handler.processing import RemoteTrajectoryProcessor
+
+            from jaxrens_al.processors.relax import RelaxProcessor
+            from jaxrens_al.processors.spacegroup import SpaceGroupProcessor
+
+            logger.info(
+                "resolve_phase_labeling: model %s over %d of %d file(s) "
+                "(%d reused)",
+                Path(model).name,
+                len(todo),
+                len(inputs),
+                len(inputs) - len(todo),
+            )
+            RemoteTrajectoryProcessor(
+                traj_files=list(todo),
+                cluster_config=cluster_config,
+                remote_fs=remote_fs,
+                n_processors=n_processors,
+                shard_size=shard_size,
+                savepath=str(remote_savepath),
+                num_parallel=num_parallel,
+                processors=[
+                    RelaxProcessor(
+                        model,
+                        backend=backend,
+                        fmax=fmax,
+                        steps=steps,
+                        max_neighbors=max_nb,
+                    ),
+                    SpaceGroupProcessor(symprec=symprec),
+                ],
+                tag=tag,
+                local_savepath=local_savepath,
+                jobname="AL_PHASE_LABEL",
+                loop_time=loop_time,
+                every=1,
+            ).run()
+        delivered.setdefault(model, {}).update({f: mapping[f] for f in inputs})
+
+    deliver(consumers, "receive_phase_labels", delivered)
+    return delivered
+
+
 def _build_steinhardt(param_dicts: list):
     """One ``SteinhardtProcessor`` per ``(r_cut, r_cut_min)``, l values unioned.
 
@@ -383,6 +470,7 @@ register_processor_kind("steinhardt", _build_steinhardt)
 __all__ = [
     "resolve_processing",
     "resolve_model_evaluations",
+    "resolve_phase_labeling",
     "register_processor_kind",
     "execution_context",
     "local_execution_context",

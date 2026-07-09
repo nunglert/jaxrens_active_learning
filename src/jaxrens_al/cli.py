@@ -187,12 +187,16 @@ def _resolve_remote_needs(entries, args, datapath):
         hasattr(e, "model_eval_needs") and e.model_eval_needs()
         for e in entries
     )
-    if not (has_proc or has_eval):
+    has_phase = any(
+        hasattr(e, "phase_needs") and e.phase_needs() for e in entries
+    )
+    if not (has_proc or has_eval or has_phase):
         return
 
     from jaxrens_al.processing_resolver import (
         execution_context,
         resolve_model_evaluations,
+        resolve_phase_labeling,
         resolve_processing,
     )
 
@@ -220,6 +224,16 @@ def _resolve_remote_needs(entries, args, datapath):
             entries,
             **knobs,
             **execution_context(args.cluster, datapath / "model_eval"),
+        )
+    if has_phase:
+        logger.info(
+            f"Relaxing + space-group-labelling NS pools on the cluster "
+            f"(cluster={args.cluster!r}); may be slow."
+        )
+        resolve_phase_labeling(
+            entries,
+            **knobs,
+            **execution_context(args.cluster, datapath / "phase_label"),
         )
 
 

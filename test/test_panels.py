@@ -867,3 +867,77 @@ def test_resampled_grid_panel_reads_selected(make_calchome, tmp_path):
     # 2 selected: run_ids [0, 1], iters [0, 10].
     assert data["run_ids"] == [0, 1]
     assert data["iters"] == [0, 10]
+
+
+def _write_labelled_trajs(dirpath, prefix, sgs_by_run):
+    """Write per-replica NS trajs already labelled with a space group per
+    frame (the relax+spacegroup output the phase panel reads)."""
+    import ase.io
+    from ase import Atoms
+
+    dirpath.mkdir(parents=True, exist_ok=True)
+    _SYM = {225: "Fm-3m", 227: "Fd-3m", 194: "P6_3/mmc"}
+    for rid, sgs in sgs_by_run.items():
+        frames = []
+        for g in sgs:
+            at = Atoms("Cu", positions=[[0, 0, 0]], cell=[3, 3, 3], pbc=True)
+            at.info["spacegroup"] = int(g)
+            at.info["spacegroup_symbol"] = _SYM.get(int(g), str(g))
+            frames.append(at)
+        ase.io.write(
+            str(dirpath / f"{prefix}.run{rid:02d}.traj.extxyz"), frames
+        )
+    return dirpath
+
+
+def test_phase_diagram_panel_declares_need_and_reads_labels(tmp_path):
+    from jaxrens_al.panels.phase import PhaseDiagramPanel, PhaseNeed
+
+    nsdir = tmp_path / "nsdir"
+    # Raw NS trajectories the panel discovers + declares a need over.
+    _write_run_trajs(nsdir, "ns", {0: [0.0, 0.0, 0.0], 1: [0.0, 0.0, 0.0]})
+    panel = PhaseDiagramPanel(
+        result_dirs=[nsdir],
+        model_file="bundle_dir",
+        backend_type="mace",
+        n_T=8,
+        datapath=tmp_path,
+    )
+    (need,) = panel.phase_needs()
+    assert isinstance(need, PhaseNeed)
+    assert need.model == "bundle_dir" and need.backend == "mace"
+    assert len(need.inputs) == 2  # both replicas
+
+    # The cluster relaxed + labelled the pools; deliver them keyed by model.
+    labelled = tmp_path / "labelled"
+    _write_labelled_trajs(
+        labelled, "ns", {0: [225, 225, 227], 1: [194, 194, 194]}
+    )
+    raw = sorted((nsdir).glob("ns.run*.traj.extxyz"))
+    lab = sorted((labelled).glob("ns.run*.traj.extxyz"))
+    panel.receive_phase_labels(
+        {"bundle_dir": {str(r): l for r, l in zip(raw, lab)}}
+    )
+    panel._load_monitors = lambda d: [_FakeMonitor(3) for _ in range(2)]
+
+    data = panel.compute_data({})
+    # Two replicas -> two rows; each cell is the dominant space group number.
+    assert len(data["phase_grid"]) == 2
+    assert len(data["phase_grid"][0]) == 8  # n_T
+    assert data["phase_grid"][0][0] == 225  # replica 0 majority phase
+    assert data["phase_grid"][1][0] == 194  # replica 1 all-194
+    assert set(data["phases"]) >= {194, 225}
+    assert data["symbols"]["225"] == "Fm-3m"
+
+
+def test_phase_diagram_panel_errors_without_labels(tmp_path):
+    from jaxrens_al.panels.phase import PhaseDiagramPanel
+
+    nsdir = tmp_path / "nsdir"
+    _write_run_trajs(nsdir, "ns", {0: [0.0, 0.0]})
+    panel = PhaseDiagramPanel(
+        result_dirs=[nsdir], model_file="bundle_dir", datapath=tmp_path
+    )
+    panel._load_monitors = lambda d: [_FakeMonitor(2)]
+    with pytest.raises(RuntimeError, match="run resolve_phase_labeling"):
+        panel.compute_data({})

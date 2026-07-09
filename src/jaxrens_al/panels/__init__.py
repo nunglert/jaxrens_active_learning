@@ -20,6 +20,7 @@ from jaxrens_al.panels.adaptation import (
 )
 from jaxrens_al.panels.environments import AtomicEnvsPanel
 from jaxrens_al.panels.eos import EquationOfStatePanel
+from jaxrens_al.panels.phase import PhaseDiagramPanel
 from jaxrens_al.panels.progress import DatasetGrowthPanel
 from jaxrens_al.panels.quests import QuestsPCAPanel, ResampledGridPanel
 from jaxrens_al.panels.sampling import NSSampledEnergyPanel
@@ -48,6 +49,7 @@ __all__ = [
     "MoveAcceptancePanel",
     "NSEnergyTracePanel",
     "NSSampledEnergyPanel",
+    "PhaseDiagramPanel",
     "QuestsPCAPanel",
     "RESwapAcceptancePanel",
     "ResampledGridPanel",

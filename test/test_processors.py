@@ -490,3 +490,115 @@ def test_run_model_eval_annotates_atoms(tmp_path):
     finally:
         loader.load_backend = orig
     assert out[0].info["me"] == -3.5
+
+
+# ---------------------------------------------------------------------------
+# relax + spacegroup processors and the phase-labeling resolver.
+# ---------------------------------------------------------------------------
+def test_spacegroup_run_labels_structures():
+    """The cluster-side ``run`` assigns a space group via spglib (self-skips)."""
+    pytest.importorskip("spglib")
+    from ase.build import bulk
+
+    from jaxrens_al.processors import spacegroup
+
+    atoms = bulk("Cu", "fcc", a=3.6, cubic=True)  # -> Fm-3m (225)
+    out = spacegroup.run([atoms], {"symprec": 1e-3})
+    assert out[0].info["spacegroup"] == 225
+    assert out[0].info["spacegroup_symbol"].startswith("Fm-3m")
+
+
+def test_spacegroup_processor_spec():
+    from jaxrens_al.processors import SpaceGroupArgs, SpaceGroupProcessor
+
+    proc = SpaceGroupProcessor(symprec=1e-2)
+    assert isinstance(proc, Processor) and proc.name == "spacegroup"
+    assert proc.shared_files() == []
+    args = proc.build_args("/remote")
+    assert args["symprec"] == 1e-2
+    SpaceGroupArgs.from_dict(args).validate()
+
+
+def test_relax_processor_stages_bundle_dir(tmp_path):
+    from jaxrens_al.processors import RelaxArgs, RelaxProcessor
+
+    bundle = tmp_path / "trainer_it0.bundle"
+    bundle.mkdir()
+    (bundle / "config.json").write_text("{}")
+    proc = RelaxProcessor(bundle, backend="mace", fmax=0.02, steps=50)
+    assert proc.name == "relax"
+    shared = proc.shared_files()
+    assert len(shared) == 1 and shared[0].endswith(".tar")
+    args = proc.build_args("/remote/savepath")
+    assert args["model_remote"] == "/remote/savepath/trainer_it0.bundle.tar"
+    assert args["is_archive"] is True and args["fmax"] == 0.02
+    RelaxArgs.from_dict(args).validate()
+
+
+class _FakePhaseHandler:
+    """Fake RemoteTrajectoryProcessor for the phase pipeline: writes a
+    spacegroup onto each frame where redistribute would (front_tag)."""
+
+    calls = []
+
+    def __init__(self, *, traj_files, processors, tag, **kw):
+        self.traj_files = traj_files
+        self.tag = tag
+        self.steps = [p.name for p in processors]
+        _FakePhaseHandler.calls.append(
+            {"tag": tag, "n_traj": len(traj_files), "steps": self.steps}
+        )
+
+    def run(self):
+        import ase.io
+        from remote_handler.core.atoms_shard import front_tag
+
+        for src in self.traj_files:
+            frames = ase.io.read(src, index=":")
+            for at in frames:
+                at.info["is_converged"] = True
+                at.info["spacegroup"] = 225
+                at.info["spacegroup_symbol"] = "Fm-3m"
+            ase.io.write(str(front_tag(src, self.tag)), frames)
+
+
+def test_resolve_phase_labeling_one_job_per_model(monkeypatch, tmp_path):
+    """Relax+spacegroup is one [relax, spacegroup] job per model; delivered
+    per-model so shared inputs don't clobber."""
+    from jaxrens_al.panels.phase import PhaseNeed
+    from jaxrens_al.processing_resolver import resolve_phase_labeling
+
+    traj = _refs(tmp_path, "ns.run00.traj.extxyz")
+    _FakePhaseHandler.calls.clear()
+    monkeypatch.setattr(
+        "remote_handler.processing.RemoteTrajectoryProcessor",
+        _FakePhaseHandler,
+    )
+
+    class _Panel:
+        def __init__(self, model):
+            self._model = model
+            self._need = PhaseNeed.make([traj], model, "mace")
+            self.received = None
+
+        def phase_needs(self):
+            return [self._need]
+
+        def receive_phase_labels(self, mapping):
+            self.received = mapping.get(self._model, {}).get(str(traj))
+
+    ctx = dict(cluster_config=None, remote_fs=None, remote_savepath="/remote")
+    p = _Panel("bundleA")
+    resolve_phase_labeling([p], **ctx)
+    assert len(_FakePhaseHandler.calls) == 1
+    assert _FakePhaseHandler.calls[0]["steps"] == ["relax", "spacegroup"]
+    assert p.received is not None
+    # The delivered file carries the space-group label.
+    import ase.io
+
+    assert ase.io.read(str(p.received), index=0).info["spacegroup"] == 225
+
+    # Reuse: a re-run with the same model submits no new job.
+    p2 = _Panel("bundleA")
+    resolve_phase_labeling([p2], **ctx)
+    assert len(_FakePhaseHandler.calls) == 1
