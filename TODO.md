@@ -1,0 +1,3 @@
+- [ ] Parity plots in dashboard
+- [ ] EoS plots in dashboard
+- [ ]  plots in dashboard

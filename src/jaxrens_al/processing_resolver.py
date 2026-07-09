@@ -99,6 +99,22 @@ def execution_context(cluster, workdir) -> dict:
     }
 
 
+def _up_to_date(input_file, output_file) -> bool:
+    """True if ``output_file`` exists and is no older than ``input_file``.
+
+    The mtime guard makes reuse re-run when a trajectory grew (e.g. new NS
+    frames) while a stale annotation from an earlier render still sits on disk;
+    if the input can't be stat'd, fall back to "reuse if the output exists".
+    """
+    output_file = Path(output_file)
+    if not output_file.exists():
+        return False
+    try:
+        return output_file.stat().st_mtime >= Path(input_file).stat().st_mtime
+    except OSError:
+        return True
+
+
 def register_processor_kind(kind: str, builder) -> None:
     """Register how ``ProcessingNeed``\\ s of ``kind`` become Processor step(s).
 
@@ -161,7 +177,8 @@ def resolve_processing(
         cluster_config, remote_fs, remote_savepath: cluster context.
         shard_size, n_processors, num_parallel, loop_time: array-job knobs.
         local_savepath: optional local mirror dir for the handler.
-        reuse: Skip the job when every expected annotated file already exists.
+        reuse: Annotate only trajectories whose output is missing or stale
+            (input newer than a prior annotation); skip the ones already done.
 
     Returns:
         The ``{input_file -> annotated_file}`` mapping (empty if no needs).
@@ -182,16 +199,23 @@ def resolve_processing(
     from remote_handler.core.atoms_shard import front_tag
 
     mapping = {f: Path(front_tag(f, tag)) for f in inputs}
-    if not (reuse and all(out.exists() for out in mapping.values())):
+    # Annotate only the trajectories whose output is missing or stale -- adding
+    # one iteration re-annotates just that trajectory, not the whole set (the
+    # handler shards whatever it is given; already-done inputs are left alone).
+    todo = [f for f in inputs if not (reuse and _up_to_date(f, mapping[f]))]
+    if todo:
         from remote_handler.processing import RemoteTrajectoryProcessor
 
         logger.info(
-            "resolve_processing: %d step(s) over %d trajectory file(s)",
+            "resolve_processing: %d step(s) over %d of %d trajectory file(s) "
+            "(%d reused)",
             len(steps),
+            len(todo),
             len(inputs),
+            len(inputs) - len(todo),
         )
         RemoteTrajectoryProcessor(
-            traj_files=list(inputs),  # handler shards them -- no manual concat
+            traj_files=list(todo),  # handler shards them -- no manual concat
             cluster_config=cluster_config,
             remote_fs=remote_fs,
             n_processors=n_processors,
@@ -207,6 +231,12 @@ def resolve_processing(
             # when the slice step is None.
             every=1,
         ).run()
+    else:
+        logger.info(
+            "resolve_processing: all %d trajectory file(s) already annotated; "
+            "skipping job",
+            len(inputs),
+        )
 
     delivered = {f: mapping[f] for f in inputs}
     for panel in consumers:

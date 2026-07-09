@@ -72,14 +72,50 @@ def test_resolve_references_unknown_kind_raises(tmp_path):
         )
 
 
-def test_eos_reference_reuse_returns_existing(tmp_path):
-    # Pre-existing eos_*.extxyz -> reuse skips the (DFT) build entirely.
-    (tmp_path / "eos_mp-149.extxyz").write_text("")
-    (tmp_path / "eos_mp-165.extxyz").write_text("")
+def _fake_eos_build(monkeypatch):
+    """Patch the (DFT) build so reuse branches are testable with no cluster."""
+    calls = []
+
+    def _build(evaluator, *, element, vol_scalings, target_cutoff, out_dir):
+        calls.append(element)
+        out = Path(out_dir)
+        out.mkdir(parents=True, exist_ok=True)
+        files = [out / "eos_mp-149.extxyz", out / "eos_mp-165.extxyz"]
+        for f in files:
+            f.write_text("")
+        return files
+
+    monkeypatch.setattr(
+        "jaxrens_al.processors.eos_reference.build_eos_reference", _build
+    )
+    return calls
+
+
+def test_eos_reference_reuse_returns_existing(tmp_path, monkeypatch):
+    # A complete dir (files + manifest sentinel) -> reuse skips the DFT build.
+    calls = _fake_eos_build(monkeypatch)
+    _build_eos_reference(
+        {"element": "Sn"}, evaluator=None, out_dir=tmp_path, reuse=True
+    )
+    assert calls == ["Sn"]  # first call builds and writes the manifest
+
     files = _build_eos_reference(
         {"element": "Sn"}, evaluator=None, out_dir=tmp_path, reuse=True
     )
+    assert calls == ["Sn"]  # second call reused -- no rebuild
     assert {f.name for f in files} == {
         "eos_mp-149.extxyz",
         "eos_mp-165.extxyz",
     }
+
+
+def test_eos_reference_partial_dir_without_manifest_rebuilds(
+    tmp_path, monkeypatch
+):
+    # Files on disk but NO manifest (a crashed DFT run) -> rebuild, not reuse.
+    calls = _fake_eos_build(monkeypatch)
+    (tmp_path / "eos_mp-149.extxyz").write_text("")  # partial, no manifest
+    _build_eos_reference(
+        {"element": "Sn"}, evaluator=None, out_dir=tmp_path, reuse=True
+    )
+    assert calls == ["Sn"]  # rebuilt despite the stray file

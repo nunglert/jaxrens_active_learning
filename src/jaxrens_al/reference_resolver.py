@@ -20,6 +20,7 @@ no-evaluator fallback.
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 from pathlib import Path
 
@@ -99,26 +100,37 @@ def _need_tag(need) -> str:
 
 
 def _build_eos_reference(params: dict, *, evaluator, out_dir, reuse: bool):
-    """Produce (or reuse) one element's per-phase EOS reference scans."""
+    """Produce (or reuse) one element's per-phase EOS reference scans.
+
+    Reuse is gated on a ``.eos_manifest.json`` sentinel written only after a
+    *complete* build (listing every produced file), so a DFT run that crashed
+    part-way -- some ``eos_*.extxyz`` on disk but no manifest -- is rebuilt
+    rather than mistaken for finished.
+    """
     out_dir = Path(out_dir)
-    existing = sorted(out_dir.glob("eos_*.extxyz"))
-    if reuse and existing:
-        logger.info(
-            "resolve_references: reusing %d EOS file(s) in %s",
-            len(existing),
-            out_dir,
-        )
-        return existing
+    manifest = out_dir / ".eos_manifest.json"
+    if reuse and manifest.exists():
+        listed = [out_dir / name for name in json.loads(manifest.read_text())]
+        if listed and all(p.exists() for p in listed):
+            logger.info(
+                "resolve_references: reusing %d EOS file(s) in %s",
+                len(listed),
+                out_dir,
+            )
+            return listed
 
     from jaxrens_al.processors.eos_reference import build_eos_reference
 
-    return build_eos_reference(
+    files = build_eos_reference(
         evaluator,
         element=params["element"],
         vol_scalings=params.get("vol_scalings"),
         target_cutoff=params.get("target_cutoff", 4.0),
         out_dir=out_dir,
     )
+    out_dir.mkdir(parents=True, exist_ok=True)
+    manifest.write_text(json.dumps([p.name for p in files]))
+    return files
 
 
 register_reference_kind("eos", _build_eos_reference)

@@ -159,6 +159,86 @@ def test_resolve_processing_dedups_into_one_job_and_delivers(
     assert len(_FakeHandler.calls) == 1
 
 
+def _write_pool(path):
+    import ase.io
+    from ase import Atoms
+
+    ase.io.write(
+        str(path),
+        [
+            Atoms(
+                "Cu2O",
+                positions=[[0, 0, 0], [1, 0, 0], [0, 1, 0]],
+                cell=[5, 5, 5],
+                pbc=True,
+            )
+            for _ in range(2)
+        ],
+    )
+
+
+def _fresh_panel(configs, tmp_path):
+    """A brand-new panel object, as a re-render would build."""
+    from jaxrens_al.panels.steinhardt import SteinhardtDistributionPanel
+
+    return SteinhardtDistributionPanel(
+        configs=configs, r_cut=3.5, l_values=(6,), datapath=tmp_path
+    )
+
+
+def test_resolve_processing_only_annotates_missing_inputs(
+    monkeypatch, tmp_path
+):
+    """A re-render with an added trajectory annotates only the new one."""
+    from jaxrens_al.processing_resolver import resolve_processing
+
+    pool_a = tmp_path / "a.extxyz"
+    _write_pool(pool_a)
+    _FakeHandler.calls.clear()
+    monkeypatch.setattr(
+        "remote_handler.processing.RemoteTrajectoryProcessor", _FakeHandler
+    )
+    ctx = dict(cluster_config=None, remote_fs=None, remote_savepath="/remote")
+
+    resolve_processing([_fresh_panel(pool_a, tmp_path)], **ctx)
+    assert _FakeHandler.calls[-1]["n_traj"] == 1  # a annotated
+
+    # Re-render: a second trajectory joins; only it should be processed, a
+    # reused from disk (both panels fresh, as a real re-render builds them).
+    pool_b = tmp_path / "b.extxyz"
+    _write_pool(pool_b)
+    resolve_processing(
+        [_fresh_panel(pool_a, tmp_path), _fresh_panel(pool_b, tmp_path)], **ctx
+    )
+    assert len(_FakeHandler.calls) == 2
+    assert _FakeHandler.calls[-1]["n_traj"] == 1  # only b, a was reused
+
+
+def test_resolve_processing_reannotates_when_input_is_newer(
+    monkeypatch, tmp_path
+):
+    """A trajectory that changed after its annotation is re-processed."""
+    import os
+
+    from jaxrens_al.processing_resolver import resolve_processing
+
+    pool = tmp_path / "pool.extxyz"
+    _write_pool(pool)
+    _FakeHandler.calls.clear()
+    monkeypatch.setattr(
+        "remote_handler.processing.RemoteTrajectoryProcessor", _FakeHandler
+    )
+    ctx = dict(cluster_config=None, remote_fs=None, remote_savepath="/remote")
+    resolve_processing([_fresh_panel(pool, tmp_path)], **ctx)
+    assert len(_FakeHandler.calls) == 1
+
+    # Bump the input's mtime past its annotation -> stale -> re-annotate.
+    future = os.path.getmtime(pool) + 100
+    os.utime(pool, (future, future))
+    resolve_processing([_fresh_panel(pool, tmp_path)], **ctx)
+    assert len(_FakeHandler.calls) == 2
+
+
 def test_execution_context_selects_local_or_config(tmp_path):
     """'local' builds a local context; a name goes to from_file."""
     from remote_handler.exceptions import ConfigurationError
