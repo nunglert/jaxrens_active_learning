@@ -352,3 +352,26 @@ def add_processing_args(parser) -> None:
         default=1,
         help="CPUs requested per processing shard job (default: 1).",
     )
+    parser.add_argument(
+        "--relax-batch-size",
+        type=int,
+        default=32,
+        help="Max structures relaxed per vmap kernel in the phase-diagram "
+        "relax step (caps GPU memory; ~20-50 for MACE; default: 32).",
+    )
+    parser.add_argument(
+        "--relax-shard-size",
+        type=int,
+        default=None,
+        help="Override --shard-size for the phase-diagram relax/spacegroup job "
+        "only (a GPU job, unlike the CPU annotation jobs); defaults to "
+        "--shard-size when unset.",
+    )
+
+
+def relax_shard_size(args) -> int:
+    """Shard size for the phase-diagram relax job: the ``--relax-shard-size``
+    override if set, else the global ``--shard-size``.
+    """
+    override = getattr(args, "relax_shard_size", None)
+    return override if override is not None else args.shard_size

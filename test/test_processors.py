@@ -527,14 +527,196 @@ def test_relax_processor_stages_bundle_dir(tmp_path):
     bundle = tmp_path / "trainer_it0.bundle"
     bundle.mkdir()
     (bundle / "config.json").write_text("{}")
-    proc = RelaxProcessor(bundle, backend="mace", fmax=0.02, steps=50)
+    proc = RelaxProcessor(
+        bundle, backend="mace", method="fire", fmax=0.02, steps=50
+    )
     assert proc.name == "relax"
     shared = proc.shared_files()
     assert len(shared) == 1 and shared[0].endswith(".tar")
     args = proc.build_args("/remote/savepath")
     assert args["model_remote"] == "/remote/savepath/trainer_it0.bundle.tar"
     assert args["is_archive"] is True and args["fmax"] == 0.02
+    assert args["method"] == "fire"
     RelaxArgs.from_dict(args).validate()
+
+
+def test_relax_args_rejects_unknown_method():
+    from remote_handler.exceptions import ScriptInputError
+
+    from jaxrens_al.run.processors import RelaxArgs
+
+    with pytest.raises(ScriptInputError, match="method"):
+        RelaxArgs(model_remote="m", method="nope").validate()
+
+
+def test_relax_args_rejects_empty_bucket_ladder():
+    from remote_handler.exceptions import ScriptInputError
+
+    from jaxrens_al.run.processors import RelaxArgs
+
+    with pytest.raises(ScriptInputError, match="max_neighbors_list"):
+        RelaxArgs(model_remote="m", max_neighbors_list=()).validate()
+
+
+def test_run_subbatches_by_batch_size(monkeypatch):
+    """A same-size shard is relaxed in sub-batches of at most ``batch_size``."""
+    pytest.importorskip("jax")
+    pytest.importorskip("jaxrens.io.formats")
+    from types import SimpleNamespace
+
+    import ase
+    import jaxrens.io.formats as fmts
+    import numpy as np
+
+    from jaxrens_al.run.processors import relax as relax_mod
+
+    atoms = [
+        ase.Atoms(
+            "H2",
+            positions=[[0, 0, 0], [0, 0, 0.7]],
+            cell=np.eye(3) * 5,
+            pbc=True,
+        )
+        for _ in range(5)  # 5 frames, batch_size 2 -> chunks [2, 2, 1]
+    ]
+
+    monkeypatch.setattr(relax_mod, "_materialise_model", lambda a, c: "model")
+    monkeypatch.setattr(
+        relax_mod, "_load_backend", lambda p, b: (object(), {"H": 0})
+    )
+    monkeypatch.setattr(relax_mod, "_probe_peak", lambda *a, **k: None)
+    monkeypatch.setattr(
+        fmts,
+        "ase_atoms_to_walker",
+        lambda at, sm: SimpleNamespace(
+            positions=np.asarray(at.get_positions()),
+            types=np.zeros(len(at), int),
+            cell=np.asarray(at.get_cell()[:]),
+        ),
+    )
+
+    sizes = []
+
+    def _fake_make(backend, fmax, steps, method):
+        def _f(pos, types, cell, buffer):
+            sizes.append(int(pos.shape[0]))
+            n = pos.shape[0]
+            return np.asarray(pos), np.ones(n, bool), np.zeros(n)
+
+        return _f
+
+    monkeypatch.setattr(relax_mod, "_make_relax_batch", _fake_make)
+
+    out = relax_mod.run(
+        atoms,
+        {
+            "fmax": 0.05,
+            "steps": 10,
+            "method": "lbfgs",
+            "batch_size": 2,
+            "max_neighbors": 50,
+            "max_neighbors_list": (30, 35),
+            "max_neighbors_offset": 5,
+            "backend": "mace",
+            "model_remote": "m",
+            "is_archive": False,
+        },
+        calcpath=".",
+    )
+    assert sizes == [2, 2, 1]
+    assert all(
+        "is_converged" in a.info and "relax_energy" in a.info for a in out
+    )
+
+
+def test_pick_next_bucket_grows_by_ladder_with_offset():
+    """The dynamic buffer picks the smallest rung covering peak+offset."""
+    from jaxrens_al.run.processors.relax import _pick_next_bucket
+
+    ladder = (30, 35, 40, 45, 50)
+    # peak 28 + offset 5 = 33 -> smallest rung >= 33 is 35.
+    assert _pick_next_bucket(28, 0, ladder, 5) == 35
+    # must also strictly exceed the current bucket (growth on overflow).
+    assert _pick_next_bucket(28, 35, ladder, 5) == 40
+    # ladder exhausted -> user-actionable error.
+    with pytest.raises(RuntimeError, match="max_neighbors_list"):
+        _pick_next_bucket(60, 0, ladder, 5)
+
+
+def test_probe_peak_uses_backend_probe_and_falls_back():
+    jax = pytest.importorskip("jax")
+    import jax.numpy as jnp
+
+    from jaxrens_al.run.processors.relax import _probe_peak
+
+    pos = jnp.zeros((2, 4, 3))
+    cell = jnp.zeros((2, 3, 3))
+
+    class _Probing:
+        def max_neighbors_for(self, positions, cell):
+            # per-atom counts; batch max here is 12.
+            return jnp.array([12, 3, 7, 1])
+
+    class _NoProbe:
+        pass
+
+    assert _probe_peak(_Probing(), pos, cell) == 12
+    assert _probe_peak(_NoProbe(), pos, cell) is None
+
+
+@pytest.mark.parametrize("method", ["fire", "lbfgs"])
+def test_make_relax_batch_minimises_a_vmapped_bucket(method):
+    """The jax core relaxes a whole batch in one compiled kernel.
+
+    Uses a toy quadratic 'backend' (no jaxrens / GPU needed) with a distinct
+    minimum per structure, so a correct batched relaxation must move each frame
+    to its own target and flag convergence.
+    """
+    jax = pytest.importorskip("jax")
+    pytest.importorskip("jax_md")
+    pytest.importorskip("optax")
+    import jax.numpy as jnp
+
+    from jaxrens_al.run.processors.relax import _make_relax_batch
+
+    targets = jnp.array(  # one per structure in the batch, 2 atoms x 3D
+        [
+            [[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]],
+            [[2.0, 0.0, 0.0], [0.0, 2.0, 0.0]],
+        ]
+    )
+
+    class _ToyBackend:
+        """energy = sum (pos - target)^2; forces via autodiff. Per-call target
+        is picked from ``cell[0,0]`` (an index we smuggle through)."""
+
+        def __call__(self, pos, types, cell, max_neighbors, **kw):
+            i = cell[0, 0].astype(int)
+            e = jnp.sum((pos - targets[i]) ** 2)
+            return _Res(energy=e)
+
+    import collections
+
+    global _Res
+    _Res = collections.namedtuple("_Res", ["energy"])
+
+    relax = _make_relax_batch(
+        _ToyBackend(), fmax=1e-3, steps=200, method=method
+    )
+    pos = jnp.zeros((2, 2, 3))
+    types = jnp.zeros((2, 2), int)
+    # smuggle the per-structure target index in via cell[:,0,0] = {0,1}
+    cell = jnp.zeros((2, 3, 3)).at[:, 0, 0].set(jnp.array([0.0, 1.0]))
+    relaxed, converged, energy = relax(pos, types, cell, 8)
+
+    import numpy as np
+
+    assert np.all(np.asarray(converged))
+    np.testing.assert_allclose(
+        np.asarray(relaxed), np.asarray(targets), atol=1e-2
+    )
+    # Energy at each minimum is ~0 (quadratic well bottom).
+    np.testing.assert_allclose(np.asarray(energy), 0.0, atol=1e-3)
 
 
 class _FakePhaseHandler:

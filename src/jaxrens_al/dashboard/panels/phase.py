@@ -42,7 +42,8 @@ class PhaseNeed:
         inputs: Trajectory file(s) to relax + label -- the grouping key.
         model: Trained-model bundle to relax with (mace-jax dir / neuralil pkl).
         backend: jaxrens backend to load ``model`` with.
-        fmax, steps: LBFGS relaxation criteria.
+        method: jax relaxation optimizer -- ``"fire"`` or ``"lbfgs"``.
+        fmax, steps: relaxation criteria (force tol eV/A, max iters).
         symprec: spglib distance tolerance for the space-group assignment.
         max_neighbors: Static neighbour-buffer size for the backend call.
     """
@@ -50,6 +51,7 @@ class PhaseNeed:
     inputs: tuple
     model: str
     backend: str
+    method: str = "lbfgs"
     fmax: float = 0.05
     steps: int = 200
     symprec: float = 1e-3
@@ -62,6 +64,7 @@ class PhaseNeed:
         model,
         backend: str,
         *,
+        method: str = "lbfgs",
         fmax: float = 0.05,
         steps: int = 200,
         symprec: float = 1e-3,
@@ -71,6 +74,7 @@ class PhaseNeed:
             tuple(str(i) for i in inputs),
             str(model),
             backend,
+            method,
             float(fmax),
             int(steps),
             float(symprec),
@@ -104,7 +108,8 @@ class PhaseDiagramPanel(PhaseConsumer, Entry):
         model_file: This iteration's trained-model bundle -- the model each
             dead point is relaxed with (a mace-jax bundle dir / neuralil pkl).
         backend_type: jaxrens backend to load ``model_file`` with.
-        fmax, steps: LBFGS relaxation criteria.
+        method: jax relaxation optimizer -- ``"fire"`` or ``"lbfgs"``.
+        fmax, steps: relaxation criteria (force tol eV/A, max iters).
         symprec: spglib distance tolerance for the space-group assignment.
         temperatures / tlim / n_T: the reweighting temperature grid.
         k_B: Boltzmann constant in the stored energies' units.
@@ -123,6 +128,7 @@ class PhaseDiagramPanel(PhaseConsumer, Entry):
         *args,
         model_file,
         backend_type: str = "mace",
+        method: str = "lbfgs",
         fmax: float = 0.05,
         steps: int = 200,
         symprec: float = 1e-3,
@@ -140,6 +146,7 @@ class PhaseDiagramPanel(PhaseConsumer, Entry):
         self._result_dirs = [str(p) for p in result_dirs]
         self._model_file = str(model_file)
         self._backend_type = backend_type
+        self._method = method
         self._fmax = float(fmax)
         self._steps = int(steps)
         self._symprec = float(symprec)
@@ -173,6 +180,7 @@ class PhaseDiagramPanel(PhaseConsumer, Entry):
                 trajs,
                 self._model_file,
                 self._backend_type,
+                method=self._method,
                 fmax=self._fmax,
                 steps=self._steps,
                 symprec=self._symprec,
@@ -369,6 +377,7 @@ class PhaseDiagramSpec(PanelSpec):
 
     type: str = "phase_diagram"
     backend: str | None = None
+    method: str = "lbfgs"
     fmax: float = 0.05
     steps: int = 200
     symprec: float = 1e-3
@@ -385,6 +394,7 @@ def _build_phase_diagram(spec, ctx, c):
         result_dirs=ctx.ns_dirs,
         model_file=ctx.model_file,
         backend_type=spec.backend or ctx.eos_backend,
+        method=spec.method,
         fmax=spec.fmax,
         steps=spec.steps,
         symprec=spec.symprec,

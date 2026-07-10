@@ -358,6 +358,7 @@ def resolve_phase_labeling(
     n_processors: int = 1,
     num_parallel: int = 8,
     loop_time: float = 30.0,
+    batch_size: int = 32,
     local_savepath=None,
     reuse: bool = True,
 ):
@@ -379,12 +380,20 @@ def resolve_phase_labeling(
 
     groups: dict = {}
     for n in needs:
-        key = (n.model, n.backend, n.fmax, n.steps, n.symprec, n.max_neighbors)
+        key = (
+            n.model,
+            n.backend,
+            n.method,
+            n.fmax,
+            n.steps,
+            n.symprec,
+            n.max_neighbors,
+        )
         groups.setdefault(key, set()).update(n.inputs)
 
     delivered: dict = {}
     for key, input_set in groups.items():
-        model, backend, fmax, steps, symprec, max_nb = key
+        model, backend, method, fmax, steps, symprec, max_nb = key
         inputs = sorted(input_set)
         tag = stable_tag("phase", key)
         mapping = {f: Path(front_tag(f, tag)) for f in inputs}
@@ -419,8 +428,10 @@ def resolve_phase_labeling(
                     RelaxProcessor(
                         model,
                         backend=backend,
+                        method=method,
                         fmax=fmax,
                         steps=steps,
+                        batch_size=batch_size,
                         max_neighbors=max_nb,
                     ),
                     SpaceGroupProcessor(symprec=symprec),

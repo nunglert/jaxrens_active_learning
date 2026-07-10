@@ -79,7 +79,24 @@ def test_processing_args_defaults():
     assert args.shard_size == 2000
     assert args.num_parallel == 1
     assert args.n_processors == 1
+    assert args.relax_batch_size == 32
+    assert args.relax_shard_size is None
     assert not hasattr(args, "steinhardt_rcut")
+
+
+def test_relax_shard_size_falls_back_to_global():
+    from jaxrens_al.cli_args import relax_shard_size
+
+    # Unset override -> the global --shard-size.
+    args = _parse(add_processing_args, argv=["--shard-size", "500"])
+    assert relax_shard_size(args) == 500
+    # Set override -> wins, leaving --shard-size for the other resolvers.
+    args = _parse(
+        add_processing_args,
+        argv=["--shard-size", "500", "--relax-shard-size", "64"],
+    )
+    assert args.shard_size == 500
+    assert relax_shard_size(args) == 64
 
 
 # ---------------------------------------------------------------------------

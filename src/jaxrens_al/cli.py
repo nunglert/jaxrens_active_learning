@@ -230,9 +230,12 @@ def _resolve_remote_needs(entries, args, datapath):
             f"Relaxing + space-group-labelling NS pools on the cluster "
             f"(cluster={args.cluster!r}); may be slow."
         )
+        from jaxrens_al.cli_args import relax_shard_size
+
         resolve_phase_labeling(
             entries,
-            **knobs,
+            **{**knobs, "shard_size": relax_shard_size(args)},
+            batch_size=args.relax_batch_size,
             **execution_context(args.cluster, datapath / "phase_label"),
         )
 

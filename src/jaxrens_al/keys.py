@@ -19,6 +19,10 @@ SURROGATE_ENERGY_KEY = "ns_energy"
 SPACEGROUP_KEY = "spacegroup"
 SPACEGROUP_SYMBOL_KEY = "spacegroup_symbol"
 
+# Potential energy of the relaxed structure the ``relax`` processor writes
+# (the optimizer's objective evaluated at the local minimum, eV).
+RELAX_ENERGY_KEY = "relax_energy"
+
 
 def first_has_info_key(files, key) -> bool:
     """True if the first config of ``files`` carries ``key`` in its ``info``.
