@@ -257,7 +257,12 @@ def run(atoms_list, args, calcpath=None):
     """
     import numpy as np
 
-    from jaxrens_al.keys import INITIAL_POSITIONS_KEY, RELAX_ENERGY_KEY
+    from jaxrens_al.keys import (
+        INITIAL_POSITIONS_KEY,
+        RELAX_ENERGY_KEY,
+        RELAX_ERROR_KEY,
+        RELAX_FAILED_KEY,
+    )
 
     fmax = float(args["fmax"])
     steps = int(args["steps"])
@@ -342,6 +347,28 @@ def run(atoms_list, args, calcpath=None):
             buffer,
         )
 
+    def _emit_relaxed(i, relaxed_pos_k, converged_k, energy_k):
+        at = atoms_list[i].copy()
+        # Keep the sampled geometry alongside the relaxed one: stash the
+        # original positions, then overwrite positions with the basin.
+        at.set_array(INITIAL_POSITIONS_KEY, at.get_positions())
+        at.set_positions(np.asarray(relaxed_pos_k))
+        at.info["is_converged"] = bool(converged_k)
+        at.info[RELAX_ENERGY_KEY] = float(energy_k)
+        out[i] = at
+
+    def _emit_failed(i, reason):
+        """A structure whose relaxation *crashed*: keep its sampled geometry,
+        mark it failed + not-converged, and record why -- so one bad structure
+        degrades to a skip instead of aborting the whole shard."""
+        at = atoms_list[i].copy()
+        at.set_array(INITIAL_POSITIONS_KEY, at.get_positions())
+        at.info["is_converged"] = False
+        at.info[RELAX_FAILED_KEY] = True
+        at.info[RELAX_ERROR_KEY] = str(reason).strip().splitlines()[-1][:300]
+        at.info[RELAX_ENERGY_KEY] = float("nan")
+        out[i] = at
+
     # Bucket by atom count (fixed vmap shape), then sub-batch by batch_size.
     buckets: dict = {}
     for i in todo:
@@ -352,6 +379,7 @@ def run(atoms_list, args, calcpath=None):
     )
     done = 0
     n_converged = 0
+    n_failed = 0
     for n_atoms, idxs in buckets.items():
         for j in range(0, len(idxs), batch_size):
             chunk = idxs[j : j + batch_size]
@@ -360,22 +388,44 @@ def run(atoms_list, args, calcpath=None):
                 f"sub-batch {done}/{n_chunks}: {len(chunk)} struct x "
                 f"{n_atoms} atoms"
             )
-            relaxed_pos, converged, energy, buffer = _relax_chunk(chunk)
+            try:
+                relaxed_pos, converged, energy, buffer = _relax_chunk(chunk)
+            except Exception as exc:
+                # A single structure's failure (e.g. a neighbour-bucket overflow
+                # the ladder can't cover) would abort the whole vmapped sub-batch
+                # -- and, unhandled, the whole shard. Retry the sub-batch one
+                # structure at a time so the good ones still relax and only the
+                # culprit(s) are marked failed; a lone structure is emitted
+                # failed directly (no point re-running it).
+                if len(chunk) == 1:
+                    _log(f"  structure {chunk[0]} failed to relax: {exc}")
+                    _emit_failed(chunk[0], exc)
+                    n_failed += 1
+                    continue
+                _log(
+                    f"  sub-batch failed ({exc}); retrying its {len(chunk)} "
+                    "structures individually"
+                )
+                for i in chunk:
+                    try:
+                        rp, cv, en, _ = _relax_chunk([i])
+                    except Exception as exc_i:
+                        _log(f"  structure {i} failed to relax: {exc_i}")
+                        _emit_failed(i, exc_i)
+                        n_failed += 1
+                    else:
+                        _emit_relaxed(i, rp[0], cv[0], en[0])
+                        n_converged += int(bool(cv[0]))
+                continue
             n_ok = int(np.count_nonzero(converged))
             n_converged += n_ok
             _log(f"  done: {n_ok}/{len(chunk)} converged (buffer {buffer})")
             for k, i in enumerate(chunk):
-                at = atoms_list[i].copy()
-                # Keep the sampled geometry alongside the relaxed one: stash the
-                # original positions, then overwrite positions with the basin.
-                at.set_array(INITIAL_POSITIONS_KEY, at.get_positions())
-                at.set_positions(relaxed_pos[k])
-                at.info["is_converged"] = bool(converged[k])
-                at.info[RELAX_ENERGY_KEY] = float(energy[k])
-                out[i] = at
+                _emit_relaxed(i, relaxed_pos[k], converged[k], energy[k])
+    tail = f", {n_failed} failed" if n_failed else ""
     _log(
-        f"finished: {n_converged}/{len(todo)} converged across {n_chunks} "
-        "sub-batch(es)"
+        f"finished: {n_converged}/{len(todo)} converged{tail} across "
+        f"{n_chunks} sub-batch(es)"
     )
     return out
 

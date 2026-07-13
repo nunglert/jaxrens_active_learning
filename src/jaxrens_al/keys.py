@@ -35,6 +35,14 @@ SPACEGROUP_SYMBOL_KEY = "spacegroup_symbol"
 # (the optimizer's objective evaluated at the local minimum, eV).
 RELAX_ENERGY_KEY = "relax_energy"
 
+# Set by the ``relax`` processor on a structure whose relaxation *crashed* (e.g.
+# a neighbour-bucket overflow the ladder can't cover, or a backend error), so a
+# single bad structure degrades to a skip instead of failing the whole shard.
+# Carries ``relax_failed=True`` + ``relax_error=<short reason>`` in ``info``; the
+# structure keeps its sampled geometry and is marked ``is_converged=False``.
+RELAX_FAILED_KEY = "relax_failed"
+RELAX_ERROR_KEY = "relax_error"
+
 # Per-atom sampled (pre-relaxation) positions the ``relax`` processor stashes as
 # an ``arrays`` entry before overwriting ``positions`` with the relaxed basin --
 # so one frame keeps both the sampled dead point and where it relaxed to. The

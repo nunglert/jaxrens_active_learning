@@ -745,6 +745,102 @@ def test_run_subbatches_by_batch_size(monkeypatch):
         )
 
 
+def test_run_isolates_a_failing_structure(monkeypatch):
+    """A single crashing relaxation is marked failed; the shard still returns.
+
+    The vmapped sub-batch aborts as a whole, so the run retries it structure by
+    structure -- the good ones relax, only the culprit is emitted as failed.
+    """
+    pytest.importorskip("jax")
+    pytest.importorskip("jaxrens.io.formats")
+    import math
+    from types import SimpleNamespace
+
+    import ase
+    import jaxrens.io.formats as fmts
+    import numpy as np
+
+    from jaxrens_al.keys import (
+        RELAX_ENERGY_KEY,
+        RELAX_ERROR_KEY,
+        RELAX_FAILED_KEY,
+    )
+    from jaxrens_al.run.processors import relax as relax_mod
+
+    # 5 two-atom structures; index 2 is "bad" (cell marker 999) and crashes.
+    atoms = []
+    for k in range(5):
+        a = ase.Atoms(
+            "H2",
+            positions=[[0, 0, 0], [0, 0, 0.7]],
+            cell=np.eye(3) * 5,
+            pbc=True,
+        )
+        if k == 2:
+            c = a.get_cell()[:]
+            c[0, 0] = 999.0
+            a.set_cell(c)
+        atoms.append(a)
+
+    monkeypatch.setattr(relax_mod, "_materialise_model", lambda a, c: "model")
+    monkeypatch.setattr(
+        relax_mod, "_load_backend", lambda p, b: (object(), {"H": 0})
+    )
+    monkeypatch.setattr(relax_mod, "_probe_peak", lambda *a, **k: None)
+    monkeypatch.setattr(
+        fmts,
+        "ase_atoms_to_walker",
+        lambda at, sm: SimpleNamespace(
+            positions=np.asarray(at.get_positions()),
+            types=np.zeros(len(at), int),
+            cell=np.asarray(at.get_cell()[:]),
+        ),
+    )
+
+    def _fake_make(backend, fmax, steps, method):
+        def _f(pos, types, cell, buffer):
+            # Any structure carrying the 999 cell marker blows up the sub-batch.
+            if bool((np.asarray(cell)[:, 0, 0] == 999.0).any()):
+                raise RuntimeError("boom: neighbour bucket overflow")
+            n = pos.shape[0]
+            return np.asarray(pos) + 1.0, np.ones(n, bool), np.zeros(n)
+
+        return _f
+
+    monkeypatch.setattr(relax_mod, "_make_relax_batch", _fake_make)
+
+    out = relax_mod.run(
+        atoms,
+        {
+            "fmax": 0.05,
+            "steps": 10,
+            "method": "lbfgs",
+            "batch_size": 32,  # all 5 in one sub-batch -> it aborts, then retry
+            "max_neighbors": 50,
+            "backend": "mace",
+            "model_remote": "m",
+            "is_archive": False,
+        },
+        calcpath=".",
+    )
+
+    assert len(out) == 5
+    # The 4 good structures relaxed; none flagged failed.
+    for k in (0, 1, 3, 4):
+        assert out[k].info["is_converged"] is True
+        assert RELAX_FAILED_KEY not in out[k].info
+        np.testing.assert_allclose(
+            out[k].get_positions(), atoms[k].get_positions() + 1.0
+        )
+    # The culprit is emitted failed: sampled geometry kept, reason recorded.
+    bad = out[2]
+    assert bad.info["is_converged"] is False
+    assert bad.info[RELAX_FAILED_KEY] is True
+    assert "boom" in bad.info[RELAX_ERROR_KEY]
+    assert math.isnan(bad.info[RELAX_ENERGY_KEY])
+    np.testing.assert_allclose(bad.get_positions(), atoms[2].get_positions())
+
+
 def test_pick_next_bucket_grows_by_ladder_with_offset():
     """The dynamic buffer picks the smallest rung covering peak+offset."""
     from jaxrens_al.run.processors.relax import _pick_next_bucket
