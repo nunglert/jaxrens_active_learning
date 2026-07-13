@@ -23,6 +23,18 @@ SPACEGROUP_SYMBOL_KEY = "spacegroup_symbol"
 # (the optimizer's objective evaluated at the local minimum, eV).
 RELAX_ENERGY_KEY = "relax_energy"
 
+# Per-atom sampled (pre-relaxation) positions the ``relax`` processor stashes as
+# an ``arrays`` entry before overwriting ``positions`` with the relaxed basin --
+# so one frame keeps both the sampled dead point and where it relaxed to. The
+# active ``positions`` remain the relaxed geometry (what ``spacegroup`` labels).
+INITIAL_POSITIONS_KEY = "initial_positions"
+
+# Per-atom relaxed positions the ``relax`` processor writes (an ``arrays``
+# entry, so the frame keeps its original sampled positions -- relaxation is an
+# annotation, not an overwrite). The ``spacegroup`` step reads these when
+# present so it labels the relaxed basin, not the sampled geometry.
+RELAXED_POSITIONS_KEY = "relaxed_positions"
+
 
 def first_has_info_key(files, key) -> bool:
     """True if the first config of ``files`` carries ``key`` in its ``info``.

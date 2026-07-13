@@ -310,6 +310,7 @@ def build_dashboard(
     compute: bool = True,
     only=None,
     exclude=None,
+    recompute=None,
     force_recompute: bool = False,
 ) -> Dashboard:
     """Build the cross-iteration summary board for a run.
@@ -325,6 +326,8 @@ def build_dashboard(
             units of the NS energies (1.0 reduced; 8.617e-5 eV with T in K).
         compute: If True, run the compute/plot lifecycle before returning.
         only / exclude: Restrict the rendered panels by name.
+        recompute: Panel names to recompute even if a JSON cache exists
+            (targeted; ``force_recompute`` recomputes every panel).
         force_recompute: Recompute panel data even if a JSON cache exists.
 
     Returns:
@@ -351,7 +354,7 @@ def build_dashboard(
         exclude=exclude,
     )
     if compute:
-        board.render()
+        board.render(recompute=recompute)
     return board
 
 
@@ -376,6 +379,7 @@ def build_iteration_dashboard(
     compute: bool = True,
     only=None,
     exclude=None,
+    recompute=None,
     force_recompute: bool = False,
 ):
     """Build one dashboard page for a single AL iteration.
@@ -388,6 +392,8 @@ def build_iteration_dashboard(
         eval_files / sampled_files: This iteration's evaluated/sampled config
             files. If None, they are looked up from ``AL_progress.json``.
         only / exclude: Restrict the rendered panels by name.
+        recompute: Panel names to recompute even if a JSON cache exists
+            (targeted; ``force_recompute`` recomputes every panel).
         force_recompute: Recompute panel data even if a JSON cache exists.
 
     Returns:
@@ -420,5 +426,5 @@ def build_iteration_dashboard(
     if not board.entries:
         return None
     if compute:
-        board.render(suptitle=f"AL iteration {index}")
+        board.render(suptitle=f"AL iteration {index}", recompute=recompute)
     return board

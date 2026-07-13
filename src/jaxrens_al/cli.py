@@ -190,7 +190,10 @@ def _resolve_remote_needs(entries, args, datapath):
     has_phase = any(
         hasattr(e, "phase_needs") and e.phase_needs() for e in entries
     )
-    if not (has_proc or has_eval or has_phase):
+    has_ref = any(
+        hasattr(e, "reference_needs") and e.reference_needs() for e in entries
+    )
+    if not (has_proc or has_eval or has_phase or has_ref):
         return
 
     from jaxrens_al.run.processing_resolver import (
@@ -238,6 +241,28 @@ def _resolve_remote_needs(entries, args, datapath):
             batch_size=args.relax_batch_size,
             **execution_context(args.cluster, datapath / "phase_label"),
         )
+    if has_ref:
+        # Evaluator-free reference builds (e.g. the MP fetch for the atomic-envs
+        # PCA). No cluster / DFT evaluator here; kinds that need one are skipped
+        # by resolve_references (run those from a run-side driver). A failure
+        # (e.g. no MP_API_KEY / network) must not sink the whole dashboard, so
+        # the panels needing it fall back to their self-fit.
+        from jaxrens_al.run.reference_resolver import resolve_references
+
+        logger.info(
+            "Building evaluator-free reference database(s) (e.g. Materials "
+            "Project fetch for the atomic-envs PCA); may hit the network."
+        )
+        try:
+            resolve_references(
+                entries, evaluator=None, workdir=datapath / "reference"
+            )
+        except Exception as exc:  # noqa: BLE001 - keep the dashboard rendering
+            logger.warning(
+                "Reference build failed (%s); panels needing it fall back to "
+                "their self-fit.",
+                exc,
+            )
 
 
 # First-token subcommands that render a single raw artifact set instead of a
@@ -313,6 +338,15 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         metavar="PANEL",
         help="Skip these panels (by name).",
+    )
+    parser.add_argument(
+        "--recompute",
+        nargs="+",
+        default=None,
+        metavar="PANEL",
+        help="Recompute these panels (by name) even if a cached JSON exists, "
+        "e.g. --recompute model_parity eos. Unlike --force (which recomputes "
+        "everything), this targets just the named panels.",
     )
     parser.add_argument(
         "--eos-reference",
@@ -630,7 +664,7 @@ def main(argv: list[str] | None = None) -> int:
 
         page_files = []
         for page, board, suptitle in pages:
-            board.render(suptitle=suptitle)
+            board.render(suptitle=suptitle, recompute=args.recompute)
             board.savefig(page)
             plt.close(board._fig)
             page_files.append(page)

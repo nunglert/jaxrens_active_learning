@@ -1,5 +1,5 @@
-- [ ] Parity plots in dashboard
-- [ ] EoS plots in dashboard
+- [x] Parity plots in dashboard
+- [x] EoS plots in dashboard
 - [ ] reference env PCA plots in dashboard
-- [ ] Clean root src dir, maybe new dashboard subpackage
+- [x] Clean root src dir, maybe new dashboard subpackage
 - [ ] score_atoms needs to automatically determine max_neighbors instead of hardcoding or requiring as input

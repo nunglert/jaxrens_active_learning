@@ -33,7 +33,7 @@ class _FakePanel(ReferenceConsumer):
         return [self._need]
 
     def receive_references(self, mapping):
-        self.received = mapping[self._need]
+        self.received = mapping.get(self._need)
 
 
 def test_resolve_references_dedups_and_delivers(tmp_path):
@@ -56,6 +56,36 @@ def test_resolve_references_dedups_and_delivers(tmp_path):
     # Identical needs build exactly once, both panels receive the result.
     assert len(calls) == 1
     assert p1.received == p2.received == delivered[need]
+
+
+def test_resolve_references_without_evaluator_skips_evaluator_needing_kinds(
+    tmp_path,
+):
+    """No evaluator (the light CLI): evaluator-free kinds build; kinds that
+    need a DFT evaluator are skipped, and their consumers survive (self-fit).
+    """
+    built = []
+
+    def _free(params, *, evaluator, out_dir, reuse):
+        built.append("free")
+        Path(out_dir).mkdir(parents=True, exist_ok=True)
+        return [Path(out_dir) / "r.extxyz"]
+
+    def _needs(params, *, evaluator, out_dir, reuse):
+        built.append("needs")  # must never run without an evaluator
+        return []
+
+    register_reference_kind("freekind", _free, needs_evaluator=False)
+    register_reference_kind("needskind", _needs)  # default: needs one
+
+    p_free = _FakePanel(ReferenceNeed.make("freekind", {"x": 1}))
+    p_needs = _FakePanel(ReferenceNeed.make("needskind", {"x": 2}))
+
+    resolve_references([p_free, p_needs], evaluator=None, workdir=tmp_path)
+
+    assert built == ["free"]  # only the evaluator-free kind was built
+    assert p_free.received is not None  # delivered
+    assert p_needs.received is None  # skipped, no crash (guarded consumer)
 
 
 def test_resolve_references_no_needs_is_noop(tmp_path):
@@ -122,3 +152,38 @@ def test_eos_reference_partial_dir_without_manifest_rebuilds(
         {"element": "Sn"}, evaluator=None, out_dir=tmp_path, reuse=True
     )
     assert calls == ["Sn"]  # rebuilt despite the stray file
+
+
+def test_mp_reference_builds_then_reuses(tmp_path, monkeypatch):
+    """The ``mp_elemental`` kind draws from MP once, then reuses (no evaluator,
+    manifest-gated) -- the reference the atomic-envs PCA is fit on."""
+    from jaxrens_al.run.reference_resolver import _build_mp_reference
+
+    calls = []
+
+    def _build(element, *, theoretical, target_cutoff, output):
+        calls.append((element, target_cutoff))
+        Path(output).write_text("")  # pretend an extxyz was written
+        return []
+
+    monkeypatch.setattr(
+        "jaxrens_al.run.reference_db.build_reference_database", _build
+    )
+
+    files = _build_mp_reference(
+        {"element": "Sn", "target_cutoff": 3.5},
+        evaluator=None,  # MP fetch needs no DFT evaluator
+        out_dir=tmp_path,
+        reuse=True,
+    )
+    assert calls == [("Sn", 3.5)]
+    assert files == [tmp_path / "reference.extxyz"]
+
+    files2 = _build_mp_reference(
+        {"element": "Sn", "target_cutoff": 3.5},
+        evaluator=None,
+        out_dir=tmp_path,
+        reuse=True,
+    )
+    assert calls == [("Sn", 3.5)]  # reused -- no second MP fetch
+    assert files2 == [tmp_path / "reference.extxyz"]

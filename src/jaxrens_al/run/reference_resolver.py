@@ -34,17 +34,26 @@ logger = logging.getLogger(__name__)
 
 # kind -> builder(params_dict, *, evaluator, out_dir, reuse) -> list[Path]
 _REGISTRY = KindRegistry("reference")
+# kind -> whether its builder needs a (DFT) evaluator. Evaluator-free kinds
+# (e.g. an MP structure fetch) can be resolved by the light dashboard CLI,
+# which has no evaluator; evaluator-needing kinds require a run-side driver.
+_NEEDS_EVALUATOR: dict = {}
 
 
-def register_reference_kind(kind: str, builder) -> None:
+def register_reference_kind(
+    kind: str, builder, *, needs_evaluator: bool = True
+) -> None:
     """Register how a :class:`ReferenceNeed` of ``kind`` is produced.
 
     ``builder(params, *, evaluator, out_dir, reuse) -> list[Path]`` runs the
-    (DFT) production for one distinct need, writing into ``out_dir`` and
-    honouring ``reuse`` (return existing files without rebuilding). Called
-    run-side (may import ``remote_handler`` / the upstream).
+    production for one distinct need, writing into ``out_dir`` and honouring
+    ``reuse`` (return existing files without rebuilding). Called run-side (may
+    import ``remote_handler`` / the upstream). Set ``needs_evaluator=False`` for
+    a builder that produces structures only (no DFT), so it is resolvable
+    without an evaluator -- e.g. from the light ``jaxrens-al-dashboard`` CLI.
     """
     _REGISTRY.register(kind, builder)
+    _NEEDS_EVALUATOR[kind] = needs_evaluator
 
 
 def resolve_references(
@@ -76,6 +85,17 @@ def resolve_references(
         if need in delivered:  # identical needs build once
             continue
         builder = _REGISTRY.builder(need.kind)  # raises on unknown kind
+        if evaluator is None and _NEEDS_EVALUATOR.get(need.kind, True):
+            # No evaluator here (e.g. the light dashboard CLI) and this kind
+            # needs one -> skip; its consumers fall back / self-report. Run it
+            # from a run-side driver that builds the evaluator.
+            logger.warning(
+                "resolve_references: skipping %s need %s -- it needs a DFT "
+                "evaluator; run from a run-side driver.",
+                need.kind,
+                dict(need.params),
+            )
+            continue
         tag = stable_tag(need.kind + "_", (need.kind, need.params))
         out_dir = workdir / tag
         logger.info(
@@ -127,6 +147,45 @@ def _build_eos_reference(params: dict, *, evaluator, out_dir, reuse: bool):
 
 
 register_reference_kind("eos", _build_eos_reference)
+
+
+def _build_mp_reference(params: dict, *, evaluator, out_dir, reuse: bool):
+    """Produce (or reuse) an MP-drawn elemental reference config set.
+
+    The reference the atomic-environments PCA is fit on: Materials-Project
+    elemental phases + a rattle grid (:func:`build_reference_database`). Needs
+    **no** DFT evaluator (structures only, not labelled energies), so
+    ``evaluator`` is ignored -- it just wants the ``[refdb]`` extra + network.
+    Reuse is gated on a ``.mp_manifest.json`` sentinel written only after a
+    complete build, so a fetch that crashed part-way is rebuilt.
+    """
+    out_dir = Path(out_dir)
+    manifest = out_dir / ".mp_manifest.json"
+    if reuse and manifest.exists():
+        listed = [out_dir / name for name in json.loads(manifest.read_text())]
+        if listed and all(p.exists() for p in listed):
+            logger.info(
+                "resolve_references: reusing MP reference in %s", out_dir
+            )
+            return listed
+
+    from jaxrens_al.run.reference_db import build_reference_database
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_file = out_dir / "reference.extxyz"
+    build_reference_database(
+        params["element"],
+        theoretical=params.get("theoretical", False),
+        target_cutoff=params.get("target_cutoff", 3.0),
+        output=out_file,
+    )
+    manifest.write_text(json.dumps([out_file.name]))
+    return [out_file]
+
+
+register_reference_kind(
+    "mp_elemental", _build_mp_reference, needs_evaluator=False
+)
 
 
 __all__ = [

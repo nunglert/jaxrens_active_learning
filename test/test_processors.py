@@ -601,7 +601,8 @@ def test_run_subbatches_by_batch_size(monkeypatch):
         def _f(pos, types, cell, buffer):
             sizes.append(int(pos.shape[0]))
             n = pos.shape[0]
-            return np.asarray(pos), np.ones(n, bool), np.zeros(n)
+            # Shift positions so relaxed != sampled, to check both are kept.
+            return np.asarray(pos) + 1.0, np.ones(n, bool), np.zeros(n)
 
         return _f
 
@@ -623,10 +624,22 @@ def test_run_subbatches_by_batch_size(monkeypatch):
         },
         calcpath=".",
     )
+    from jaxrens_al.keys import INITIAL_POSITIONS_KEY, RELAX_ENERGY_KEY
+
     assert sizes == [2, 2, 1]
     assert all(
-        "is_converged" in a.info and "relax_energy" in a.info for a in out
+        "is_converged" in a.info and RELAX_ENERGY_KEY in a.info for a in out
     )
+    # Active positions are the relaxed basin; the sampled geometry is retained
+    # in the initial_positions array (one frame carries both).
+    for a in out:
+        assert INITIAL_POSITIONS_KEY in a.arrays
+        np.testing.assert_allclose(
+            a.get_positions(), a.arrays[INITIAL_POSITIONS_KEY] + 1.0
+        )
+        np.testing.assert_allclose(
+            a.arrays[INITIAL_POSITIONS_KEY], [[0, 0, 0], [0, 0, 0.7]]
+        )
 
 
 def test_pick_next_bucket_grows_by_ladder_with_offset():

@@ -91,7 +91,6 @@ def test_iteration_assembles_all_panels(
         "sampled_ns_energy",
         "quests_pca",
         "resampled_grid",
-        "atomic_envs",
         "eos",
         "neuralil_parity",
         "neuralil_training_curve",
@@ -224,6 +223,29 @@ def test_summary_end_to_end_writes_pdf_and_caches(make_calchome, tmp_path):
     assert (calchome / "dashboard" / "dataset_growth.json").exists()
 
 
+def test_recompute_refreshes_only_named_panels(make_calchome, tmp_path):
+    import json
+
+    calchome = make_calchome(tmp_path, n_iter=2)
+    build_dashboard(calchome)  # first build writes the JSON caches
+    dp = calchome / "dashboard"
+    named = dp / "sampled_energy_volume.json"
+    other = dp / "dataset_growth.json"
+    assert named.exists() and other.exists()
+
+    # Tamper both caches with a marker; a cache *hit* leaves the file as-is,
+    # a recompute overwrites it.
+    for f in (named, other):
+        d = json.loads(f.read_text())
+        d["_tampered"] = True
+        f.write_text(json.dumps(d))
+
+    # Recompute only sampled_energy_volume; dataset_growth stays cached.
+    build_dashboard(calchome, recompute=["sampled_energy_volume"])
+    assert "_tampered" not in json.loads(named.read_text())  # recomputed
+    assert json.loads(other.read_text()).get("_tampered") is True  # cache hit
+
+
 def test_grid_auto_sizes_to_hold_all_panels(make_calchome, tmp_path):
     calchome = make_calchome(tmp_path, n_iter=2, with_training=True)
     board = build_dashboard(calchome, ncols=2, compute=False)
@@ -251,11 +273,10 @@ def test_iteration_assembles_present_panels(make_calchome, tmp_path):
     names = {e.name for e in board.entries}
     # Iteration 1 has evaluated + sampled + training, no NS .energies. Dataset
     # growth is cumulative (summary-only), so it is absent per-iteration.
-    # atomic_envs registers whenever sampled configs exist.
+    # atomic_envs is opt-in now (needs a PCA reference), so it is not here.
     assert names == {
         "sampled_energy_volume",
         "sampled_ns_energy",
-        "atomic_envs",
         "neuralil_parity",
         "neuralil_training_curve",
     }

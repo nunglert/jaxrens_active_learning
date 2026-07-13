@@ -536,6 +536,75 @@ def test_atomic_envs_panel_subsamples_large_pool(
     assert len(data["pc1"]) == 30
 
 
+def _write_ref_configs(path, n):
+    import ase.io
+    from ase import Atoms
+
+    ase.io.write(
+        str(path),
+        [
+            Atoms(
+                "Cu2O",
+                positions=[[0, 0, 0], [1, 0, 0], [0, 1, 0]],
+                cell=[5, 5, 5],
+                pbc=True,
+            )
+            for _ in range(n)
+        ],
+    )
+
+
+def test_atomic_envs_fits_pca_on_explicit_reference(
+    make_calchome, tmp_path, fake_quests_descriptors
+):
+    # A prebuilt reference set fits the PCA; sampled envs are projected into it
+    # and the reference is returned for the background scatter.
+    from jaxrens_al.dashboard.panels.environments import AtomicEnvsPanel
+
+    calchome = make_calchome(tmp_path, n_iter=1)
+    sampled = calchome / "sampler_output" / "s0.extxyz"
+    ref = tmp_path / "ref.extxyz"
+    _write_ref_configs(ref, 4)  # 4 Cu2O -> 12 reference atoms
+
+    panel = AtomicEnvsPanel(
+        config_files=[sampled], reference_configs=str(ref), datapath=tmp_path
+    )
+    assert panel.reference_needs() == []  # explicit files -> no need declared
+    data = panel.compute_data({})
+    assert data["fitted_on"] == "reference"
+    assert len(data["ref_pc1"]) == 12 and len(data["ref_pc2"]) == 12
+    assert len(data["pc1"]) == 15  # 5 sampled Cu2O -> 15 projected points
+
+
+def test_atomic_envs_declares_and_receives_reference_need(
+    make_calchome, tmp_path, fake_quests_descriptors
+):
+    from jaxrens_al.dashboard.panels.environments import AtomicEnvsPanel
+
+    calchome = make_calchome(tmp_path, n_iter=1)
+    sampled = calchome / "sampler_output" / "s0.extxyz"
+
+    panel = AtomicEnvsPanel(
+        config_files=[sampled], reference_element="Cu", datapath=tmp_path
+    )
+    needs = panel.reference_needs()
+    assert len(needs) == 1 and needs[0].kind == "mp_elemental"
+    assert dict(needs[0].params)["element"] == "Cu"
+
+    # Before delivery the panel self-fits; after, it fits on the reference.
+    assert panel.compute_data({})["fitted_on"] == "sampled"
+    # A skipped need (empty mapping, e.g. unresolvable) must not crash -> the
+    # panel keeps self-fitting.
+    panel.receive_references({})
+    assert panel.compute_data({})["fitted_on"] == "sampled"
+    ref = tmp_path / "ref.extxyz"
+    _write_ref_configs(ref, 3)
+    panel.receive_references({needs[0]: [ref]})
+    data = panel.compute_data({})
+    assert data["fitted_on"] == "reference"
+    assert len(data["ref_pc1"]) == 9
+
+
 def _write_annotated(src, dest, l_values, seed=0):
     """Write a synthetic Steinhardt-annotated extxyz (test-only stand-in for
     the remote processor's output).

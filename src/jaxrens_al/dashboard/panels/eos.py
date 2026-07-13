@@ -211,8 +211,13 @@ class EquationOfStatePanel(ReferenceConsumer, ModelEvalConsumer, Entry):
         return [self._need()]
 
     def receive_references(self, mapping: dict) -> None:
-        if self._element is not None and self._references is None:
-            self._references = [str(p) for p in mapping[self._need()]]
+        need = self._need()
+        if (
+            self._element is not None
+            and self._references is None
+            and need in mapping  # skipped (needs a DFT evaluator) -> unbuilt
+        ):
+            self._references = [str(p) for p in mapping[need]]
 
     def model_eval_needs(self) -> list:
         """Score the reference scans with this iteration's model, on cluster."""

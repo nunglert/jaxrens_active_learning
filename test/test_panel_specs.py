@@ -73,7 +73,6 @@ def test_iteration_panels_match(rich):
         "adaptation_acceptance",
         "ns_energy_trace",
         "re_swap_rates",
-        "atomic_envs",
         "neuralil_parity",
         "neuralil_training_curve",
         "mace_training_curve",

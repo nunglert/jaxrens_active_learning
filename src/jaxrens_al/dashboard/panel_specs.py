@@ -43,8 +43,11 @@ def make_spec(type_name: str, **params) -> PanelSpec:
 
 
 # Historical render order of the curated AL page (every builder self-gates, so
-# absent-input / wrong-view panels drop out). Steinhardt is intentionally *not*
-# here -- it is opt-in via a config ``add:`` entry (no CLI flag).
+# absent-input / wrong-view panels drop out). Steinhardt and atomic_envs are
+# intentionally *not* here -- they are opt-in via a config ``add:`` entry (no
+# CLI flag). atomic_envs is opt-in because it is only meaningful once pointed at
+# a PCA reference database (``reference_configs``/``reference_element``); adding
+# it via config also avoids a name collision with a curated default.
 _DEFAULT_ORDER = [
     "dataset_growth",
     "sampled_energy_volume",
@@ -58,7 +61,6 @@ _DEFAULT_ORDER = [
     "adaptation_acceptance",
     "ns_energy_trace",
     "re_swap_rates",
-    "atomic_envs",
     "eos",
     "neuralil_parity",
     "model_parity",

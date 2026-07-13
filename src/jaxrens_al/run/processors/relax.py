@@ -15,9 +15,11 @@ launch rather than one structure at a time. Two optimizers share that harness --
 ``method="fire"`` (jax-md's FIRE) or ``method="lbfgs"`` (optax's L-BFGS with a
 zoom line search); both stop on the same force criterion ``max|dE/dx| < fmax``.
 
-Writes the relaxed positions in place (cell unchanged -- positions only),
-``atoms.info["is_converged"]`` and ``atoms.info["relax_energy"]`` (the model
-potential energy at the minimum, eV). The model bundle is staged as a single
+Writes the relaxed positions in place (cell unchanged -- positions only) while
+stashing the sampled geometry in ``atoms.arrays["initial_positions"]`` (so one
+frame carries both), plus ``atoms.info["is_converged"]`` and
+``atoms.info["relax_energy"]`` (the model potential energy at the minimum, eV).
+The model bundle is staged as a single
 ``.tar`` (a mace-jax bundle is a *directory*), untarred cluster-side. ``jaxrens`` / ``jax``
 are imported lazily so importing this module host-side is cheap; ``jaxrens_al``
 (and ``jax``/``jax_md``/``optax``) must be installed in the cluster analysis env.
@@ -255,7 +257,7 @@ def run(atoms_list, args, calcpath=None):
     """
     import numpy as np
 
-    from jaxrens_al.keys import RELAX_ENERGY_KEY
+    from jaxrens_al.keys import INITIAL_POSITIONS_KEY, RELAX_ENERGY_KEY
 
     fmax = float(args["fmax"])
     steps = int(args["steps"])
@@ -364,6 +366,9 @@ def run(atoms_list, args, calcpath=None):
             _log(f"  done: {n_ok}/{len(chunk)} converged (buffer {buffer})")
             for k, i in enumerate(chunk):
                 at = atoms_list[i].copy()
+                # Keep the sampled geometry alongside the relaxed one: stash the
+                # original positions, then overwrite positions with the basin.
+                at.set_array(INITIAL_POSITIONS_KEY, at.get_positions())
                 at.set_positions(relaxed_pos[k])
                 at.info["is_converged"] = bool(converged[k])
                 at.info[RELAX_ENERGY_KEY] = float(energy[k])
