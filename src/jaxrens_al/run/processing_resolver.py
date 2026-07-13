@@ -80,13 +80,15 @@ def local_execution_context(workdir) -> dict:
 def execution_context(cluster, workdir) -> dict:
     """Cluster context for :func:`resolve_processing`, selected by name.
 
-    ``cluster`` is either ``"local"`` (or ``None``) for scheduler-free local
-    execution (:func:`local_execution_context`), or the name/path of a
+    ``cluster`` is one of: ``"local"`` (or ``None``) for scheduler-free local
+    execution (:func:`local_execution_context`); the name/path of a
     ``remote_handler`` ``ClusterConfig`` JSON -- an absolute path, or a name
     resolved under ``REMOTE_HANDLER_CONFIG_DIR`` -- for a configured cluster
-    (SLURM, or a remote machine whose config sets ``executor="direct"``). That
-    is how a caller picks local, a dedicated postprocessing cluster, or an
-    existing one, with a single flag. Results are mirrored into ``workdir``.
+    (SLURM, or a remote machine whose config sets ``executor="direct"``); or an
+    already-built ``ClusterConfig`` object (e.g. from ``ClusterConfig.from_name``
+    in a run script). That is how a caller picks local, a dedicated
+    postprocessing cluster, or an existing one, with a single argument. Results
+    are mirrored into ``workdir``.
     """
     workdir = Path(workdir)
     workdir.mkdir(parents=True, exist_ok=True)
@@ -96,7 +98,11 @@ def execution_context(cluster, workdir) -> dict:
     from remote_handler.core import file_handler
     from remote_handler.core.cluster_handler import ClusterConfig
 
-    cfg = ClusterConfig.from_file(cluster)
+    cfg = (
+        cluster
+        if isinstance(cluster, ClusterConfig)
+        else ClusterConfig.from_file(cluster)
+    )
     return {
         "cluster_config": cfg,
         "remote_fs": file_handler.RemoteFileSystem(cfg.remote_machine),

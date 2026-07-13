@@ -69,11 +69,22 @@ def _pool(path, n):
     )
 
 
-def test_selector_rejects_single_model(tmp_path):
+def test_selector_rejects_single_static_model(tmp_path):
     from jaxrens_al.run.committee_selector import CommitteeUncertaintySelector
 
-    with pytest.raises(ValueError, match="at least two"):
+    with pytest.raises(ValueError, match="at least 2"):
         CommitteeUncertaintySelector(models=[tmp_path / "only"])
+
+
+def test_selector_requires_exactly_one_committee_source(tmp_path):
+    from jaxrens_al.run.committee_selector import CommitteeUncertaintySelector
+
+    with pytest.raises(ValueError, match="exactly one"):
+        CommitteeUncertaintySelector()  # neither models nor committee_input
+    with pytest.raises(ValueError, match="exactly one"):
+        CommitteeUncertaintySelector(
+            models=["a", "b"], committee_input="committee_models"
+        )
 
 
 def test_selector_is_a_selector_actor():
@@ -152,6 +163,82 @@ def test_selector_reuses_existing_annotation(monkeypatch, tmp_path):
     # Same committee + pool -> annotation on disk is reused, no second job.
     _fresh().update(calcdir, pool)
     assert len(_FakeCommitteeHandler.calls) == 1
+
+
+def test_dynamic_committee_from_update_kwarg(monkeypatch, tmp_path):
+    """The committee is resolved per iteration from an update kwarg."""
+    import ase.io
+
+    from jaxrens_al.run.committee_selector import CommitteeUncertaintySelector
+
+    pool = tmp_path / "pool.extxyz"
+    _pool(pool, 4)
+    _FakeCommitteeHandler.calls.clear()
+    monkeypatch.setattr(
+        "remote_handler.processing.RemoteTrajectoryProcessor",
+        _FakeCommitteeHandler,
+    )
+
+    sel = CommitteeUncertaintySelector(
+        committee_input="committee_models",
+        n_configs=2,
+        cluster="local",
+    )
+    calcdir = tmp_path / "iter1"
+    calcdir.mkdir()
+    # An AL loop feeds the trainer stage's ensemble here (3 bundles).
+    sel.update(
+        calcdir,
+        pool,
+        committee_models=[tmp_path / "m0", tmp_path / "m1", tmp_path / "m2"],
+    )
+
+    assert len(_FakeCommitteeHandler.calls) == 1
+    assert _FakeCommitteeHandler.calls[0]["n_models"] == 3
+    assert len(ase.io.read(str(sel.get_selected_configs()), index=":")) == 2
+
+
+def test_cold_start_strides_when_committee_too_small(monkeypatch, tmp_path):
+    """Iteration 0 (empty committee) falls back to a stride, no cluster job."""
+    import ase.io
+
+    from jaxrens_al.run.committee_selector import CommitteeUncertaintySelector
+
+    pool = tmp_path / "pool.extxyz"
+    _pool(pool, 6)
+    _FakeCommitteeHandler.calls.clear()
+    monkeypatch.setattr(
+        "remote_handler.processing.RemoteTrajectoryProcessor",
+        _FakeCommitteeHandler,
+    )
+
+    sel = CommitteeUncertaintySelector(
+        committee_input="committee_models",
+        n_configs=3,
+        cluster="local",
+    )
+    calcdir = tmp_path / "iter0"
+    calcdir.mkdir()
+    sel.update(calcdir, pool)  # no committee_models -> cold start
+
+    assert _FakeCommitteeHandler.calls == []  # no committee job ran
+    assert len(ase.io.read(str(sel.get_selected_configs()), index=":")) == 3
+
+
+def test_cold_start_can_be_disabled(tmp_path):
+    from jaxrens_al.run.committee_selector import CommitteeUncertaintySelector
+
+    pool = tmp_path / "pool.extxyz"
+    _pool(pool, 4)
+    sel = CommitteeUncertaintySelector(
+        committee_input="committee_models",
+        n_configs=2,
+        cold_start=False,
+    )
+    calcdir = tmp_path / "iter0"
+    calcdir.mkdir()
+    with pytest.raises(ValueError, match="cold_start is disabled"):
+        sel.update(calcdir, pool)  # single-member (empty) committee
 
 
 def test_schedule_kwarg_overrides_n_configs(monkeypatch, tmp_path):
