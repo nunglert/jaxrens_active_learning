@@ -495,6 +495,109 @@ def test_run_model_eval_annotates_atoms(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# committee_eval processor (committee disagreement of N MLIPs).
+# ---------------------------------------------------------------------------
+def test_committee_eval_processor_is_a_processor_spec(tmp_path):
+    from jaxrens_al.run.processors import (
+        CommitteeEvalArgs,
+        CommitteeEvalProcessor,
+    )
+
+    bundles = []
+    for i in range(2):  # each member is a bundle *directory* -> one .tar
+        b = tmp_path / f"member_{i}.bundle"
+        b.mkdir()
+        (b / "config.json").write_text("{}")
+        bundles.append(b)
+
+    proc = CommitteeEvalProcessor(bundles, backend="mace")
+    assert isinstance(proc, Processor)
+    assert proc.name == "committee_eval"
+    shared = proc.shared_files()
+    assert len(shared) == 2 and all(s.endswith(".tar") for s in shared)
+
+    args = proc.build_args("/remote/savepath")
+    assert args["model_remotes"] == [
+        "/remote/savepath/member_0.bundle.tar",
+        "/remote/savepath/member_1.bundle.tar",
+    ]
+    assert args["is_archive"] is True and args["backend"] == "mace"
+    # Defaults to the shared uncertainty keys UncertaintySelector reads.
+    assert args["energy_key"] == "energy_uncertainty"
+    assert args["forces_key"] == "forces_uncertainty"
+    CommitteeEvalArgs.from_dict(args).validate()
+
+
+def test_committee_eval_processor_rejects_single_model(tmp_path):
+    from jaxrens_al.run.processors import CommitteeEvalProcessor
+
+    only = tmp_path / "only.bundle"
+    only.mkdir()
+    with pytest.raises(ValueError, match="at least two"):
+        CommitteeEvalProcessor([only])
+
+
+def test_committee_eval_args_reject_short_committee():
+    from jaxrens_al.run.processors import CommitteeEvalArgs
+
+    with pytest.raises(ScriptInputError, match="at least two"):
+        CommitteeEvalArgs(model_remotes=["only"]).validate()
+
+
+def test_driver_registered_committee_eval_with_schema():
+    assert "committee_eval" in REGISTRY
+    validate_args("committee_eval", {"model_remotes": ["a", "b"]})
+
+
+def test_run_committee_eval_writes_disagreement(monkeypatch):
+    """``run`` annotates per-config energy std + per-atom force std."""
+    import numpy as np
+    from ase import Atoms
+
+    from jaxrens_al.dashboard.panels import model_eval as me
+    from jaxrens_al.run.processors import committee_eval
+
+    atoms = [
+        Atoms(
+            "H2", positions=[[0, 0, 0], [0, 0, 0.7]], cell=[5] * 3, pbc=True
+        ),
+        Atoms(
+            "H2", positions=[[0, 0, 0], [0, 0, 0.9]], cell=[5] * 3, pbc=True
+        ),
+    ]
+    # Two members with distinct predictions -> nonzero disagreement. Each
+    # score_atoms call returns (energies, per-config force arrays).
+    outputs = {
+        "m0": ([1.0, 3.0], [np.zeros((2, 3)), np.zeros((2, 3))]),
+        "m1": ([2.0, 5.0], [np.ones((2, 3)), np.ones((2, 3))]),
+    }
+    monkeypatch.setattr(
+        me,
+        "score_atoms",
+        lambda path, backend, al, *, want_forces, max_neighbors: outputs[path],
+    )
+
+    out = committee_eval.run(
+        atoms,
+        {
+            "backend": "mace",
+            "model_remotes": ["m0", "m1"],
+            "is_archive": False,
+            "energy_key": "energy_uncertainty",
+            "forces_key": "forces_uncertainty",
+            "mean_energy_key": "committee_energy",
+            "max_neighbors": 10,
+        },
+    )
+    # population std of [1, 2] = 0.5; of [3, 5] = 1.0; mean of [1, 2] = 1.5.
+    assert out[0].info["energy_uncertainty"] == pytest.approx(0.5)
+    assert out[1].info["energy_uncertainty"] == pytest.approx(1.0)
+    assert out[0].info["committee_energy"] == pytest.approx(1.5)
+    # per-atom force std between the all-0 and all-1 members is 0.5 everywhere.
+    np.testing.assert_allclose(out[0].arrays["forces_uncertainty"], 0.5)
+
+
+# ---------------------------------------------------------------------------
 # relax + spacegroup processors and the phase-labeling resolver.
 # ---------------------------------------------------------------------------
 def test_spacegroup_run_labels_structures():

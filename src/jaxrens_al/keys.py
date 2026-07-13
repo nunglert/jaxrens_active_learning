@@ -14,6 +14,18 @@ REF_ENERGY_KEY = "REF_energy"
 REF_FORCES_KEY = "REF_forces"
 SURROGATE_ENERGY_KEY = "ns_energy"
 
+# Committee (ensemble) disagreement the ``committee_eval`` processor writes and
+# ``remote_handler``'s ``UncertaintySelector`` reads back: per-config energy std
+# (``info``) and per-atom force std (``arrays``, shape ``(n_atoms, 3)``). The
+# defaults match ``UncertaintySelector``'s own key names, so the stock selector
+# consumes them with no configuration.
+ENERGY_UNCERTAINTY_KEY = "energy_uncertainty"
+FORCES_UNCERTAINTY_KEY = "forces_uncertainty"
+
+# Committee mean energy (the ensemble's own prediction), written alongside the
+# std as an informational annotation -- not consumed by the selector.
+COMMITTEE_ENERGY_KEY = "committee_energy"
+
 # Space-group label the ``spacegroup`` processor writes and the phase panel
 # reads (relaxed-basin phase assignment).
 SPACEGROUP_KEY = "spacegroup"
