@@ -41,6 +41,7 @@ from jaxrens_al.dashboard.run_layout import (
     resampled_provenance_json,
     sampled_configs,
     sampled_configs_per_iteration,
+    sampling_model_for_iteration,
     training_error_files,
     training_error_for_iteration,
     training_mace_for_iteration,
@@ -92,6 +93,12 @@ class RunContext:
     resampled_provenance: Optional[Path] = None
     eos_reference: Optional[list] = None  # phase reference files
     model_file: Optional[Path] = None
+    # The model that DROVE the NS sampler this iteration (the previous
+    # iteration's trained model), used by ``sampling_parity`` to re-score the
+    # evaluated configs -- an out-of-sample "how well did the proposing model
+    # predict these" parity. Distinct from ``model_file`` (this iteration's
+    # freshly trained model, an in-sample fit).
+    sampling_model_file: Optional[Path] = None
     eos_backend: str = "neuralil"
     # Evaluate trained models (EOS / model-parity) on the cluster instead of
     # in-process -- required for a GPU-only MACE-jax bundle.
@@ -224,6 +231,7 @@ def iteration_context(
     ns_dir = ns_result_dir(it_dir, prefix=ns_prefix)
     mace_logs = training_mace_for_iteration(it_dir)
     model_file = model_for_iteration(calchome, index, it_dir=it_dir)
+    sampling_model_file = sampling_model_for_iteration(calchome, index)
     return RunContext(
         calchome=calchome,
         datapath=Path(datapath),
@@ -240,6 +248,7 @@ def iteration_context(
         resampled_provenance=resampled_provenance_json(it_dir),
         eos_reference=_coerce_paths(eos_reference),
         model_file=model_file,
+        sampling_model_file=sampling_model_file,
         eos_backend=eos_backend or detect_backend(mace_logs, model_file),
         remote_model_eval=remote_model_eval,
         iteration=index,

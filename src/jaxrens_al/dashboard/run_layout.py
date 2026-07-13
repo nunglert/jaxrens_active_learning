@@ -465,6 +465,29 @@ def model_for_iteration(calchome, index, it_dir=None, progress=None):
     return None
 
 
+def sampling_model_for_iteration(calchome, index, progress=None):
+    """The model that DROVE the NS sampler at iteration ``index``, or None.
+
+    In the staged ring the sampler consumes the *previous* iteration's trainer
+    output -- the model it injects into ``backend.checkpoint_path`` to generate
+    this iteration's pool. So the sampling model is
+    ``trained_models_per_iteration[index - 1]``; the sampler runs jaxrens with a
+    single member and takes the **last** one (``model_file[-1]``, see
+    :class:`~jaxrens_al.run.sampler.JaxrensNSSampler`), so we return that member.
+
+    Iteration 0 is seeded by an out-of-band foundation model that
+    ``AL_progress.json`` does not record, so it returns ``None`` (no re-scorable
+    sampling model on disk) -- the caller's panel then simply drops out.
+    """
+    if index <= 0:
+        return None
+    recorded = trained_models_per_iteration(calchome, progress=progress)
+    prev = index - 1
+    if 0 <= prev < len(recorded) and recorded[prev]:
+        return recorded[prev][-1]
+    return None
+
+
 def training_error_for_iteration(it_dir) -> list:
     """This iteration's NeuralIL ``error_*.txt`` logs (possibly empty)."""
     base = training_results_dir(it_dir)

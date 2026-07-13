@@ -51,8 +51,14 @@ def make_spec(type_name: str, **params) -> PanelSpec:
 _DEFAULT_ORDER = [
     "dataset_growth",
     "sampled_energy_volume",
-    "parity",
-    "energy_error",
+    # DFT-vs-model parity: ``sampling_parity`` re-scores the evaluated configs'
+    # *potential energy* with the model that proposed them (the previous
+    # iteration's trained model). It replaces the old ``ns_energy``-based
+    # ``parity``/``energy_error`` panels, which compared the DFT potential energy
+    # against the NS *enthalpy* ``U + P*V`` (wrong for an NPT/EnsembleBackend
+    # run). It self-gates on a recorded proposing model, so it is absent on the
+    # summary page and iteration 0 (whose foundation seed is not recorded).
+    "sampling_parity",
     "sampled_ns_energy",
     "quests_pca",
     "resampled_grid",

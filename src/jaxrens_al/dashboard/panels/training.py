@@ -511,6 +511,27 @@ def _build_neuralil_parity(ctx, c):
     )
 
 
+class SamplingParityPanel(ModelParityPanel):
+    """DFT reference vs the *sampling* model's re-scored potential energy.
+
+    Identical machinery to :class:`ModelParityPanel` -- only the model differs:
+    the model that **proposed** these configs (the previous iteration's trained
+    model that drove the NS sampler), not the current iteration's freshly trained
+    one. So this is the genuine *out-of-sample* parity ("how well did the
+    proposing model predict the points it selected"), whereas ``model_parity`` is
+    an in-sample fit.
+
+    Crucially it re-scores the model's **potential energy** rather than reading
+    the trajectory's ``ns_energy``: for an NPT / ``EnsembleBackend`` run
+    ``ns_energy`` is the NS *enthalpy* ``H = U + P*V`` (dominated by the ``P*V``
+    term, tens of eV across a pressure grid), which is *not* comparable to the
+    DFT potential energy. A subclass only to carry a distinct ``name`` -- entries
+    cache/lay out by name, so it must not collide with ``model_parity``.
+    """
+
+    name = "sampling_parity"
+
+
 class ModelParitySpec(PanelSpec):
     """Re-scored trained-model parity for one labelled set.
 
@@ -553,6 +574,48 @@ def _build_model_parity(spec, ctx, c):
     return None
 
 
+class SamplingParitySpec(PanelSpec):
+    """DFT vs the *sampling* model's re-scored potential energy.
+
+    The out-of-sample AL parity: re-score the evaluated configs with the model
+    that proposed them (``ctx.sampling_model_file`` -- the previous iteration's
+    trained model), instead of reading the trajectory's ``ns_energy`` (which for
+    an NPT/``EnsembleBackend`` run is the enthalpy ``U + P*V``, not the potential
+    energy the DFT reference carries). ``source`` names the configs; the other
+    fields mirror :class:`ModelParitySpec`.
+    """
+
+    type: str = "sampling_parity"
+    source: str = "eval_files"
+    show_forces: bool = True
+    remote_eval: bool | None = None
+    max_neighbors: int = 50
+
+
+def _build_sampling_parity(spec, ctx, c):
+    # Needs the proposing model (absent on iteration 0 -- the foundation seed is
+    # not recorded in AL_progress.json) and the evaluated configs to score.
+    files = getattr(ctx, spec.source, None)
+    if ctx.sampling_model_file and files:
+        remote_eval = (
+            spec.remote_eval
+            if spec.remote_eval is not None
+            else ctx.remote_model_eval
+        )
+        return SamplingParityPanel(
+            config_files=files,
+            model_file=ctx.sampling_model_file,
+            backend_type=ctx.eos_backend,
+            energy_ref_key=ctx.energy_key,
+            forces_ref_key=ctx.forces_key,
+            show_forces=spec.show_forces,
+            remote_eval=remote_eval,
+            max_neighbors=spec.max_neighbors,
+            **c,
+        )
+    return None
+
+
 def _build_neuralil_training_curve(ctx, c):
     return (
         NeuralILTrainingCurve(error_files=ctx.error_files, **c)
@@ -571,5 +634,6 @@ def _build_mace_training_curve(ctx, c):
 
 register_simple("neuralil_parity", _build_neuralil_parity)
 register_panel("model_parity", ModelParitySpec, _build_model_parity)
+register_panel("sampling_parity", SamplingParitySpec, _build_sampling_parity)
 register_simple("neuralil_training_curve", _build_neuralil_training_curve)
 register_simple("mace_training_curve", _build_mace_training_curve)

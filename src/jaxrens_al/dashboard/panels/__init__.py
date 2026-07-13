@@ -40,6 +40,7 @@ from jaxrens_al.dashboard.panels.training import (
     ModelParityPanel,
     NeuralILParityPanel,
     NeuralILTrainingCurve,
+    SamplingParityPanel,
 )
 
 __all__ = [
@@ -49,6 +50,7 @@ __all__ = [
     "EquationOfStatePanel",
     "MaceTrainingCurve",
     "ModelParityPanel",
+    "SamplingParityPanel",
     "MoveAcceptancePanel",
     "NSEnergyTracePanel",
     "NSSampledEnergyPanel",

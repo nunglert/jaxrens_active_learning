@@ -107,21 +107,37 @@ def test_iteration_assembles_all_panels(
 # Combination of ns/dft/train dashboards: the panels the standalone scripts
 # show but which only register given the right artifacts.
 # --------------------------------------------------------------------------
-def test_surrogate_parity_registers_when_eval_has_ns_energy(
+def test_sampling_parity_registers_on_iteration_with_proposing_model(
     make_calchome, tmp_path
 ):
-    # dft_dashboard's surrogate-vs-DFT parity/error: only when the evaluated
-    # configs carry the sampler's ns_energy too.
-    calchome = make_calchome(tmp_path, n_iter=2, eval_with_surrogate=True)
-    names = {e.name for e in build_dashboard(calchome, compute=False).entries}
-    assert {"parity", "energy_error"} <= names
+    # sampling_parity re-scores the evaluated configs with the model that
+    # PROPOSED them -- the previous iteration's recorded trainer output. So it
+    # registers on iteration >= 1 and points at that model.
+    calchome = make_calchome(tmp_path, n_iter=2, with_trainer_output=True)
+    dp = tmp_path / "dp"
+    dp.mkdir()
+    ctx = iteration_context(calchome, dp, 1)
+    assert ctx.sampling_model_file == calchome / "trainer_output" / "t0.bundle"
+    (panel,) = [e for e in assemble(ctx) if e.name == "sampling_parity"]
+    assert str(panel._model_file) == str(ctx.sampling_model_file)
 
 
-def test_surrogate_parity_absent_without_ns_energy(make_calchome, tmp_path):
-    # Plain evaluated configs (REF_energy only) -> no surrogate parity panels.
-    calchome = make_calchome(tmp_path, n_iter=2)
-    names = {e.name for e in build_dashboard(calchome, compute=False).entries}
-    assert "parity" not in names and "energy_error" not in names
+def test_sampling_parity_absent_without_proposing_model(
+    make_calchome, tmp_path
+):
+    # Iteration 0's proposing model (the foundation seed) is not recorded, so
+    # there is no sampling_parity there; likewise when no trainer output exists.
+    dp = tmp_path / "dp"
+    dp.mkdir()
+    calchome = make_calchome(tmp_path, n_iter=2, with_trainer_output=True)
+    ctx0 = iteration_context(calchome, dp, 0)
+    assert ctx0.sampling_model_file is None
+    assert "sampling_parity" not in {e.name for e in assemble(ctx0)}
+
+    plain = make_calchome(tmp_path / "b", n_iter=2)  # no trainer_output
+    ctx1 = iteration_context(plain, dp, 1)
+    assert ctx1.sampling_model_file is None
+    assert "sampling_parity" not in {e.name for e in assemble(ctx1)}
 
 
 def test_mace_training_curve_registers_when_log_present(

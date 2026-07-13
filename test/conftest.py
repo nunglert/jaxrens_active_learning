@@ -170,6 +170,7 @@ def _make_calchome(
     with_adaptation=False,
     with_re_stats=False,
     with_model=False,
+    with_trainer_output=False,
     staged=False,
 ):
     """Build a remote_handler-style run dir under ``tmp_path``.
@@ -292,6 +293,15 @@ def _make_calchome(
             tdir = calchome / str(it) / "training" / "results"
             tdir.mkdir(parents=True, exist_ok=True)
             (tdir / "neuralil_model.pkl").write_bytes(b"")  # stub: discovery
+
+        if with_trainer_output:
+            # A recorded trainer bundle per iteration (a MACE-jax bundle *dir*),
+            # so sampling_model_for_iteration(i>0) resolves the proposing model.
+            tout = calchome / "trainer_output"
+            tout.mkdir(parents=True, exist_ok=True)
+            bundle = tout / f"t{it}.bundle"
+            bundle.mkdir(exist_ok=True)
+            entry["trainer_output"] = [f"trainer_output/t{it}.bundle"]
 
         progress.append(entry)
 
