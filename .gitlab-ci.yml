@@ -57,7 +57,7 @@ test:
     - python -V
     - pip install --upgrade pip
     # Full install: alviz + remote_handler (GitLab) + jaxrens (GitHub) + dev.
-    - pip install ".[dev,run]"
+    - pip install ".[all]"
     - python -c "import jaxrens_al; from jaxrens_al.run.sampler import JaxrensNSSampler; print('install OK')"
   script:
     - pytest -ra --junitxml=report.xml

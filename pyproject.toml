@@ -43,6 +43,9 @@ dev = [
     "pytest-cov",
     "pre-commit",
 ]
+all = [
+    "jaxrens_active_learning[dev,run,refdb]"
+]
 
 [project.scripts]
 jaxrens-al = "jaxrens_al.__main__:main"
