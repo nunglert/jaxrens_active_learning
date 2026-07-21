@@ -10,7 +10,7 @@ of `README.md`): tag a release with `git tag vX.Y.Z` and the package version
 follows automatically. To release, rename the `[Unreleased]` section below to
 the new `## [X.Y.Z] — YYYY-MM-DD`, add a fresh empty `[Unreleased]`, then tag.
 
-## [Unreleased]
+## [0.1.0] — 2026-07-21
 
 ### Added
 - **Single `jaxrens-al` command-line entry point with `--version`.** The
