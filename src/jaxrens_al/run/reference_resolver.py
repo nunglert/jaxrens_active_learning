@@ -13,7 +13,7 @@ so the executor is a configured **evaluator**, not a cluster context. The EOS
 reference is the first (and only) registered kind. Because it needs a DFT
 evaluator (cluster + INCAR), :func:`resolve_references` is called from a
 **run-side** dashboard driver that builds that evaluator -- not the light
-``jaxrens-al-dashboard`` CLI, whose ``--eos-reference`` flag stays the
+``jaxrens-al dashboard`` CLI, whose ``--eos-reference`` flag stays the
 no-evaluator fallback.
 """
 
@@ -50,7 +50,7 @@ def register_reference_kind(
     ``reuse`` (return existing files without rebuilding). Called run-side (may
     import ``remote_handler`` / the upstream). Set ``needs_evaluator=False`` for
     a builder that produces structures only (no DFT), so it is resolvable
-    without an evaluator -- e.g. from the light ``jaxrens-al-dashboard`` CLI.
+    without an evaluator -- e.g. from the light ``jaxrens-al dashboard`` CLI.
     """
     _REGISTRY.register(kind, builder)
     _NEEDS_EVALUATOR[kind] = needs_evaluator

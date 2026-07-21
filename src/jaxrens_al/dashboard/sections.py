@@ -11,7 +11,7 @@ script; it lives here now, once, as three ``*_section`` builders returning a
 Two consumers share them:
 
 * the standalone scripts, now thin arg-parsing wrappers over these builders;
-* the global ``jaxrens-al-dashboard`` CLI's ``--sections`` mode, which points
+* the global ``jaxrens-al dashboard`` CLI's ``--sections`` mode, which points
   them at each iteration's raw working dir (``calchome/<i>/...``) so the
   combined report includes the same per-artifact detail -- including iterations
   ``AL_progress.json`` skipped.

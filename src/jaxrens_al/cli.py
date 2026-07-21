@@ -5,8 +5,8 @@ Plotting is decoupled from running the loop (mirroring the legacy
 ``calchome`` artifacts; this command turns them into a PDF afterwards, as many
 times as you like. Run it as the installed console script::
 
-    jaxrens-al-dashboard path/to/calchome
-    jaxrens-al-dashboard path/to/calchome -o summary.pdf --force
+    jaxrens-al dashboard path/to/calchome
+    jaxrens-al dashboard path/to/calchome -o summary.pdf --force
 
 or via the thin wrapper ``python scripts/al_dashboard.py path/to/calchome``.
 """
@@ -62,7 +62,7 @@ def _run_init_config(argv: list[str] | None) -> int:
     :func:`jaxrens_al.cli_args.dump_config` -- to ``-o PATH`` or stdout.
     """
     p = argparse.ArgumentParser(
-        prog="jaxrens-al-dashboard init-config",
+        prog="jaxrens-al dashboard init-config",
         description="Write a starter dashboard config (all default flag "
         "values, commented) for a dashboard flavor. Redirect or -o it to "
         "dashboard.yaml beside the run/artifact; CLI flags still override it.",
@@ -88,7 +88,7 @@ def _run_init_config(argv: list[str] | None) -> int:
 
     if args.flavor == "al":
         parser = _build_parser()
-        title = "jaxrens-al-dashboard"
+        title = "jaxrens-al dashboard"
     else:
         from jaxrens_al.dashboard.section_dashboards import (
             build_dft_parser,
@@ -101,8 +101,8 @@ def _run_init_config(argv: list[str] | None) -> int:
             "dft": build_dft_parser,
             "training": build_training_parser,
         }[args.flavor]
-        parser = builder(prog=f"jaxrens-al-dashboard {args.flavor}")
-        title = f"jaxrens-al-dashboard {args.flavor}"
+        parser = builder(prog=f"jaxrens-al dashboard {args.flavor}")
+        title = f"jaxrens-al dashboard {args.flavor}"
 
     text = dump_config(parser, title=title)
     if args.flavor in ("al", "ns"):
@@ -267,24 +267,24 @@ def _resolve_remote_needs(entries, args, datapath):
 
 # First-token subcommands that render a single raw artifact set instead of a
 # whole AL run. Dispatched in main() before the AL parser so bare
-# ``jaxrens-al-dashboard <calchome>`` stays the (backward-compatible) default.
+# ``jaxrens-al dashboard <calchome>`` stays the (backward-compatible) default.
 _SECTION_COMMANDS = ("ns", "dft", "training")
 
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="jaxrens-al-dashboard",
+        prog="jaxrens-al dashboard",
         description="Build an alviz dashboard PDF for a remote_handler "
         "active-learning run (a 'calchome' directory holding "
         "AL_progress.json).",
         epilog="Section subcommands render a single raw artifact set (no "
         "AL_progress.json needed):\n"
-        "  jaxrens-al-dashboard ns       <ns_output_dir>\n"
-        "  jaxrens-al-dashboard dft      <labelled.extxyz ...>\n"
-        "  jaxrens-al-dashboard training <results_dir>\n"
-        "Run 'jaxrens-al-dashboard <section> --help' for each.\n"
+        "  jaxrens-al dashboard ns       <ns_output_dir>\n"
+        "  jaxrens-al dashboard dft      <labelled.extxyz ...>\n"
+        "  jaxrens-al dashboard training <results_dir>\n"
+        "Run 'jaxrens-al dashboard <section> --help' for each.\n"
         "Scaffold a config:\n"
-        "  jaxrens-al-dashboard init-config <al|ns|dft|training> [-o PATH]",
+        "  jaxrens-al dashboard init-config <al|ns|dft|training> [-o PATH]",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(

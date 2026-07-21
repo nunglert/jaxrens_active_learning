@@ -1,7 +1,7 @@
 """Reusable argparse argument groups shared by the dashboard entry points.
 
 The standalone ``scripts/{ns,dft,training}_dashboard.py`` and the global
-``jaxrens-al-dashboard`` CLI expose overlapping flags -- output/cache options,
+``jaxrens-al dashboard`` CLI expose overlapping flags -- output/cache options,
 the NS temperature grid, the Steinhardt block, the reference-key options.
 Defining each group once here keeps every consumer in step (a new Steinhardt
 flag lands in all of them at once) and mirrors :mod:`jaxrens_al.dashboard.sections`,
@@ -36,7 +36,7 @@ def find_config(calchome):
     """The dashboard config auto-discovered in ``calchome``, or None.
 
     Looks for ``dashboard.{yaml,yml,toml,json}`` (first match wins) so
-    ``jaxrens-al-dashboard <calchome>`` needs no flags when one is dropped
+    ``jaxrens-al dashboard <calchome>`` needs no flags when one is dropped
     beside the run.
     """
     calchome = Path(calchome)

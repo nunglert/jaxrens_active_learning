@@ -1,12 +1,12 @@
 # -*- coding: utf-8 -*-
 
 [build-system]
-requires = ["setuptools"]
+requires = ["setuptools>=64", "setuptools_scm>=8"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "jaxrens_active_learning"
-version = "0.1.0"
+dynamic = ["version"]
 authors = [
     { name = "Nico Unglert", email = "nico.unglert@tuwien.ac.at" }
 ]
@@ -45,8 +45,14 @@ dev = [
 ]
 
 [project.scripts]
-jaxrens-al-dashboard = "jaxrens_al.cli:main"
-jaxrens-al-refdb = "jaxrens_al.run.reference_db:main"
+jaxrens-al = "jaxrens_al.__main__:main"
+
+[tool.setuptools_scm]
+# Single source of truth for the version is the git tag (mirrors jaxrens).
+# No version file is written; the runtime reads it via importlib.metadata.
+# fallback_version keeps the build from erroring on a tagless / shallow clone
+# with no git metadata (e.g. an sdist, or a CI checkout without full history).
+fallback_version = "0.0.0"
 
 [tool.setuptools.packages.find]
 where = ["src"]

@@ -1,6 +1,6 @@
 """Render a dashboard for a *single* set of DFT-labelled configs.
 
-The ``jaxrens-al-dashboard`` CLI is built for a finished *active-learning*
+The ``jaxrens-al dashboard`` CLI is built for a finished *active-learning*
 run: it reads ``AL_progress.json`` and renders cross-iteration progress. When
 a loop dies after the DFT step but before recording a completed iteration --
 ``AL_progress.json`` then shows that iteration as unfinished, so the CLI skips
@@ -11,7 +11,7 @@ directly onto one extxyz of DFT-labelled configs (``REF_energy`` /
 ``REF_forces``, the keys ``remote_handler``'s evaluators write), so there is no
 panel logic here, only wiring. The real logic lives in
 :func:`jaxrens_al.dashboard.section_dashboards.run_dft`; when jaxrens_al is installed,
-prefer the console subcommand ``jaxrens-al-dashboard dft``. Point it at the
+prefer the console subcommand ``jaxrens-al dashboard dft``. Point it at the
 evaluator output, e.g.::
 
     ~/miniconda3/envs/jaxrens_al/bin/python scripts/dft_dashboard.py \

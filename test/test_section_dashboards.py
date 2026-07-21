@@ -1,6 +1,6 @@
 """Tests for the section-dashboard CLI subcommands (ns/dft/training).
 
-The ``jaxrens-al-dashboard`` CLI dispatches its ``ns`` / ``dft`` / ``training``
+The ``jaxrens-al dashboard`` CLI dispatches its ``ns`` / ``dft`` / ``training``
 first-token subcommands to :mod:`jaxrens_al.dashboard.section_dashboards`, which the thin
 ``scripts/{ns,dft,training}_dashboard.py`` wrappers also call. These tests
 cover the dispatch + guard paths (which return before any alviz import, so they

@@ -2,7 +2,7 @@
 
 One definition per section, two callers:
 
-* the ``jaxrens-al-dashboard`` CLI dispatches its ``ns`` / ``dft`` /
+* the ``jaxrens-al dashboard`` CLI dispatches its ``ns`` / ``dft`` /
   ``training`` subcommands here (see :func:`SECTION_COMMANDS`);
 * the thin ``scripts/{ns,dft,training}_dashboard.py`` checkout wrappers call the
   same ``run_*`` entry points.
@@ -490,13 +490,13 @@ def run_training(
     return 0
 
 
-# The ``jaxrens-al-dashboard <section>`` subcommands, dispatched from
+# The ``jaxrens-al dashboard <section>`` subcommands, dispatched from
 # jaxrens_al.cli:main. Each closes over its display prog so ``<section> --help``
-# reads ``jaxrens-al-dashboard <section>``.
+# reads ``jaxrens-al dashboard <section>``.
 SECTION_COMMANDS = {
-    "ns": lambda argv: run_ns(argv, prog="jaxrens-al-dashboard ns"),
-    "dft": lambda argv: run_dft(argv, prog="jaxrens-al-dashboard dft"),
+    "ns": lambda argv: run_ns(argv, prog="jaxrens-al dashboard ns"),
+    "dft": lambda argv: run_dft(argv, prog="jaxrens-al dashboard dft"),
     "training": lambda argv: run_training(
-        argv, prog="jaxrens-al-dashboard training"
+        argv, prog="jaxrens-al dashboard training"
     ),
 }

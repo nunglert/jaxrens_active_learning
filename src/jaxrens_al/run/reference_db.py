@@ -319,7 +319,7 @@ def build_reference_database(
 
 
 # ---------------------------------------------------------------------------
-# CLI: jaxrens-al-refdb <element> <output.extxyz>
+# CLI: jaxrens-al refdb <element> <output.extxyz>
 # ---------------------------------------------------------------------------
 
 
@@ -333,7 +333,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     logger = logging.getLogger(__name__)
 
     parser = argparse.ArgumentParser(
-        prog="jaxrens-al-refdb",
+        prog="jaxrens-al refdb",
         description="Build a starting structure database for an AL run: "
         "fetch an element's experimentally observed phases from the "
         "Materials Project, rattle + volume-scale them, write an extxyz.",

@@ -1,6 +1,6 @@
 """Render a dashboard for a *single* training run (no AL_progress.json).
 
-The ``jaxrens-al-dashboard`` CLI only renders iterations that
+The ``jaxrens-al dashboard`` CLI only renders iterations that
 ``AL_progress.json`` records as *finished*. When a loop trains a model but then
 dies before completing the iteration (e.g. the readback fails), that training
 is invisible to the AL dashboard even though its logs and model are on disk.
@@ -28,7 +28,7 @@ override with ``--model`` / ``--valid-set`` / ``--backend``. If a
 ``db_train.extxyz`` training set is present, its energy/volume spread and
 descriptor diversity are shown as well. The real logic lives in
 :func:`jaxrens_al.dashboard.section_dashboards.run_training`; when jaxrens_al is
-installed, prefer the console subcommand ``jaxrens-al-dashboard training``.
+installed, prefer the console subcommand ``jaxrens-al dashboard training``.
 Point at the training results dir, e.g.::
 
     ~/miniconda3/envs/jaxrens_al/bin/python scripts/training_dashboard.py \

@@ -1,6 +1,6 @@
 """Render a dashboard for a *single* jaxrens NS run (no AL_progress.json).
 
-The ``jaxrens-al-dashboard`` CLI is built for a finished *active-learning*
+The ``jaxrens-al dashboard`` CLI is built for a finished *active-learning*
 run: it reads ``AL_progress.json`` and shows cross-iteration progress
 (dataset growth, parity, sampled-vs-DFT energies, EOS). When a loop only got
 as far as the iteration-0 NS sampling -- e.g. it died pulling output back --
@@ -11,7 +11,7 @@ dashboard uses, wired directly onto one multi-run NS output directory (the
 ``<prefix>.runNN.energies`` layout) -- so there is no panel logic here, only
 wiring. The real logic lives in :func:`jaxrens_al.dashboard.section_dashboards.run_ns`;
 when jaxrens_al is installed, prefer the equivalent console subcommand
-``jaxrens-al-dashboard ns``. Run it in an env with jaxrens installed, e.g.::
+``jaxrens-al dashboard ns``. Run it in an env with jaxrens installed, e.g.::
 
     ~/miniconda3/envs/jaxrens_al/bin/python scripts/ns_dashboard.py \
         experiments/run4/calchome/phase1_mace/0/ns_sampler/results/output \

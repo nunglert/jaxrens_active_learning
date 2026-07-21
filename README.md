@@ -68,7 +68,7 @@ interface for `jaxrens` — it does *not* use `remote_handler`'s own deprecated
   database** for iteration zero: fetch an element's experimentally observed
   phases from the Materials Project (`fetch_mp_elemental`), expand each into a
   cloud of rattled, volume-scaled supercells (`rattle_atoms`), and write an
-  `extxyz` (`build_reference_database`, or the `jaxrens-al-refdb` CLI). The
+  `extxyz` (`build_reference_database`, or the `jaxrens-al refdb` CLI). The
   Materials Project query needs the `[refdb]` extra (`mp_api` + `pymatgen`);
   the rattling half is pure numpy + ase.
 - `examples/run_al.py` — concrete wiring of the AL loop (jaxrens sampler +
@@ -118,6 +118,23 @@ The design: `pyproject.toml` holds SSH URLs (the common case — humans/clusters
 with SSH keys install with no setup), and the **one** environment without an SSH
 key, CI, rewrites them to HTTPS+token. The file is never touched per-machine.
 
+## Command-line interface
+
+Everything is under one console script, `jaxrens-al` (also `python -m
+jaxrens_al`), which dispatches subcommands:
+
+```bash
+jaxrens-al --version                 # installed version (setuptools-scm, from the git tag)
+jaxrens-al dashboard path/to/calchome   # build a run dashboard (see "Visualize a run")
+jaxrens-al refdb Si si_start.extxyz     # build a starting database (see below)
+```
+
+The version is derived from the git tag by **setuptools-scm** (mirroring
+`jaxrens`): `pyproject.toml` declares `dynamic = ["version"]`, so a tagged
+release (`git tag vX.Y.Z`) becomes the version and untagged checkouts report a
+`0.1.devN+g<hash>` development version. It refreshes on reinstall. Notable
+changes per version are tracked in [`CHANGELOG.md`](CHANGELOG.md).
+
 ## Build a starting database
 
 Before the first AL iteration you need seed structures. `reference_db` turns an
@@ -126,7 +143,7 @@ phases (needs the `[refdb]` extra and an `MP_API_KEY`):
 
 ```bash
 export MP_API_KEY=...
-jaxrens-al-refdb Si si_start.extxyz --target-cutoff 3 \
+jaxrens-al refdb Si si_start.extxyz --target-cutoff 3 \
     --rattle-strengths 0.0 0.2 --n-vol 20 --vol-min 0.9 --vol-max 1.1
 ```
 
@@ -155,11 +172,11 @@ a flip-book of the run. Each iteration is also written on its own under
 for that iteration, so early iterations get a smaller page.
 
 ```bash
-jaxrens-al-dashboard path/to/calchome              # -> calchome/dashboard.pdf (+ plots/Iteration*.pdf)
-jaxrens-al-dashboard path/to/calchome -o out.pdf --force
-jaxrens-al-dashboard path/to/calchome --dry-run    # report per-iteration panel layout only
-jaxrens-al-dashboard path/to/calchome --only sampled_ns_energy neuralil_parity   # subset of panels
-jaxrens-al-dashboard path/to/calchome --exclude dataset_growth                   # all but these
+jaxrens-al dashboard path/to/calchome              # -> calchome/dashboard.pdf (+ plots/Iteration*.pdf)
+jaxrens-al dashboard path/to/calchome -o out.pdf --force
+jaxrens-al dashboard path/to/calchome --dry-run    # report per-iteration panel layout only
+jaxrens-al dashboard path/to/calchome --only sampled_ns_energy neuralil_parity   # subset of panels
+jaxrens-al dashboard path/to/calchome --exclude dataset_growth                   # all but these
 ```
 
 From a checkout without installing, the thin wrapper is equivalent:

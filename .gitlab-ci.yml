@@ -22,6 +22,10 @@ stages:
 
 variables:
   PIP_DISABLE_PIP_VERSION_CHECK: "1"
+  # Full history + tags so setuptools-scm can derive the version (a shallow
+  # clone with no tags would fall back to fallback_version = 0.0.0).
+  GIT_DEPTH: "0"
+  GIT_FETCH_EXTRA_FLAGS: --tags
 
 # Run on branch pushes, merge requests, and scheduled pipelines (the weekly
 # cron defined in Build -> Pipeline schedules) -- without duplicate pipelines.
