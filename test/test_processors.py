@@ -1,10 +1,11 @@
-"""Tests for the run-side Steinhardt trajectory processor.
+"""Tests for the run-side trajectory processors and processing resolver.
 
 Needs the [run] extra (remote_handler's ``processing`` framework); the module
-self-skips otherwise. The host-side spec + arg schema + registration are
+self-skips otherwise. The host-side specs + arg schemas + registration are
 exercised with NO cluster or jaxrens -- only remote_handler + ase on the host.
-The one test that runs the actual ``jaxrens`` computation self-skips when
-jaxrens is absent.
+The Steinhardt *compute* is now a remote_handler built-in (its processor lives
+in ``remote_handler.processing.processors``, tested there); what remains here is
+jaxrens_al's own resolver logic that wires that built-in from panel needs.
 """
 
 import pytest
@@ -18,60 +19,24 @@ from remote_handler.processing.registry import (  # noqa: E402
     validate_args,
 )
 
-from jaxrens_al.run.processors import (  # noqa: E402
-    SteinhardtArgs,
-    SteinhardtProcessor,
-)
-
 # Run-side: needs the producer package (remote_handler).
 pytestmark = pytest.mark.integration
 
 
-def test_steinhardt_processor_is_a_processor_spec():
+def test_steinhardt_builtin_is_available_from_remote_handler():
+    """The Steinhardt compute now ships as a remote_handler built-in.
+
+    jaxrens_al no longer owns the processor; the resolver imports it from
+    remote_handler. This smoke-checks the built-in the resolver depends on is
+    present + registered (its own correctness is tested in remote_handler).
+    """
+    from remote_handler.processing.processors import SteinhardtProcessor
+
     proc = SteinhardtProcessor(r_cut=3.5, l_values=(4, 6))
     assert isinstance(proc, Processor)
     assert proc.name == "steinhardt"
-    # Nothing to stage: jaxrens supplies the science from the cluster env.
-    assert proc.shared_files() == []
-
-
-def test_registration_module_defaults_to_this_module():
-    """The framework auto-resolves it -- driver imports this to register."""
-    assert (
-        SteinhardtProcessor.registration_module
-        == "jaxrens_al.run.processors.steinhardt"
-    )
-
-
-def test_build_args_round_trips_through_the_schema():
-    proc = SteinhardtProcessor(r_cut=4.2, l_values=(4, 6), r_cut_min=1.5)
-    args = proc.build_args("/remote/savepath")
-    assert args == {"l_values": [4, 6], "r_cut": 4.2, "r_cut_min": 1.5}
-    # The emitted payload passes the same schema the driver validates against.
-    SteinhardtArgs.from_dict(args).validate()
-
-
-def test_processor_validates_l_values():
-    with pytest.raises(ValueError, match="at least one l value"):
-        SteinhardtProcessor(r_cut=3.5, l_values=())
-
-
-def test_driver_registered_steinhardt_with_schema():
-    """Importing the module registered the step's run + arg schema."""
     assert "steinhardt" in REGISTRY
-    # validate_args resolves the schema registered under the name.
     validate_args("steinhardt", {"l_values": [6], "r_cut": 3.5})
-
-
-def test_validate_args_rejects_bad_payload():
-    with pytest.raises(ScriptInputError):
-        validate_args("steinhardt", {"l_values": [], "r_cut": 3.5})
-    with pytest.raises(ScriptInputError):
-        validate_args("steinhardt", {"l_values": [6], "r_cut": -1.0})
-    with pytest.raises(ScriptInputError):  # r_cut_min must be < r_cut
-        validate_args(
-            "steinhardt", {"l_values": [6], "r_cut": 3.5, "r_cut_min": 4.0}
-        )
 
 
 class _FakeHandler:
@@ -255,28 +220,6 @@ def test_execution_context_selects_local_or_config(tmp_path):
     # A missing config name is resolved via ClusterConfig.from_file (-> error).
     with pytest.raises(ConfigurationError):
         execution_context("/does/not/exist.json", tmp_path / "wd")
-
-
-def test_run_annotates_atoms():
-    """The cluster-side ``run`` attaches q_l/w_l via jaxrens (self-skips)."""
-    pytest.importorskip("jaxrens")
-    import numpy as np
-    from ase import Atoms
-
-    from jaxrens_al.run.processors import steinhardt
-
-    rng = np.random.default_rng(0)
-    atoms = Atoms(
-        symbols=["Cu"] * 12 + ["O"] * 4,
-        positions=rng.uniform(0, 6, (16, 3)),
-        cell=[6, 6, 6],
-        pbc=True,
-    )
-    out = steinhardt.run([atoms], {"l_values": [4, 6], "r_cut": 3.5})
-    at = out[0]
-    for key in ("q4", "w4", "q6", "w6"):
-        assert key in at.arrays and len(at.arrays[key]) == len(at)
-    assert "q6_mean" in at.info and "w4_mean" in at.info
 
 
 def test_steps_merge_steinhardt_needs_by_cutoff():
@@ -492,6 +435,74 @@ def test_run_model_eval_annotates_atoms(tmp_path):
     finally:
         loader.load_backend = orig
     assert out[0].info["me"] == -3.5
+
+
+def test_score_atoms_min_image_cutoff_scales_energy_per_input_cell():
+    """A unit cell scored via a cutoff supercell returns per-input-cell energy.
+
+    The backend sees the (larger) supercell and returns its total energy; the
+    scaling divides it by the replication factor, so a caller dividing by the
+    *input* cell's atom count still gets the per-atom energy -- the property the
+    EOS panel relies on to compare unit-cell DFT to a supercell model score.
+    """
+    pytest.importorskip("jaxrens")
+    import numpy as np
+    from ase import Atoms
+
+    from jaxrens_al.dashboard.panels.model_eval import score_atoms
+    from jaxrens_al.supercell import min_image_supercell
+
+    a = 5.43  # 8-atom diamond-Si cell, max sphere radius 2.715 < 6.0
+    base = Atoms(
+        "Si8",
+        cell=[a, a, a],
+        pbc=True,
+        scaled_positions=[
+            [0, 0, 0],
+            [0.5, 0.5, 0],
+            [0.5, 0, 0.5],
+            [0, 0.5, 0.5],
+            [0.25, 0.25, 0.25],
+            [0.75, 0.75, 0.25],
+            [0.75, 0.25, 0.75],
+            [0.25, 0.75, 0.75],
+        ],
+    )
+    rep = len(min_image_supercell(base, 6.0)) // len(base)
+    assert rep > 1  # this cell really does need replicating
+
+    seen = {}
+
+    def _fake_backend(*a, **k):
+        class _B:
+            atomic_numbers = [14]
+            symbol_map = {"Si": 0}
+
+            def __call__(self, pos, types, cell, mn):
+                seen["n"] = len(types)  # backend sees the supercell
+                return (np.float64(-80.0),)
+
+        return _B()
+
+    import jaxrens.backends.loader as loader
+
+    orig = loader.load_backend
+    loader.load_backend = _fake_backend
+    try:
+        energies, _ = score_atoms(
+            "ignored", "mace", [base], min_image_cutoff=6.0
+        )
+    finally:
+        loader.load_backend = orig
+
+    assert seen["n"] == len(base) * rep  # scored on the supercell
+    assert energies[0] == pytest.approx(-80.0 / rep)  # scaled back per cell
+
+    # Forces + a supercell cutoff is rejected (per-atom forces can't map back).
+    with pytest.raises(ValueError, match="want_forces"):
+        score_atoms(
+            "x", "mace", [base], want_forces=True, min_image_cutoff=6.0
+        )
 
 
 # ---------------------------------------------------------------------------

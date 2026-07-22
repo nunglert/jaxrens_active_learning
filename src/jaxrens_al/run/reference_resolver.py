@@ -134,11 +134,16 @@ def _build_eos_reference(params: dict, *, evaluator, out_dir, reuse: bool):
 
     from jaxrens_al.run.reference_eval import build_eos_reference
 
+    # The EOS panel works per atom and rebuilds a cutoff-hosting supercell at
+    # model-eval time, so the DFT reference is labelled on the plain unit cells
+    # (cheaper -- fewer atoms). ``target_cutoff`` in the need is the panel's
+    # model-expansion cutoff, not a DFT supercell size; keep it out of the build
+    # (it still keys the build for reuse via the need's params).
     files = build_eos_reference(
         evaluator,
         element=params["element"],
         vol_scalings=params.get("vol_scalings"),
-        target_cutoff=params.get("target_cutoff", 4.0),
+        target_cutoff=None,
         out_dir=out_dir,
     )
     out_dir.mkdir(parents=True, exist_ok=True)

@@ -41,6 +41,10 @@ class ModelEvalNeed:
         want_forces: Also annotate per-atom model forces (parity needs them;
             the EOS energy curve does not).
         max_neighbors: Static neighbour-buffer size for the backend call.
+        min_image_cutoff: When set (Å), each frame is scored on the smallest
+            supercell hosting the cutoff (the annotated energy is scaled back to
+            the input cell's atom count). Lets the EOS panel keep a unit-cell
+            DFT reference; ``None`` (parity) scores frames as-is.
     """
 
     inputs: tuple
@@ -48,6 +52,7 @@ class ModelEvalNeed:
     backend: str
     want_forces: bool = False
     max_neighbors: int = 50
+    min_image_cutoff: float | None = None
 
     @classmethod
     def make(
@@ -58,6 +63,7 @@ class ModelEvalNeed:
         *,
         want_forces: bool = False,
         max_neighbors: int = 50,
+        min_image_cutoff: float | None = None,
     ) -> "ModelEvalNeed":
         return cls(
             tuple(str(i) for i in inputs),
@@ -65,6 +71,7 @@ class ModelEvalNeed:
             backend,
             want_forces,
             int(max_neighbors),
+            None if min_image_cutoff is None else float(min_image_cutoff),
         )
 
 
@@ -75,6 +82,7 @@ def score_atoms(
     *,
     want_forces: bool = False,
     max_neighbors: int = 50,
+    min_image_cutoff: float | None = None,
 ):
     """Score configs with a trained model through the jaxrens backend.
 
@@ -83,6 +91,16 @@ def score_atoms(
     structure. Returns ``(energies, forces)``: ``energies`` a list of total
     energies (eV); ``forces`` a list of ``(n_atoms, 3)`` arrays when
     ``want_forces`` else ``None``.
+
+    ``min_image_cutoff`` (Å): when set, each structure is first replicated into
+    the smallest supercell hosting the cutoff (jaxrens' neighbour list is
+    minimum-image, valid only when the cell hosts it). The returned energy is
+    scaled back to the *input* cell's atom count (``E_super / replication``), so
+    a caller that divides by the input ``len(atoms)`` still gets the per-atom
+    energy -- this is what lets an EOS reference stay on cheap unit cells while
+    the model is scored on a cutoff-hosting cell. Forces are per-atom already,
+    so expanding then mapping them back is ambiguous; ``min_image_cutoff`` with
+    ``want_forces`` is rejected.
 
     The single home for the backend-load + walker-eval loop shared by the EOS
     and model-parity reader panels (local re-score) and the ``model_eval``
@@ -94,6 +112,12 @@ def score_atoms(
     from jaxrens.backends.base import eval_energy_and_forces
     from jaxrens.backends.loader import load_backend
     from jaxrens.io.formats import ase_atoms_to_walker
+
+    if min_image_cutoff is not None and want_forces:
+        raise ValueError(
+            "score_atoms: min_image_cutoff is not supported with want_forces "
+            "(per-atom forces cannot be mapped back from a supercell)."
+        )
 
     if backend_type == "mace":
         backend = load_backend("mace", model_path=model_file)
@@ -110,6 +134,13 @@ def score_atoms(
     energies = []
     forces = [] if want_forces else None
     for atoms in atoms_list:
+        scale = 1
+        if min_image_cutoff is not None:
+            from jaxrens_al.supercell import min_image_supercell
+
+            n_orig = len(atoms)
+            atoms = min_image_supercell(atoms, min_image_cutoff)
+            scale = len(atoms) // n_orig
         w = ase_atoms_to_walker(atoms, symbol_map)
         if want_forces:
             res = eval_energy_and_forces(
@@ -119,7 +150,7 @@ def score_atoms(
             forces.append(np.asarray(res.forces, dtype=float))
         else:
             res = backend(w.positions, w.types, w.cell, max_neighbors)
-            energies.append(float(res[0]))
+            energies.append(float(res[0]) / scale)
     return energies, forces
 
 

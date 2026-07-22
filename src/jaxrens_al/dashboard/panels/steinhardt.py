@@ -1,8 +1,8 @@
 """Project panels: Steinhardt order parameters, computed once and reused.
 
-The (expensive, remote) Steinhardt computation lives in the run-side
-:class:`jaxrens_al.run.processors.steinhardt.SteinhardtProcessor` (a
-``remote_handler`` trajectory-processing step), run via
+The (expensive, remote) Steinhardt computation lives in
+:class:`remote_handler.processing.processors.SteinhardtProcessor` (a
+``remote_handler`` built-in trajectory-processing step), run via
 ``remote_handler.processing.RemoteTrajectoryProcessor``; it writes an annotated
 trajectory (per-atom ``q<l>`` / ``w<l>`` arrays + per-frame ``q<l>_mean`` /
 ``w<l>_mean`` in ``atoms.info``). These panels are pure **readers** of that

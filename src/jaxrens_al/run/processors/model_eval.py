@@ -1,7 +1,7 @@
 """The ``model_eval`` processor -- score configs with a trained MLIP remotely.
 
 A downstream processor for ``remote_handler``'s trajectory-processing framework
-(mirroring :mod:`jaxrens_al.run.processors.steinhardt`). On the cluster it loads a
+(mirroring its built-in ``rdf`` processor). On the cluster it loads a
 trained model through the jaxrens backend and annotates each frame with the
 model's energy (and optionally per-atom forces), so a GPU-only model (a MACE-jax
 bundle needing ``cuequivariance``) is evaluated on a GPU node instead of in the
@@ -53,6 +53,9 @@ class ModelEvalArgs(ScriptInput):
     forces_key: str = "model_forces"
     want_forces: bool = False
     max_neighbors: int = 50
+    # 0.0 -> off; >0 -> score each frame on the smallest supercell hosting this
+    # cutoff (Å), scaling the energy back to the input cell's atom count.
+    min_image_cutoff: float = 0.0
 
     def validate(self, root: Optional[Path] = None) -> None:
         if not self.model_remote:
@@ -87,6 +90,7 @@ def run(atoms_list, args, calcpath=None):
     forces_key = args.get("forces_key", "model_forces")
     want_forces = bool(args.get("want_forces", False))
     max_neighbors = int(args.get("max_neighbors", 50))
+    cutoff = float(args.get("min_image_cutoff", 0.0) or 0.0)
 
     energies, forces = score_atoms(
         model_path,
@@ -94,6 +98,7 @@ def run(atoms_list, args, calcpath=None):
         atoms_list,
         want_forces=want_forces,
         max_neighbors=max_neighbors,
+        min_image_cutoff=cutoff if cutoff > 0 else None,
     )
     for i, atoms in enumerate(atoms_list):
         atoms.info[energy_key] = energies[i]
@@ -131,6 +136,10 @@ class ModelEvalProcessor(Processor):
         energy_key / forces_key: ``info`` / ``arrays`` keys to write under.
         want_forces: Also compute per-atom forces (parity needs them).
         max_neighbors: Static neighbour-buffer size for the backend call.
+        min_image_cutoff: When set (Å), score each frame on the smallest
+            supercell hosting the cutoff, scaling the energy back to the input
+            cell's atom count (for a unit-cell EOS reference); ``None`` scores
+            as-is.
     """
 
     name = "model_eval"
@@ -144,6 +153,7 @@ class ModelEvalProcessor(Processor):
         forces_key: str = "model_forces",
         want_forces: bool = False,
         max_neighbors: int = 50,
+        min_image_cutoff: float | None = None,
     ):
         self.model = Path(model)
         self.backend = backend
@@ -151,6 +161,9 @@ class ModelEvalProcessor(Processor):
         self.forces_key = forces_key
         self.want_forces = bool(want_forces)
         self.max_neighbors = int(max_neighbors)
+        self.min_image_cutoff = (
+            0.0 if min_image_cutoff is None else float(min_image_cutoff)
+        )
         self._is_archive = self.model.is_dir()
         self._staged: Optional[Path] = None
 
@@ -180,6 +193,7 @@ class ModelEvalProcessor(Processor):
             forces_key=self.forces_key,
             want_forces=self.want_forces,
             max_neighbors=self.max_neighbors,
+            min_image_cutoff=self.min_image_cutoff,
         ).to_dict()
 
 

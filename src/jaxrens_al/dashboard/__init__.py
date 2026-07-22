@@ -100,6 +100,10 @@ class RunContext:
     # freshly trained model, an in-sample fit).
     sampling_model_file: Optional[Path] = None
     eos_backend: str = "neuralil"
+    # Cutoff (Å) the EOS panel replicates each reference frame to host before
+    # scoring the model (the model's r_cut / r_max). The DFT reference stays on
+    # unit cells; None -> the EOS spec's own default. See panels/eos.py.
+    eos_cutoff: Optional[float] = None
     # Evaluate trained models (EOS / model-parity) on the cluster instead of
     # in-process -- required for a GPU-only MACE-jax bundle.
     remote_model_eval: bool = False
@@ -206,6 +210,7 @@ def iteration_context(
     sampled_files=None,
     eos_reference=None,
     eos_backend: Optional[str] = None,
+    eos_cutoff: Optional[float] = None,
     remote_model_eval: bool = False,
     ns_prefix: str = "ns",
     ns_k_B: float = 1.0,
@@ -250,6 +255,7 @@ def iteration_context(
         model_file=model_file,
         sampling_model_file=sampling_model_file,
         eos_backend=eos_backend or detect_backend(mace_logs, model_file),
+        eos_cutoff=eos_cutoff,
         remote_model_eval=remote_model_eval,
         iteration=index,
         ns_prefix=ns_prefix,
@@ -376,6 +382,7 @@ def build_iteration_dashboard(
     sampled_files=None,
     eos_reference=None,
     eos_backend: Optional[str] = None,
+    eos_cutoff: Optional[float] = None,
     remote_model_eval: bool = False,
     ncols: int = 3,
     width_per_panel: float = 4.0,
@@ -417,6 +424,7 @@ def build_iteration_dashboard(
         sampled_files=sampled_files,
         eos_reference=eos_reference,
         eos_backend=eos_backend,
+        eos_cutoff=eos_cutoff,
         remote_model_eval=remote_model_eval,
         ns_prefix=ns_prefix,
         ns_k_B=ns_k_B,

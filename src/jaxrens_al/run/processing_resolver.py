@@ -295,14 +295,28 @@ def resolve_model_evaluations(
     # each distinct trained model is loaded and run once over its config union.
     groups: dict = {}
     for n in needs:
-        key = (n.model, n.backend, n.want_forces, n.max_neighbors)
+        key = (
+            n.model,
+            n.backend,
+            n.want_forces,
+            n.max_neighbors,
+            n.min_image_cutoff,
+        )
         groups.setdefault(key, set()).update(n.inputs)
 
     delivered: dict = {}
-    for (model, backend, want_forces, max_nb), input_set in groups.items():
+    for (
+        model,
+        backend,
+        want_forces,
+        max_nb,
+        cutoff,
+    ), input_set in groups.items():
         inputs = sorted(input_set)
         energy_key, forces_key = model_eval_keys(model)
-        tag = stable_tag("meval", (model, backend, want_forces, max_nb))
+        tag = stable_tag(
+            "meval", (model, backend, want_forces, max_nb, cutoff)
+        )
         mapping = {f: Path(front_tag(f, tag)) for f in inputs}
         todo = [
             f for f in inputs if not (reuse and _up_to_date(f, mapping[f]))
@@ -336,6 +350,7 @@ def resolve_model_evaluations(
                         forces_key=forces_key,
                         want_forces=want_forces,
                         max_neighbors=max_nb,
+                        min_image_cutoff=cutoff,
                     )
                 ],
                 tag=tag,
@@ -464,7 +479,7 @@ def _build_steinhardt(param_dicts: list):
     ``steinhardt`` name (and the ``q<l>`` output keys carry no cutoff), so it is
     rejected with a clear message rather than the cryptic pipeline error.
     """
-    from jaxrens_al.run.processors.steinhardt import SteinhardtProcessor
+    from remote_handler.processing.processors import SteinhardtProcessor
 
     groups: dict = {}
     for p in param_dicts:

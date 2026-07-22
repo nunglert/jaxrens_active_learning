@@ -30,69 +30,15 @@ from typing import Optional, Sequence
 import numpy as np
 from ase import Atoms
 
-# ---------------------------------------------------------------------------
-# Supercell search (numpy-only port of jaxnest.structure_utils.find_super).
-# ---------------------------------------------------------------------------
-
-
-def _hnf_diagonals(det_s: int) -> np.ndarray:
-    """Diagonal supercell transforms ``[a, b, c]`` with ``a*b*c == det_s``.
-
-    Returns an ``(N, 3)`` array of every ordered diagonal whose product equals
-    ``det_s`` (e.g. ``det_s=12`` yields ``[3, 2, 2]``, ``[4, 1, 3]``, ...).
-    """
-    diags = []
-    for i in range(1, det_s + 1):
-        if det_s % i:
-            continue
-        quotient = det_s // i
-        for j in range(1, quotient + 1):
-            if quotient % j == 0:
-                diags.append((i, j, quotient // j))
-    return np.array(diags, dtype=np.int64)
-
-
-def _max_cutoff(cell: np.ndarray) -> float:
-    """Largest sphere radius fitting in the cell (min face spacing / 2)."""
-    cell = np.asarray(cell, dtype=float)
-    volume = abs(np.linalg.det(cell))
-    face_areas = np.array(
-        [
-            np.linalg.norm(np.cross(a, b))
-            for a, b in zip(cell, np.roll(cell, 1, axis=0))
-        ]
-    )
-    return float(np.min(volume / face_areas) / 2.0)
-
-
-def find_supercell(
-    cell: np.ndarray, target_cutoff: float, max_det: int = 1000
-) -> np.ndarray:
-    """Smallest diagonal supercell of ``cell`` that hosts ``target_cutoff``.
-
-    Iterates over diagonal transforms by increasing determinant (number of
-    replicas) and returns the first ``[a, b, c]`` whose supercell admits a
-    sphere larger than ``target_cutoff``.
-
-    Args:
-        cell: Cell vectors as rows, shape ``(3, 3)``.
-        target_cutoff: Interaction cutoff (Å) that must fit inside the cell.
-        max_det: Cap on the replication count before giving up.
-
-    Returns:
-        The diagonal of the transform, shape ``(3,)``.
-    """
-    cell = np.asarray(cell, dtype=float)
-    for det_s in range(1, max_det + 1):
-        diagonals = _hnf_diagonals(det_s)
-        cutoffs = [_max_cutoff(cell * d[:, None]) for d in diagonals]
-        best = int(np.argmax(cutoffs))
-        if cutoffs[best] > target_cutoff:
-            return diagonals[best]
-    raise ValueError(
-        f"No supercell hosts cutoff {target_cutoff} within max_det={max_det}."
-    )
-
+# The numpy-only supercell search now lives at the package root (base-install
+# safe, shared with the dashboard's model-eval re-score); re-exported here so
+# ``jaxrens_al.run.reference_db.find_supercell`` keeps working.
+from jaxrens_al.supercell import (  # noqa: F401
+    _hnf_diagonals,
+    _max_cutoff,
+    find_supercell,
+    min_image_supercell,
+)
 
 # ---------------------------------------------------------------------------
 # Rattling: perturb each phase over (volume-scaling, rattle-strength) grid.
@@ -105,7 +51,7 @@ def rattle_atoms(
     rattle_strengths: Sequence[float] = (0.0, 0.2),
     vol_scalings: Optional[Sequence[float]] = None,
     num_realizations: int = 1,
-    target_cutoff: float = 3.0,
+    target_cutoff: Optional[float] = 3.0,
     seed: Optional[int] = None,
 ) -> list[Atoms]:
     """Expand each structure into rattled, volume-scaled supercells.
@@ -124,7 +70,10 @@ def rattle_atoms(
             legacy lattice-scan convention; defaults to ``linspace(0.9, 1.1,
             11)``.
         num_realizations: Random draws per (structure, volume, strength).
-        target_cutoff: Cutoff the supercell must host (Å).
+        target_cutoff: Cutoff the supercell must host (Å), or ``None`` to keep
+            each structure at its input (unit-cell) size -- e.g. a DFT reference
+            that needs no minimum-image cell, leaving the cutoff-hosting
+            supercell to be built later at force-field evaluation time.
         seed: Seed for the RNG (``None`` -> nondeterministic).
 
     Returns:
@@ -136,8 +85,10 @@ def rattle_atoms(
 
     out: list[Atoms] = []
     for base in structures:
-        trafo = find_supercell(base.cell[...], target_cutoff=target_cutoff)
-        supercell = base * tuple(int(t) for t in trafo)
+        if target_cutoff is None:
+            supercell = base.copy()
+        else:
+            supercell = min_image_supercell(base, target_cutoff)
 
         for vol_scaling in vol_scalings:
             zero_emitted = False
@@ -179,7 +130,7 @@ def eos_phase_scans(
     structures: Sequence[Atoms],
     *,
     vol_scalings: Optional[Sequence[float]] = None,
-    target_cutoff: float = 3.0,
+    target_cutoff: Optional[float] = 3.0,
 ) -> dict[str, list[Atoms]]:
     """Per-phase, zero-rattle volume scans for an equation-of-state reference.
 
@@ -195,7 +146,11 @@ def eos_phase_scans(
             tagged with ``info["mp_id"]`` / ``info["spacegroup"]``).
         vol_scalings: Cell-vector scale factors (volume ∝ ``s**3``); defaults
             to ``rattle_atoms``' own default grid.
-        target_cutoff: Cutoff (Å) the per-phase supercell must host.
+        target_cutoff: Cutoff (Å) the per-phase supercell must host, or ``None``
+            to keep each phase at its unit-cell size. Since the EOS panel works
+            entirely per atom, a ``None`` (unit-cell) DFT scan is directly
+            comparable to a model scored on a cutoff-hosting supercell built at
+            eval time -- so a DFT reference can skip the (costlier) supercell.
 
     Returns:
         ``{phase_label: [volume-scan configs]}``, one entry per phase (a

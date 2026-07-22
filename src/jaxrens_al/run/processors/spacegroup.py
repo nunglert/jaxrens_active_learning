@@ -1,7 +1,7 @@
 """The ``spacegroup`` processor -- assign a space group to each structure.
 
 A downstream processor for ``remote_handler``'s trajectory-processing framework
-(mirroring :mod:`jaxrens_al.run.processors.steinhardt`). On the cluster it runs
+(mirroring its built-in ``rdf`` processor). On the cluster it runs
 ``spglib`` on each frame and writes the space-group number/symbol into
 ``atoms.info`` -- the per-sample *phase label* the phase-diagram panel groups by.
 

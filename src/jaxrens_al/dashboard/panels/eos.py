@@ -230,6 +230,7 @@ class EquationOfStatePanel(ReferenceConsumer, ModelEvalConsumer, Entry):
                 self._backend_type,
                 want_forces=False,
                 max_neighbors=self._max_neighbors,
+                min_image_cutoff=self._target_cutoff,
             )
         ]
 
@@ -250,7 +251,13 @@ class EquationOfStatePanel(ReferenceConsumer, ModelEvalConsumer, Entry):
         return self._references
 
     def _evaluate(self, model_file, atoms_list) -> list:
-        """Total energies (eV) of each structure under the model (seam)."""
+        """Per-input-cell energies (eV) of each structure under the model.
+
+        With ``target_cutoff`` set, each frame is scored on a cutoff-hosting
+        supercell and the energy is scaled back to the input cell's atom count,
+        so the caller's per-atom ``/n`` (n = input-cell atoms) stays correct and
+        a unit-cell DFT reference remains comparable.
+        """
         from jaxrens_al.dashboard.panels.model_eval import score_atoms
 
         energies, _ = score_atoms(
@@ -259,6 +266,7 @@ class EquationOfStatePanel(ReferenceConsumer, ModelEvalConsumer, Entry):
             atoms_list,
             want_forces=False,
             max_neighbors=self._max_neighbors,
+            min_image_cutoff=self._target_cutoff,
         )
         return energies
 
@@ -402,10 +410,22 @@ def _build_eos(spec, ctx, c):
         if spec.remote_eval is not None
         else ctx.remote_model_eval
     )
+    # The panel replicates each (unit-cell) reference frame to a supercell
+    # hosting this cutoff before scoring the model. It drives BOTH the reference
+    # (element=) build and the explicit-file model re-score, so set it in
+    # ``common`` -- a run-global ``--eos-cutoff`` (the model's r_cut) wins
+    # unless this spec set target_cutoff explicitly.
+    target_cutoff = spec.target_cutoff
+    if (
+        ctx.eos_cutoff is not None
+        and "target_cutoff" not in spec.model_fields_set
+    ):
+        target_cutoff = ctx.eos_cutoff
     common = dict(
         model_file=ctx.model_file,
         backend_type=backend,
         remote_eval=remote_eval,
+        target_cutoff=target_cutoff,
         max_neighbors=spec.max_neighbors,
         **c,
     )
@@ -416,7 +436,6 @@ def _build_eos(spec, ctx, c):
         return EquationOfStatePanel(
             element=spec.element,
             vol_scalings=vol,
-            target_cutoff=spec.target_cutoff,
             level=spec.level,
             **common,
         )

@@ -88,7 +88,7 @@ def build_eos_reference(
     *,
     element: str,
     vol_scalings=None,
-    target_cutoff: float = 4.0,
+    target_cutoff: float | None = 4.0,
     out_dir,
     workdir=None,
     api_key: str | None = None,
@@ -109,9 +109,12 @@ def build_eos_reference(
         element: Chemical symbol to build the reference for.
         vol_scalings: Cell-vector scale factors for the scan (default: the
             ``eos_phase_scans`` grid).
-        target_cutoff: Supercell cutoff (Å) -- set to the model's ``r_cut`` so
-            the EOS panel's model re-score is exact (jaxrens uses a
-            minimum-image neighbour list valid only when the cell hosts it).
+        target_cutoff: Supercell cutoff (Å) for the DFT scan, or ``None`` to
+            label the plain unit cells (cheaper DFT -- fewer atoms). The EOS
+            panel works per atom, so a unit-cell DFT curve stays comparable to
+            a model scored on a cutoff-hosting supercell the panel builds at
+            eval time; prefer ``None`` here and let the panel's own
+            ``target_cutoff`` (the model's ``r_cut``) drive that expansion.
         out_dir: Where the per-phase ``eos_<phase>.extxyz`` files are written.
         workdir: Scratch dir for the evaluator's per-phase calc dirs (default:
             ``out_dir/work``).

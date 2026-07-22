@@ -367,6 +367,17 @@ def _build_parser() -> argparse.ArgumentParser:
         "neuralil). Set only to override.",
     )
     parser.add_argument(
+        "--eos-cutoff",
+        type=float,
+        default=None,
+        metavar="ANGSTROM",
+        help="Cutoff (Å) the EOS panel replicates each reference frame to host "
+        "before scoring the model -- set to the model's r_cut / r_max. The DFT "
+        "reference stays on unit cells (build_eos_ref.py with target_cutoff="
+        "None); this supercell is built only for the force-field re-score. "
+        "Default: the EOS panel's own (4.0).",
+    )
+    parser.add_argument(
         "--remote-model-eval",
         action="store_true",
         default=False,
@@ -515,6 +526,7 @@ def main(argv: list[str] | None = None) -> int:
             exclude=args.exclude,
             eos_reference=args.eos_reference,
             eos_backend=args.eos_backend,
+            eos_cutoff=args.eos_cutoff,
             remote_model_eval=args.remote_model_eval,
             ns_prefix=ns_prefix,
             ns_swap_axes=args.swap_pt,

@@ -27,14 +27,8 @@ from jaxrens_al.run.processors.spacegroup import (
     SpaceGroupArgs,
     SpaceGroupProcessor,
 )
-from jaxrens_al.run.processors.steinhardt import (
-    SteinhardtArgs,
-    SteinhardtProcessor,
-)
 
 __all__ = [
-    "SteinhardtArgs",
-    "SteinhardtProcessor",
     "CommitteeEvalArgs",
     "CommitteeEvalProcessor",
     "ModelEvalArgs",

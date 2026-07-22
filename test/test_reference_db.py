@@ -157,6 +157,33 @@ def test_eos_phase_scans_sanitizes_labels_for_filenames():
     assert "/" not in label and label == "P6_3_mmc"
 
 
+def test_eos_phase_scans_none_cutoff_keeps_unit_cell():
+    # target_cutoff=None -> no supercell: the DFT reference stays unit-cell,
+    # the cutoff-hosting supercell is built later at model-eval time.
+    base = _bulk_si(5.43)  # 8-atom cell, max sphere radius 2.715 < any cutoff
+    (scan,) = eos_phase_scans(
+        [base], vol_scalings=[1.0], target_cutoff=None
+    ).values()
+    assert len(scan[0]) == len(base)  # not replicated
+    # ... whereas a real cutoff would have inflated it.
+    (super_scan,) = eos_phase_scans(
+        [base], vol_scalings=[1.0], target_cutoff=6.0
+    ).values()
+    assert len(super_scan[0]) > len(base)
+
+
+def test_min_image_supercell_hosts_cutoff_and_is_noop_when_large():
+    from jaxrens_al.supercell import _max_cutoff, min_image_supercell
+
+    base = _bulk_si(5.43)
+    sup = min_image_supercell(base, target_cutoff=6.0)
+    assert len(sup) % len(base) == 0 and len(sup) > len(base)
+    assert _max_cutoff(sup.cell[...]) > 6.0
+    # Already large enough -> a plain copy, input untouched.
+    same = min_image_supercell(base, target_cutoff=2.0)
+    assert len(same) == len(base)
+
+
 # --------------------------------------------------------------------------
 # MP fetch error handling (no network needed)
 # --------------------------------------------------------------------------

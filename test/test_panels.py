@@ -611,7 +611,7 @@ def _write_annotated(src, dest, l_values, seed=0):
 
     Attaches the same per-atom ``q<l>``/``w<l>`` arrays + per-frame
     ``q<l>_mean``/``w<l>_mean`` layout the real
-    :class:`jaxrens_al.run.processors.steinhardt.SteinhardtProcessor` produces, so
+    :class:`remote_handler.processing.processors.SteinhardtProcessor` produces, so
     the pure reader panels can be exercised with no jaxrens/cluster. ``q_l`` is
     drawn from a two-cluster mixture in [0, 1]; ``w_l`` a small signed value.
     """
