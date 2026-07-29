@@ -22,9 +22,14 @@ SURROGATE_ENERGY_KEY = "ns_energy"
 ENERGY_UNCERTAINTY_KEY = "energy_uncertainty"
 FORCES_UNCERTAINTY_KEY = "forces_uncertainty"
 
-# Committee mean energy (the ensemble's own prediction), written alongside the
-# std as an informational annotation -- not consumed by the selector.
+# Committee mean prediction (the ensemble's own answer), written alongside the
+# std as an informational annotation -- not consumed by the stock selector. The
+# mean *forces* (``arrays``, ``(n_atoms, 3)``) are what a *relative* force
+# uncertainty needs: the raw ``FORCES_UNCERTAINTY_KEY`` is an absolute spread,
+# so ranking on it favours configurations whose forces are large in the first
+# place (hot, disordered, low-density ones); ``|sigma_F| / |F|`` does not.
 COMMITTEE_ENERGY_KEY = "committee_energy"
+COMMITTEE_FORCES_KEY = "committee_forces"
 
 # Space-group label the ``spacegroup`` processor writes and the phase panel
 # reads (relaxed-basin phase assignment).

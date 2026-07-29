@@ -14,8 +14,12 @@ The predictions land under the shared uncertainty keys
 ``remote_handler``'s ``UncertaintySelector`` reads -- so
 :class:`jaxrens_al.run.committee_selector.CommitteeUncertaintySelector` runs this
 job and then hands the annotated pool to the stock selector for ranking, with no
-extra wiring. The committee mean energy is also written
-(:data:`~jaxrens_al.keys.COMMITTEE_ENERGY_KEY`) as an informational annotation.
+extra wiring. The committee **mean** prediction is written alongside the std --
+energy in ``info`` (:data:`~jaxrens_al.keys.COMMITTEE_ENERGY_KEY`) and per-atom
+forces in ``arrays`` (:data:`~jaxrens_al.keys.COMMITTEE_FORCES_KEY`). The mean
+forces are not informational only: they are the denominator a *relative* force
+uncertainty ``|sigma_F| / |F|`` needs, which the absolute spread the selector
+ranks on cannot provide.
 
 Each model bundle is staged as a single ``.tar`` (a mace-jax bundle is a
 *directory*; ``shared_files`` copies plain files), untarred cluster-side before
@@ -39,6 +43,7 @@ from remote_handler.scripts.input_models import ScriptInput
 
 from jaxrens_al.keys import (
     COMMITTEE_ENERGY_KEY,
+    COMMITTEE_FORCES_KEY,
     ENERGY_UNCERTAINTY_KEY,
     FORCES_UNCERTAINTY_KEY,
 )
@@ -53,8 +58,8 @@ class CommitteeEvalArgs(ScriptInput):
     ``.tar`` of a mace-jax bundle dir when ``is_archive`` (untarred before
     loading) or a plain file (a neuralil ``.pkl``) otherwise. ``backend``
     selects the jaxrens backend. The per-config energy std lands in
-    ``energy_key`` (with the committee mean in ``mean_energy_key``) and the
-    per-atom force std in ``forces_key``.
+    ``energy_key`` and the per-atom force std in ``forces_key``, each next to
+    the committee mean (``mean_energy_key`` / ``mean_forces_key``).
     """
 
     model_remotes: list[str] = field(default_factory=list)
@@ -63,6 +68,7 @@ class CommitteeEvalArgs(ScriptInput):
     energy_key: str = ENERGY_UNCERTAINTY_KEY
     forces_key: str = FORCES_UNCERTAINTY_KEY
     mean_energy_key: str = COMMITTEE_ENERGY_KEY
+    mean_forces_key: str = COMMITTEE_FORCES_KEY
     max_neighbors: int = 50
 
     def validate(self, root: Optional[Path] = None) -> None:
@@ -94,10 +100,13 @@ def run(atoms_list, args, calcpath=None):
 
     Evaluates every committee member on the whole pool, then writes, per frame:
     ``info[energy_key]`` (std of the members' total energies, eV),
-    ``info[mean_energy_key]`` (their mean), and ``arrays[forces_key]`` (per-atom
+    ``info[mean_energy_key]`` (their mean), ``arrays[forces_key]`` (per-atom
     std of the members' forces, ``(n_atoms, 3)``) -- the keys
-    ``UncertaintySelector`` reads. The std is the population std over members;
-    ranking by it is invariant to the ddof convention.
+    ``UncertaintySelector`` reads -- and ``arrays[mean_forces_key]`` (their
+    per-atom mean, same shape), which lets a downstream ranker form a
+    *relative* force uncertainty instead of the absolute spread. The std is
+    the population std over members; ranking by it is invariant to the ddof
+    convention.
     """
     import numpy as np
 
@@ -108,6 +117,7 @@ def run(atoms_list, args, calcpath=None):
     energy_key = args["energy_key"]
     forces_key = args["forces_key"]
     mean_energy_key = args.get("mean_energy_key", COMMITTEE_ENERGY_KEY)
+    mean_forces_key = args.get("mean_forces_key", COMMITTEE_FORCES_KEY)
     max_neighbors = int(args.get("max_neighbors", 50))
 
     # One (energies, forces) pair per committee member. score_atoms loads each
@@ -132,6 +142,7 @@ def run(atoms_list, args, calcpath=None):
         atoms.info[energy_key] = float(energy_std[i])
         atoms.info[mean_energy_key] = float(energy_mean[i])
         atoms.new_array(forces_key, member_forces.std(axis=0))
+        atoms.new_array(mean_forces_key, member_forces.mean(axis=0))
     return atoms_list
 
 
@@ -170,6 +181,8 @@ class CommitteeEvalProcessor(Processor):
             per-atom force std are written under (default: the shared
             uncertainty keys ``UncertaintySelector`` reads).
         mean_energy_key: ``info`` key for the committee mean energy.
+        mean_forces_key: ``arrays`` key for the committee mean per-atom forces
+            -- the denominator of a relative force uncertainty.
         max_neighbors: Static neighbour-buffer size for each backend call.
     """
 
@@ -183,6 +196,7 @@ class CommitteeEvalProcessor(Processor):
         energy_key: str = ENERGY_UNCERTAINTY_KEY,
         forces_key: str = FORCES_UNCERTAINTY_KEY,
         mean_energy_key: str = COMMITTEE_ENERGY_KEY,
+        mean_forces_key: str = COMMITTEE_FORCES_KEY,
         max_neighbors: int = 50,
     ):
         self.models = [Path(m) for m in models]
@@ -194,6 +208,7 @@ class CommitteeEvalProcessor(Processor):
         self.energy_key = energy_key
         self.forces_key = forces_key
         self.mean_energy_key = mean_energy_key
+        self.mean_forces_key = mean_forces_key
         self.max_neighbors = int(max_neighbors)
         self._is_archive = self.models[0].is_dir()
         self._staged: Optional[list[Path]] = None
@@ -225,6 +240,7 @@ class CommitteeEvalProcessor(Processor):
             energy_key=self.energy_key,
             forces_key=self.forces_key,
             mean_energy_key=self.mean_energy_key,
+            mean_forces_key=self.mean_forces_key,
             max_neighbors=self.max_neighbors,
         ).to_dict()
 

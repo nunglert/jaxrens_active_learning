@@ -625,6 +625,7 @@ def test_run_committee_eval_writes_disagreement(monkeypatch):
             "energy_key": "energy_uncertainty",
             "forces_key": "forces_uncertainty",
             "mean_energy_key": "committee_energy",
+            "mean_forces_key": "committee_forces",
             "max_neighbors": 10,
         },
     )
@@ -634,6 +635,56 @@ def test_run_committee_eval_writes_disagreement(monkeypatch):
     assert out[0].info["committee_energy"] == pytest.approx(1.5)
     # per-atom force std between the all-0 and all-1 members is 0.5 everywhere.
     np.testing.assert_allclose(out[0].arrays["forces_uncertainty"], 0.5)
+    # ... and their mean is 0.5 too -- the denominator of |sigma_F| / |F|.
+    np.testing.assert_allclose(out[0].arrays["committee_forces"], 0.5)
+
+
+def test_run_committee_eval_defaults_the_mean_forces_key(monkeypatch):
+    """``mean_forces_key`` is optional: omitting it still writes the mean."""
+    import numpy as np
+    from ase import Atoms
+
+    from jaxrens_al.dashboard.panels import model_eval as me
+    from jaxrens_al.keys import COMMITTEE_FORCES_KEY
+    from jaxrens_al.run.processors import committee_eval
+
+    atoms = [
+        Atoms("H2", positions=[[0, 0, 0], [0, 0, 0.7]], cell=[5] * 3, pbc=True)
+    ]
+    outputs = {
+        "m0": ([1.0], [np.zeros((2, 3))]),
+        "m1": ([2.0], [np.full((2, 3), 4.0)]),
+    }
+    monkeypatch.setattr(
+        me,
+        "score_atoms",
+        lambda path, backend, al, *, want_forces, max_neighbors: outputs[path],
+    )
+
+    out = committee_eval.run(
+        atoms,
+        {
+            "backend": "mace",
+            "model_remotes": ["m0", "m1"],
+            "is_archive": False,
+            "energy_key": "energy_uncertainty",
+            "forces_key": "forces_uncertainty",
+        },
+    )
+    np.testing.assert_allclose(out[0].arrays[COMMITTEE_FORCES_KEY], 2.0)
+
+
+def test_committee_eval_processor_passes_the_mean_forces_key(tmp_path):
+    """The host-side spec forwards ``mean_forces_key`` into the remote args."""
+    from jaxrens_al.run.processors.committee_eval import CommitteeEvalProcessor
+
+    models = []
+    for i in range(2):
+        m = tmp_path / f"model_{i}.pkl"
+        m.write_text("x")
+        models.append(m)
+    proc = CommitteeEvalProcessor(models, mean_forces_key="ensemble_forces")
+    assert proc.build_args("/remote")["mean_forces_key"] == "ensemble_forces"
 
 
 # ---------------------------------------------------------------------------
