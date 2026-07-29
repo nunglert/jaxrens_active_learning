@@ -103,7 +103,18 @@ class CommitteeUncertaintySelector(Selector):
             (e.g. iteration 0, before any ensemble is trained), fall back to a
             deterministic stride of ``n_configs`` over the pool. If ``False``,
             raise instead.
-        max_neighbors: Static neighbour-buffer size for each backend call.
+        max_neighbors: Static neighbour-buffer size for each backend call
+            (the starting bucket when ``max_neighbors_list`` is given).
+        batch_size: Configs per vmapped backend call in the committee eval.
+            Unset scores one config per call, which leaves the GPU idle on
+            small cells; the fixed per-shard cost is the model load + JIT
+            compile, so pair a larger ``batch_size`` with a larger
+            ``shard_size`` to get the benefit.
+        max_neighbors_list: Neighbour-bucket ladder for the committee eval --
+            sizes the buffer from the geometry instead of pinning it at
+            ``max_neighbors``, with the ladder bounding the compile count.
+            Only used together with ``batch_size``.
+        max_neighbors_offset: Headroom above the observed neighbour count.
         shard_size / n_processors / num_parallel / loop_time: array-job knobs
             forwarded to the ``RemoteTrajectoryProcessor``.
         output_filename: Name of the written extxyz inside the stage calcdir.
@@ -126,6 +137,9 @@ class CommitteeUncertaintySelector(Selector):
         min_committee: int = 2,
         cold_start: bool = True,
         max_neighbors: int = 50,
+        batch_size: int | None = None,
+        max_neighbors_list=None,
+        max_neighbors_offset: int = 4,
         shard_size: int = 512,
         n_processors: int = 1,
         num_parallel: int = 8,
@@ -160,6 +174,13 @@ class CommitteeUncertaintySelector(Selector):
         self.min_committee = int(min_committee)
         self.cold_start = bool(cold_start)
         self.max_neighbors = int(max_neighbors)
+        self.batch_size = None if batch_size is None else int(batch_size)
+        self.max_neighbors_list = (
+            sorted(int(b) for b in max_neighbors_list)
+            if max_neighbors_list
+            else []
+        )
+        self.max_neighbors_offset = int(max_neighbors_offset)
         self.shard_size = int(shard_size)
         self.n_processors = int(n_processors)
         self.num_parallel = int(num_parallel)
@@ -311,6 +332,9 @@ class CommitteeUncertaintySelector(Selector):
                 self.energy_key,
                 self.forces_key,
                 self.max_neighbors,
+                self.batch_size,
+                tuple(self.max_neighbors_list),
+                self.max_neighbors_offset,
             ),
         )
         mapping = {p: Path(front_tag(str(p), tag)) for p in paths}
@@ -341,6 +365,9 @@ class CommitteeUncertaintySelector(Selector):
                         energy_key=self.energy_key,
                         forces_key=self.forces_key,
                         max_neighbors=self.max_neighbors,
+                        batch_size=self.batch_size,
+                        max_neighbors_list=self.max_neighbors_list,
+                        max_neighbors_offset=self.max_neighbors_offset,
                     )
                 ],
                 tag=tag,

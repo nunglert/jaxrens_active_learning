@@ -533,6 +533,187 @@ def test_score_atoms_min_image_cutoff_scales_energy_per_input_cell():
         )
 
 
+def _stub_backend(needed: int = 28):
+    """A vmap-able, differentiable stand-in for a real jaxrens backend.
+
+    Reports ``needed`` neighbours per atom regardless of geometry and flags
+    ``overflow`` whenever the requested bucket cannot hold them, which is what
+    drives the ladder sizing and the escalate-and-retry path.
+    """
+    import jax.numpy as jnp
+    from jaxrens.backends.base import BackendResult
+
+    class _B:
+        atomic_numbers = [14]
+        symbol_map = {"Si": 0}
+        calls: list[int] = []
+
+        def __call__(self, pos, types, cell, mn, ensemble_params=None):
+            _B.calls.append(int(mn))
+            return BackendResult(
+                energy=jnp.sum(pos**2),
+                max_neighbor_count=jnp.asarray(needed),
+                overflow=jnp.asarray(needed > mn),
+            )
+
+        def max_neighbors_for(self, pos, cell):
+            return jnp.asarray(needed)
+
+    return _B
+
+
+def _si_cells(n_frames, n_atoms=4, seed=0):
+    import numpy as np
+    from ase import Atoms
+
+    rng = np.random.default_rng(seed)
+    return [
+        Atoms(
+            f"Si{n_atoms}",
+            positions=rng.random((n_atoms, 3)) * 4.0,
+            cell=[5.43] * 3,
+            pbc=True,
+        )
+        for _ in range(n_frames)
+    ]
+
+
+@pytest.mark.parametrize("want_forces", [False, True])
+def test_score_atoms_batched_matches_the_unbatched_loop(
+    monkeypatch, want_forces
+):
+    """vmapped batching is a pure speed change: same numbers, same order."""
+    pytest.importorskip("jaxrens")
+    import jaxrens.backends.loader as loader
+    import numpy as np
+
+    from jaxrens_al.dashboard.panels.model_eval import score_atoms
+
+    B = _stub_backend()
+    monkeypatch.setattr(loader, "load_backend", lambda *a, **k: B())
+    frames = _si_cells(7)
+
+    ref_e, ref_f = score_atoms(
+        "m", "mace", frames, want_forces=want_forces, max_neighbors=50
+    )
+    bat_e, bat_f = score_atoms(
+        "m",
+        "mace",
+        frames,
+        want_forces=want_forces,
+        max_neighbors=50,
+        batch_size=3,
+    )
+    np.testing.assert_allclose(bat_e, ref_e, rtol=1e-6)
+    assert len(bat_e) == len(frames)  # padding of the ragged tail is dropped
+    if want_forces:
+        for a, b in zip(ref_f, bat_f):
+            np.testing.assert_allclose(b, a, rtol=1e-6)
+
+
+def test_score_atoms_batches_group_by_atom_count(monkeypatch):
+    """Mixed cell sizes still work -- they cannot stack into one batch."""
+    pytest.importorskip("jaxrens")
+    import jaxrens.backends.loader as loader
+    import numpy as np
+
+    from jaxrens_al.dashboard.panels.model_eval import score_atoms
+
+    B = _stub_backend()
+    monkeypatch.setattr(loader, "load_backend", lambda *a, **k: B())
+    frames = _si_cells(3, n_atoms=4) + _si_cells(2, n_atoms=6, seed=1)
+
+    ref, _ = score_atoms("m", "mace", frames, max_neighbors=50)
+    bat, _ = score_atoms("m", "mace", frames, max_neighbors=50, batch_size=4)
+    np.testing.assert_allclose(bat, ref, rtol=1e-6)
+
+
+def test_score_atoms_sizes_the_neighbour_bucket_from_the_ladder(monkeypatch):
+    """With a ladder the bucket is chosen from geometry, not pinned at 50."""
+    pytest.importorskip("jaxrens")
+
+    import jaxrens.backends.loader as loader
+
+    from jaxrens_al.dashboard.panels.model_eval import score_atoms
+
+    B = _stub_backend(needed=28)
+    B.calls.clear()
+    monkeypatch.setattr(loader, "load_backend", lambda *a, **k: B())
+
+    score_atoms(
+        "m",
+        "mace",
+        _si_cells(4),
+        max_neighbors=50,
+        batch_size=2,
+        max_neighbors_list=[20, 30, 40, 50, 60],
+        max_neighbors_offset=4,
+    )
+    # 28 + 4 = 32 -> the smallest ladder entry that fits is 40, not the
+    # fixed 50 the call was given.
+    assert set(B.calls) == {40}
+
+
+def test_score_atoms_grows_the_bucket_on_overflow(monkeypatch):
+    """An overflow report escalates to the next ladder entry and retries."""
+    pytest.importorskip("jaxrens")
+
+    # Geometry sizing under-reports (says 8), the forward pass really needs 44.
+    import jax.numpy as jnp
+    import jaxrens.backends.loader as loader
+    from jaxrens.backends.base import BackendResult
+
+    from jaxrens_al.dashboard.panels.model_eval import score_atoms
+
+    class _B:
+        atomic_numbers = [14]
+        symbol_map = {"Si": 0}
+        calls: list[int] = []
+
+        def __call__(self, pos, types, cell, mn, ensemble_params=None):
+            _B.calls.append(int(mn))
+            return BackendResult(
+                energy=jnp.sum(pos**2),
+                max_neighbor_count=jnp.asarray(44),
+                overflow=jnp.asarray(44 > mn),
+            )
+
+        def max_neighbors_for(self, pos, cell):
+            return jnp.asarray(8)
+
+    monkeypatch.setattr(loader, "load_backend", lambda *a, **k: _B())
+    score_atoms(
+        "m",
+        "mace",
+        _si_cells(2),
+        batch_size=2,
+        max_neighbors_list=[20, 30, 40, 50, 60],
+        max_neighbors_offset=4,
+    )
+    # 8 + 4 -> 20, overflows; 44 + 4 = 48 -> grows straight to 50.
+    assert _B.calls == [20, 50]
+
+
+def test_score_atoms_ladder_exhaustion_is_an_error(monkeypatch):
+    """A ladder that cannot hold the observed need fails loudly."""
+    pytest.importorskip("jaxrens")
+
+    import jaxrens.backends.loader as loader
+
+    from jaxrens_al.dashboard.panels.model_eval import score_atoms
+
+    B = _stub_backend(needed=100)
+    monkeypatch.setattr(loader, "load_backend", lambda *a, **k: B())
+    with pytest.raises(RuntimeError, match="ladder exhausted"):
+        score_atoms(
+            "m",
+            "mace",
+            _si_cells(2),
+            batch_size=2,
+            max_neighbors_list=[20, 30],
+        )
+
+
 # ---------------------------------------------------------------------------
 # committee_eval processor (committee disagreement of N MLIPs).
 # ---------------------------------------------------------------------------
@@ -613,7 +794,7 @@ def test_run_committee_eval_writes_disagreement(monkeypatch):
     monkeypatch.setattr(
         me,
         "score_atoms",
-        lambda path, backend, al, *, want_forces, max_neighbors: outputs[path],
+        lambda path, backend, al, **kw: outputs[path],
     )
 
     out = committee_eval.run(
@@ -658,7 +839,7 @@ def test_run_committee_eval_defaults_the_mean_forces_key(monkeypatch):
     monkeypatch.setattr(
         me,
         "score_atoms",
-        lambda path, backend, al, *, want_forces, max_neighbors: outputs[path],
+        lambda path, backend, al, **kw: outputs[path],
     )
 
     out = committee_eval.run(
@@ -1088,3 +1269,30 @@ def test_resolve_phase_labeling_one_job_per_model(monkeypatch, tmp_path):
     p2 = _Panel("bundleA")
     resolve_phase_labeling([p2], **ctx)
     assert len(_FakePhaseHandler.calls) == 1
+
+
+def test_committee_eval_forwards_the_batching_knobs(tmp_path):
+    """batch_size / ladder reach the remote args and are validated."""
+    from jaxrens_al.run.processors.committee_eval import (
+        CommitteeEvalArgs,
+        CommitteeEvalProcessor,
+    )
+
+    models = []
+    for i in range(2):
+        m = tmp_path / f"m{i}.pkl"
+        m.write_text("x")
+        models.append(m)
+    proc = CommitteeEvalProcessor(
+        models, batch_size=64, max_neighbors_list=[30, 40, 50]
+    )
+    args = proc.build_args("/remote")
+    assert args["batch_size"] == 64
+    assert args["max_neighbors_list"] == [30, 40, 50]
+
+    with pytest.raises(ScriptInputError, match="batch_size"):
+        CommitteeEvalArgs(model_remotes=["a", "b"], batch_size=0).validate()
+    with pytest.raises(ScriptInputError, match="ascending"):
+        CommitteeEvalArgs(
+            model_remotes=["a", "b"], max_neighbors_list=[50, 30]
+        ).validate()

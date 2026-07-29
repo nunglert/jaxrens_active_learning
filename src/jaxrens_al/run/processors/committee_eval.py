@@ -60,6 +60,10 @@ class CommitteeEvalArgs(ScriptInput):
     selects the jaxrens backend. The per-config energy std lands in
     ``energy_key`` and the per-atom force std in ``forces_key``, each next to
     the committee mean (``mean_energy_key`` / ``mean_forces_key``).
+    ``batch_size`` / ``max_neighbors_list`` / ``max_neighbors_offset`` are
+    forwarded to ``score_atoms`` (vmapped batching + the neighbour-bucket
+    ladder); unset keeps the one-config-per-call path at a fixed
+    ``max_neighbors``.
     """
 
     model_remotes: list[str] = field(default_factory=list)
@@ -70,6 +74,9 @@ class CommitteeEvalArgs(ScriptInput):
     mean_energy_key: str = COMMITTEE_ENERGY_KEY
     mean_forces_key: str = COMMITTEE_FORCES_KEY
     max_neighbors: int = 50
+    batch_size: Optional[int] = None
+    max_neighbors_list: list = field(default_factory=list)
+    max_neighbors_offset: int = 4
 
     def validate(self, root: Optional[Path] = None) -> None:
         if len(self.model_remotes) < 2:
@@ -91,6 +98,21 @@ class CommitteeEvalArgs(ScriptInput):
         if not isinstance(self.max_neighbors, int) or self.max_neighbors <= 0:
             raise ScriptInputError(
                 "committee_eval: 'max_neighbors' must be a positive int"
+            )
+        if self.batch_size is not None and (
+            not isinstance(self.batch_size, int) or self.batch_size <= 0
+        ):
+            raise ScriptInputError(
+                "committee_eval: 'batch_size' must be a positive int or null"
+            )
+        ladder = list(self.max_neighbors_list)
+        if ladder and (
+            not all(isinstance(b, int) and b > 0 for b in ladder)
+            or ladder != sorted(ladder)
+        ):
+            raise ScriptInputError(
+                "committee_eval: 'max_neighbors_list' must be positive ints "
+                "in ascending order"
             )
 
 
@@ -119,6 +141,9 @@ def run(atoms_list, args, calcpath=None):
     mean_energy_key = args.get("mean_energy_key", COMMITTEE_ENERGY_KEY)
     mean_forces_key = args.get("mean_forces_key", COMMITTEE_FORCES_KEY)
     max_neighbors = int(args.get("max_neighbors", 50))
+    batch_size = args.get("batch_size")
+    ladder = list(args.get("max_neighbors_list") or [])
+    offset = int(args.get("max_neighbors_offset", 4))
 
     # One (energies, forces) pair per committee member. score_atoms loads each
     # model once and loops the pool internally -- N loads, not N*len(pool).
@@ -129,6 +154,9 @@ def run(atoms_list, args, calcpath=None):
             atoms_list,
             want_forces=True,
             max_neighbors=max_neighbors,
+            batch_size=batch_size,
+            max_neighbors_list=ladder or None,
+            max_neighbors_offset=offset,
         )
         for path in model_paths
     ]
@@ -183,7 +211,16 @@ class CommitteeEvalProcessor(Processor):
         mean_energy_key: ``info`` key for the committee mean energy.
         mean_forces_key: ``arrays`` key for the committee mean per-atom forces
             -- the denominator of a relative force uncertainty.
-        max_neighbors: Static neighbour-buffer size for each backend call.
+        max_neighbors: Static neighbour-buffer size for each backend call
+            (the starting bucket when ``max_neighbors_list`` is given).
+        batch_size: Configs per vmapped backend call. Unset evaluates one at a
+            time, which leaves a GPU idle on small cells.
+        max_neighbors_list: Neighbour-bucket ladder. Set it and the buffer is
+            sized per batch from the geometry instead of pinned at
+            ``max_neighbors``; the ladder bounds how many XLA compilations the
+            job pays for. Only used together with ``batch_size``.
+        max_neighbors_offset: Headroom above the observed neighbour count when
+            picking a bucket.
     """
 
     name = "committee_eval"
@@ -198,6 +235,9 @@ class CommitteeEvalProcessor(Processor):
         mean_energy_key: str = COMMITTEE_ENERGY_KEY,
         mean_forces_key: str = COMMITTEE_FORCES_KEY,
         max_neighbors: int = 50,
+        batch_size: int | None = None,
+        max_neighbors_list=None,
+        max_neighbors_offset: int = 4,
     ):
         self.models = [Path(m) for m in models]
         if len(self.models) < 2:
@@ -210,6 +250,13 @@ class CommitteeEvalProcessor(Processor):
         self.mean_energy_key = mean_energy_key
         self.mean_forces_key = mean_forces_key
         self.max_neighbors = int(max_neighbors)
+        self.batch_size = None if batch_size is None else int(batch_size)
+        self.max_neighbors_list = (
+            sorted(int(b) for b in max_neighbors_list)
+            if max_neighbors_list
+            else []
+        )
+        self.max_neighbors_offset = int(max_neighbors_offset)
         self._is_archive = self.models[0].is_dir()
         self._staged: Optional[list[Path]] = None
 
@@ -242,6 +289,9 @@ class CommitteeEvalProcessor(Processor):
             mean_energy_key=self.mean_energy_key,
             mean_forces_key=self.mean_forces_key,
             max_neighbors=self.max_neighbors,
+            batch_size=self.batch_size,
+            max_neighbors_list=self.max_neighbors_list,
+            max_neighbors_offset=self.max_neighbors_offset,
         ).to_dict()
 
 
