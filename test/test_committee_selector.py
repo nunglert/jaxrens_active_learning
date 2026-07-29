@@ -266,3 +266,117 @@ def test_schedule_kwarg_overrides_n_configs(monkeypatch, tmp_path):
 
     selected = ase.io.read(str(sel.get_selected_configs()), index=":")
     assert len(selected) == 3
+
+
+# ---------------------------------------------------------------------------
+# Relative force uncertainty: sum_ik s_i^(k) / sum_ik |fbar_i^(k)|.
+# ---------------------------------------------------------------------------
+def _annotated(sigma, fbar, **info):
+    """A frame carrying a committee force std and mean."""
+    import numpy as np
+    from ase import Atoms
+
+    n = len(sigma)
+    at = Atoms(f"Sn{n}", positions=np.zeros((n, 3)), cell=[9] * 3, pbc=True)
+    at.new_array("forces_uncertainty", np.asarray(sigma, dtype=float))
+    at.new_array("committee_forces", np.asarray(fbar, dtype=float))
+    at.info.update(info)
+    return at
+
+
+def test_relative_ranker_scores_the_quoted_formula():
+    """score == sum of the stds / sum of |mean force| components."""
+    import numpy as np
+
+    from jaxrens_al.run.committee_selector import (
+        RelativeForceUncertaintyRanker,
+    )
+
+    sigma = [[0.1, 0.2, 0.3], [0.4, 0.0, 0.0]]  # sum = 1.0
+    fbar = [[1.0, -2.0, 0.0], [0.0, 0.0, 3.0]]  # sum |.| = 6.0
+    r = RelativeForceUncertaintyRanker(n_configs=1)
+    got = r.score(_annotated(sigma, fbar))
+    assert got == pytest.approx(1.0 / (6.0 + r.EPS), rel=1e-9)
+
+
+def test_relative_ranker_is_insensitive_to_overall_force_scale():
+    """Scaling a structure's forces up must not make it look uncertain.
+
+    This is the whole point: the absolute metric ranks a violent cell top just
+    for being violent, the relative one does not.
+    """
+    from jaxrens_al.run.committee_selector import (
+        RelativeForceUncertaintyRanker,
+    )
+
+    calm = _annotated([[0.10, 0.0, 0.0]], [[1.0, 0.0, 0.0]])
+    violent = _annotated([[1.00, 0.0, 0.0]], [[10.0, 0.0, 0.0]])  # 10x both
+    r = RelativeForceUncertaintyRanker(n_configs=1)
+    r.EPS = 0.0
+    assert r.score(calm) == pytest.approx(r.score(violent), rel=1e-9)
+
+    # ... whereas the absolute magnitude ranks `violent` an order up.
+    import numpy as np
+
+    assert np.abs(violent.arrays["forces_uncertainty"]).sum() == pytest.approx(
+        10 * np.abs(calm.arrays["forces_uncertainty"]).sum()
+    )
+
+
+def test_relative_ranker_picks_the_highest_ratio():
+    from jaxrens_al.run.committee_selector import (
+        RelativeForceUncertaintyRanker,
+    )
+
+    low = _annotated([[0.1, 0, 0]], [[10.0, 0, 0]], tag="low")  # 0.01
+    high = _annotated([[0.5, 0, 0]], [[1.0, 0, 0]], tag="high")  # 0.5
+    mid = _annotated([[0.2, 0, 0]], [[2.0, 0, 0]], tag="mid")  # 0.1
+    ranker = RelativeForceUncertaintyRanker(n_configs=2)
+    got = ranker.select([[low, high, mid]])
+    assert [a.info["tag"] for a in got] == ["high", "mid"]
+    # The raw ratio is kept as the score, not a min-max rescaling.
+    assert got[0].info["uncertainty_score"] == pytest.approx(0.5, rel=1e-2)
+
+
+def test_relative_ranker_needs_the_committee_mean_forces():
+    """A pool annotated before COMMITTEE_FORCES_KEY existed fails loudly."""
+    import numpy as np
+    from ase import Atoms
+
+    from jaxrens_al.run.committee_selector import (
+        RelativeForceUncertaintyRanker,
+    )
+
+    at = Atoms("Sn", positions=np.zeros((1, 3)), cell=[9] * 3, pbc=True)
+    at.new_array("forces_uncertainty", np.ones((1, 3)))
+    with pytest.raises(KeyError, match="committee_forces"):
+        RelativeForceUncertaintyRanker(n_configs=1).score(at)
+
+
+def test_selector_force_metric_switches_the_ranker(tmp_path):
+    from jaxrens_al.run.committee_selector import (
+        CommitteeUncertaintySelector,
+        RelativeForceUncertaintyRanker,
+    )
+
+    models = []
+    for i in range(2):
+        m = tmp_path / f"m{i}.pkl"
+        m.write_text("x")
+        models.append(m)
+
+    default = CommitteeUncertaintySelector(models=models, n_configs=5)
+    assert not isinstance(default._ranker, RelativeForceUncertaintyRanker)
+
+    rel = CommitteeUncertaintySelector(
+        models=models, n_configs=5, force_metric="relative"
+    )
+    assert isinstance(rel._ranker, RelativeForceUncertaintyRanker)
+    # A schedule ramping n_configs must still reach the swapped-in ranker.
+    rel._ranker.n_configs = 7
+    assert rel._ranker.n_configs == 7
+
+    with pytest.raises(ValueError, match="force_metric"):
+        CommitteeUncertaintySelector(
+            models=models, n_configs=5, force_metric="nonsense"
+        )

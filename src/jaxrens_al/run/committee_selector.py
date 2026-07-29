@@ -56,9 +56,114 @@ from remote_handler.workflows.selectors import (
     UncertaintySelector,
 )
 
-from jaxrens_al.keys import ENERGY_UNCERTAINTY_KEY, FORCES_UNCERTAINTY_KEY
+from jaxrens_al.keys import (
+    COMMITTEE_FORCES_KEY,
+    ENERGY_UNCERTAINTY_KEY,
+    FORCES_UNCERTAINTY_KEY,
+)
 
 logger = logging.getLogger(__name__)
+
+
+class RelativeForceUncertaintyRanker:
+    """Rank a pool by *relative* committee force disagreement.
+
+    The stock ``UncertaintySelector`` ranks on the mean per-atom magnitude of
+    the force std. That is an **absolute** quantity, so it is dominated by
+    configurations whose forces are large to begin with -- expanded and
+    disordered, high-enthalpy cells. On run13's pool it sent ~90 % of the DFT
+    budget to near-gas configurations (median 58 A^3/atom against a pool median
+    of 26); see ``run13/analysis/pca_map``.
+
+    This ranks on
+
+        sigma_F = sum_ik s_i^(k) / sum_ik |fbar_i^(k)|
+
+    where ``s_i^(k)`` is the committee std of force component ``k`` of atom
+    ``i`` (exactly what ``forces_key`` stores) and ``fbar_i^(k)`` the committee
+    mean (``mean_forces_key``). Dividing by the *total force magnitude* asks
+    "how uncertain is this force relative to how large it is", which does not
+    reward a configuration merely for being violent.
+
+    The denominator uses **magnitudes**. Summing the signed components instead
+    gives the net force, which vanishes identically by Newton's third law
+    (measured at ~1e-16 against ~1e1 for the absolute sum), so the literal
+    signed form is degenerate, not merely noisy.
+
+    Duck-types the part of ``UncertaintySelector`` this module uses: a mutable
+    ``n_configs`` and ``select(grouped) -> list[Atoms]``.
+    """
+
+    #: eV/A floor on the denominator, so a force-free cell cannot divide by 0.
+    EPS = 1e-3
+
+    def __init__(
+        self,
+        n_configs: int | None = None,
+        *,
+        forces_key: str = FORCES_UNCERTAINTY_KEY,
+        mean_forces_key: str = COMMITTEE_FORCES_KEY,
+        threshold: float | None = None,
+    ):
+        if n_configs is None and threshold is None:
+            raise ValueError(
+                "RelativeForceUncertaintyRanker needs n_configs or threshold."
+            )
+        self.n_configs = n_configs
+        self.forces_key = forces_key
+        self.mean_forces_key = mean_forces_key
+        self.threshold = threshold
+
+    def score(self, atoms) -> float:
+        import numpy as np
+
+        for key in (self.forces_key, self.mean_forces_key):
+            if key not in atoms.arrays:
+                raise KeyError(
+                    f"RelativeForceUncertaintyRanker: '{key}' not in "
+                    f"atoms.arrays (have: {list(atoms.arrays)}). The relative "
+                    "metric needs BOTH the committee force std and its mean; "
+                    "the mean is written by a jaxrens_al new enough to have "
+                    "COMMITTEE_FORCES_KEY -- re-annotate with an updated "
+                    "cluster-side install."
+                )
+        s = np.asarray(atoms.arrays[self.forces_key], dtype=float)
+        fbar = np.asarray(atoms.arrays[self.mean_forces_key], dtype=float)
+        return float(s.sum() / (np.abs(fbar).sum() + self.EPS))
+
+    def select(self, configs, reference=None) -> list:
+        import numpy as np
+
+        flat = (
+            [at for group in configs for at in group]
+            if (configs and isinstance(configs[0], list))
+            else list(configs)
+        )
+        if not flat:
+            logger.warning("RelativeForceUncertaintyRanker: empty pool")
+            return []
+
+        scores = np.array([self.score(at) for at in flat])
+        order = np.argsort(scores)[::-1]
+        if self.threshold is not None:
+            order = order[scores[order] >= self.threshold]
+        if self.n_configs is not None:
+            order = order[: min(self.n_configs, len(order))]
+
+        selected = [flat[i] for i in order]
+        for at, i in zip(selected, order):
+            # The raw ratio, not a min-max rescaling: it is a physical
+            # quantity (fractional force error) and worth keeping readable.
+            at.info["uncertainty_score"] = float(scores[i])
+        logger.info(
+            "RelativeForceUncertaintyRanker: selected %d of %d "
+            "(score range %.4g - %.4g)",
+            len(selected),
+            len(flat),
+            scores.min(),
+            scores.max(),
+        )
+        return selected
 
 
 class CommitteeUncertaintySelector(Selector):
@@ -90,6 +195,19 @@ class CommitteeUncertaintySelector(Selector):
         energy_weight / forces_weight: Relative weights of the (normalized)
             energy- and force-uncertainty terms in the combined ranking score
             (default: forces only, matching the in-NS committee convention).
+            Only used by ``force_metric="absolute"``.
+        force_metric: How force disagreement is turned into a ranking score.
+            ``"absolute"`` (default, unchanged behaviour) is the stock
+            ``UncertaintySelector``: the mean per-atom magnitude of the force
+            std, optionally combined with the energy term. ``"relative"`` is
+            :class:`RelativeForceUncertaintyRanker` --
+            ``sum_ik s_i^(k) / sum_ik |fbar_i^(k)|`` -- which normalises by the
+            structure's own force magnitude and so does not systematically
+            spend the DFT budget on expanded, high-force cells (the bias
+            documented in ``run13/analysis/pca_map``). It needs the committee
+            *mean* forces, so the pool must be annotated by a jaxrens_al new
+            enough to write ``COMMITTEE_FORCES_KEY``; ``energy_weight`` /
+            ``forces_weight`` do not apply.
         threshold: Optional minimum score for selection (see
             ``UncertaintySelector``); combinable with ``n_configs``.
         pre_stride: If set, deterministically stride the pool down to at most
@@ -132,6 +250,7 @@ class CommitteeUncertaintySelector(Selector):
         backend: str = "mace",
         energy_weight: float = 0.0,
         forces_weight: float = 1.0,
+        force_metric: str = "absolute",
         threshold: float | None = None,
         pre_stride: int | None = None,
         min_committee: int = 2,
@@ -171,6 +290,13 @@ class CommitteeUncertaintySelector(Selector):
         self.backend = backend
         self.energy_key = ENERGY_UNCERTAINTY_KEY
         self.forces_key = FORCES_UNCERTAINTY_KEY
+        self.mean_forces_key = COMMITTEE_FORCES_KEY
+        if force_metric not in ("absolute", "relative"):
+            raise ValueError(
+                "force_metric must be 'absolute' or 'relative'; got "
+                f"{force_metric!r}"
+            )
+        self.force_metric = force_metric
         self.min_committee = int(min_committee)
         self.cold_start = bool(cold_start)
         self.max_neighbors = int(max_neighbors)
@@ -187,15 +313,25 @@ class CommitteeUncertaintySelector(Selector):
         self.loop_time = float(loop_time)
         self.output_filename = output_filename
         self.reuse = bool(reuse)
-        # The stock host-side ranker reads exactly the keys committee_eval writes.
-        self._ranker = UncertaintySelector(
-            n_configs=n_configs,
-            energy_key=self.energy_key,
-            forces_key=self.forces_key,
-            energy_weight=energy_weight,
-            forces_weight=forces_weight,
-            threshold=threshold,
-        )
+        # Both rankers read exactly the keys committee_eval writes, and both
+        # expose a mutable n_configs + select(grouped) so a schedule can ramp
+        # the count and `update` can call either one identically.
+        if self.force_metric == "relative":
+            self._ranker = RelativeForceUncertaintyRanker(
+                n_configs=n_configs,
+                forces_key=self.forces_key,
+                mean_forces_key=self.mean_forces_key,
+                threshold=threshold,
+            )
+        else:
+            self._ranker = UncertaintySelector(
+                n_configs=n_configs,
+                energy_key=self.energy_key,
+                forces_key=self.forces_key,
+                energy_weight=energy_weight,
+                forces_weight=forces_weight,
+                threshold=threshold,
+            )
         self._output: Path | None = None
 
     def update(self, calcdir, selector_input, **kwargs) -> None:
@@ -331,6 +467,7 @@ class CommitteeUncertaintySelector(Selector):
                 self.backend,
                 self.energy_key,
                 self.forces_key,
+                self.mean_forces_key,
                 self.max_neighbors,
                 self.batch_size,
                 tuple(self.max_neighbors_list),
@@ -364,6 +501,7 @@ class CommitteeUncertaintySelector(Selector):
                         backend=self.backend,
                         energy_key=self.energy_key,
                         forces_key=self.forces_key,
+                        mean_forces_key=self.mean_forces_key,
                         max_neighbors=self.max_neighbors,
                         batch_size=self.batch_size,
                         max_neighbors_list=self.max_neighbors_list,
