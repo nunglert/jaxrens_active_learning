@@ -59,7 +59,13 @@ _DEFAULT_ORDER = [
     # run). It self-gates on a recorded proposing model, so it is absent on the
     # summary page and iteration 0 (whose foundation seed is not recorded).
     "sampling_parity",
-    "sampled_ns_energy",
+    # ``sampled_ns_energy`` (the box-per-iteration ns_energy spread) is NOT a
+    # default: on any single-iteration page it degenerates to one box, which
+    # carries no information the other panels don't. Still registered -- re-add
+    # it with ``add: [{type: sampled_ns_energy}]``.
+    # Which of the sampler's configs the selector stage kept (staged runs
+    # only -- the builder returns None without a selector output).
+    "selection_map",
     "quests_pca",
     "resampled_grid",
     "acceptance_rates",
@@ -97,7 +103,6 @@ def ns_default_specs(*, per_run: bool = False) -> list:
         make_spec("step_sizes", per_run=per_run),
         make_spec("adaptation_acceptance", per_run=per_run),
         make_spec("re_swap_rates"),
-        make_spec("sampled_ns_energy"),
     ]
 
 

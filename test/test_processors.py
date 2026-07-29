@@ -271,6 +271,34 @@ def test_steps_reject_multiple_steinhardt_cutoffs():
         _steps_from_needs(needs)
 
 
+def test_steps_build_one_rdf_processor_and_reject_mixed_grids():
+    """RDF panels differing only in their *reduction* share one need; two
+    different (cutoff, nbins) grids can't be annotated in one pass."""
+    from jaxrens_al.dashboard.panels.processing import ProcessingNeed
+    from jaxrens_al.run.processing_resolver import _steps_from_needs
+
+    same = [
+        ProcessingNeed.make(
+            ("t.extxyz",), "rdf", {"cutoff": 6.0, "nbins": 120}
+        ),
+        ProcessingNeed.make(
+            ("u.extxyz",), "rdf", {"cutoff": 6.0, "nbins": 120}
+        ),
+    ]
+    steps = _steps_from_needs(same)
+    assert len(steps) == 1
+    assert steps[0].name == "rdf"
+    assert (steps[0].cutoff, steps[0].nbins) == (6.0, 120)
+
+    mixed = same + [
+        ProcessingNeed.make(
+            ("t.extxyz",), "rdf", {"cutoff": 5.0, "nbins": 120}
+        ),
+    ]
+    with pytest.raises(ValueError, match="share one"):
+        _steps_from_needs(mixed)
+
+
 # ---------------------------------------------------------------------------
 # model_eval processor + resolver (remote MLIP evaluation for EOS / parity).
 # ---------------------------------------------------------------------------

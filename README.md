@@ -42,7 +42,8 @@ interface for `jaxrens` — it does *not* use `remote_handler`'s own deprecated
   belong in `alviz`. Current panels:
   - `DatasetGrowthPanel` — training-set size per iteration (`AL_progress`).
   - `NSSampledEnergyPanel` — per-iteration `ns_energy` distribution of the
-    jaxrens-sampled configs.
+    jaxrens-sampled configs. **Opt-in** (`add: [{type: sampled_ns_energy}]`):
+    only the cross-iteration view is informative, so it is not a default.
   - `QuestsPCAPanel` — QUESTS descriptor PCA map of one iteration's NS
     candidates, highlighting the resampled ones (`quests_pca.json`).
   - `ResampledGridPanel` — the resampled configs scattered on a (NS
@@ -175,7 +176,7 @@ for that iteration, so early iterations get a smaller page.
 jaxrens-al dashboard path/to/calchome              # -> calchome/dashboard.pdf (+ plots/Iteration*.pdf)
 jaxrens-al dashboard path/to/calchome -o out.pdf --force
 jaxrens-al dashboard path/to/calchome --dry-run    # report per-iteration panel layout only
-jaxrens-al dashboard path/to/calchome --only sampled_ns_energy neuralil_parity   # subset of panels
+jaxrens-al dashboard path/to/calchome --only sampled_energy_volume neuralil_parity   # subset of panels
 jaxrens-al dashboard path/to/calchome --exclude dataset_growth                   # all but these
 ```
 

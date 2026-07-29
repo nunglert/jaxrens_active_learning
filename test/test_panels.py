@@ -1040,3 +1040,281 @@ def test_phase_diagram_panel_errors_without_labels(tmp_path):
     panel._load_monitors = lambda d: [_FakeMonitor(2)]
     with pytest.raises(RuntimeError, match="run resolve_phase_labeling"):
         panel.compute_data({})
+
+
+# ---------------------------------------------------------------------------
+# NS expectation helpers + the <g(r)>(T) RDF panel.
+# ---------------------------------------------------------------------------
+def _write_rdf_trajs(dirpath, prefix, rdfs_by_run, r, iters_by_run=None):
+    """Write per-replica trajectories annotated like the ``rdf`` processor
+    (``r_rdf`` + ``rdf_total`` per frame), the layout the panel discovers."""
+    import ase.io
+    from ase import Atoms
+
+    dirpath.mkdir(parents=True, exist_ok=True)
+    for rid, curves in rdfs_by_run.items():
+        its = iters_by_run.get(rid) if iters_by_run else None
+        frames = []
+        for k, g in enumerate(curves):
+            at = Atoms("Cu", positions=[[0, 0, 0]], cell=[5, 5, 5], pbc=True)
+            at.info["r_rdf"] = np.asarray(r, dtype=float)
+            at.info["rdf_total"] = np.asarray(g, dtype=float)
+            if its is not None:
+                at.info["iter"] = int(its[k])
+            frames.append(at)
+        ase.io.write(
+            str(dirpath / f"{prefix}.run{rid:02d}.traj.extxyz"), frames
+        )
+    return dirpath
+
+
+def test_reweight_vector_matches_scalar_calls():
+    """The vector path applies the same weights as per-component calls."""
+    from jaxrens_al.dashboard.panels.ns_expectation import reweight
+
+    obs = np.array([[1.0, 10.0], [2.0, 20.0], [3.0, 30.0]])
+    T = np.linspace(1.0, 2.0, 4)
+    # _FakeMonitor has no raw arrays -> the Monitor.expectation fallback.
+    out = reweight(_FakeMonitor(4), obs, T)
+    assert out.shape == (4, 2)
+    assert out[0, 0] == pytest.approx(2.0)  # mean of column 0
+    assert out[0, 1] == pytest.approx(20.0)
+
+
+def test_reweight_fast_path_matches_jaxrens_expectation():
+    """The one-matmul weighting reproduces jaxrens' own expectation kernel."""
+    pytest.importorskip("jaxrens")
+    from types import SimpleNamespace
+
+    from jaxrens.postprocess.thermodynamics import expectation as th_expect
+
+    from jaxrens_al.dashboard.panels.ns_expectation import reweight
+
+    rng = np.random.default_rng(0)
+    n_dead, n_live = 60, 8
+    # A Monitor exposing its raw arrays takes reweight's fast path.
+    mon = SimpleNamespace(
+        dead_energies=np.sort(rng.uniform(-10, 0, n_dead))[::-1].copy(),
+        live_energies=rng.uniform(-11, -10, n_live),
+        n_live=n_live,
+        n_cull=1,
+    )
+    obs = rng.uniform(0, 1, n_dead)
+    T = np.linspace(0.1, 2.0, 5)
+    obs_full = np.concatenate([obs, np.full(n_live, obs.mean())])
+    ref = np.array(
+        [
+            th_expect(
+                obs_full,
+                1.0 / t,
+                mon.dead_energies,
+                mon.live_energies,
+                n_live=n_live,
+                n_cull=1,
+            )
+            for t in T
+        ]
+    )
+    assert reweight(mon, obs, T) == pytest.approx(ref, rel=1e-10)
+    # Vector-valued: each column reweighted independently, same weights.
+    two = reweight(mon, np.column_stack([obs, 2 * obs]), T)
+    assert two[:, 0] == pytest.approx(ref, rel=1e-10)
+    assert two[:, 1] == pytest.approx(2 * ref, rel=1e-10)
+
+
+def test_rdf_panel_stores_full_rdf_and_reduces_to_scalar(tmp_path):
+    from jaxrens_al.dashboard.panels.rdf import NSRDFExpectationHeatmap
+
+    r = np.linspace(0.25, 5.75, 12)
+    peak = np.zeros_like(r)
+    peak[3] = 3.0  # a single sharp shell at r[3]
+    d = _write_rdf_trajs(tmp_path / "nsdir", "ns", {0: [peak, peak]}, r)
+
+    panel = NSRDFExpectationHeatmap(
+        result_dirs=[d],
+        prefix="ns",
+        cutoff=None,  # already annotated
+        reduction="peak_height",
+        n_T=6,
+        datapath=tmp_path,
+    )
+    panel._load_monitors = lambda dd: [_FakeMonitor(6)]
+    data = panel.compute_data({})
+
+    # The scalar projection is what gets plotted ...
+    assert len(data.obs) == 1 and len(data.obs[0]) == 6
+    assert data.obs[0][0] == pytest.approx(3.0)
+    # ... while the full <g(r)>(T) surface is kept in the cached JSON.
+    assert data.r == pytest.approx(r.tolist())
+    assert np.shape(data.rdf) == (1, 6, len(r))
+    assert data.rdf[0][0] == pytest.approx(peak.tolist())
+    assert data.reduction == "peak_height"
+
+
+@pytest.mark.parametrize(
+    "reduction, expected",
+    [
+        ("peak_height", 3.0),
+        ("peak_position", 2.0),
+        ("mean", 7.0 / 5),
+        # tau = int|g-1|dr / dr: g is 1 everywhere but the peak bin.
+        ("order", 0.5),
+        # 4*pi*rho*int r^2 g dr over [1, 3] (the first minimum), trapezoid
+        # 17.0, with rho = 1 atom / 125 A^3.
+        ("coordination", 4.0 * np.pi * (1.0 / 125.0) * 17.0),
+    ],
+)
+def test_rdf_reductions(tmp_path, reduction, expected):
+    """Each projection turns one <g(r)> curve into the number it claims."""
+    from jaxrens_al.dashboard.panels.rdf import NSRDFExpectationHeatmap
+
+    r = np.array([1.0, 2.0, 3.0, 4.0, 5.0])
+    g = np.array([1.0, 3.0, 1.0, 1.0, 1.0])
+    d = _write_rdf_trajs(tmp_path / "nsdir", "ns", {0: [g]}, r)
+    panel = NSRDFExpectationHeatmap(
+        result_dirs=[d],
+        prefix="ns",
+        cutoff=None,
+        reduction=reduction,
+        n_T=3,
+        datapath=tmp_path,
+    )
+    panel._load_monitors = lambda dd: [_FakeMonitor(3)]
+    data = panel.compute_data({})
+    assert data.obs[0][0] == pytest.approx(expected)
+    if reduction == "coordination":
+        # The default window stops at the first minimum after the peak.
+        assert data.r_window[1] == pytest.approx(3.0)
+
+
+def test_rdf_panel_declares_need_per_traj(tmp_path):
+    from jaxrens_al.dashboard.panels.rdf import NSRDFExpectationHeatmap
+
+    r = np.linspace(0.5, 4.5, 5)
+    g = np.ones_like(r)
+    d = _write_rdf_trajs(tmp_path / "nsdir", "ns", {0: [g], 1: [g]}, r)
+    panel = NSRDFExpectationHeatmap(
+        result_dirs=[d], prefix="ns", cutoff=6.0, nbins=64, datapath=tmp_path
+    )
+    needs = panel.processing_needs()
+    assert len(needs) == 2
+    assert all(n.kind == "rdf" for n in needs)
+    assert needs[0].params_dict == {"cutoff": 6.0, "nbins": 64}
+
+    panel._load_monitors = lambda dd: [_FakeMonitor(3) for _ in range(2)]
+    with pytest.raises(RuntimeError, match="no annotation was delivered"):
+        panel.compute_data({})
+    # The raw trajs already carry the rdf keys -> map each to itself.
+    trajs = [str(p) for p in sorted(d.glob("ns.run*.traj.extxyz"))]
+    panel.receive_annotations({t: t for t in trajs})
+    assert len(panel.compute_data({}).obs) == 2
+
+
+def test_rdf_panel_missing_annotation_keys_error(tmp_path):
+    from jaxrens_al.dashboard.panels.rdf import NSRDFExpectationHeatmap
+
+    _write_run_trajs(tmp_path / "nsdir", "ns", {0: [0.1, 0.2]})  # no rdf keys
+    panel = NSRDFExpectationHeatmap(
+        result_dirs=[tmp_path / "nsdir"],
+        prefix="ns",
+        cutoff=None,
+        datapath=tmp_path,
+    )
+    panel._load_monitors = lambda dd: [_FakeMonitor(3)]
+    with pytest.raises(ValueError, match="rdf_total"):
+        panel.compute_data({})
+
+
+def test_rdf_panel_holds_subsampled_traj_to_dead_points(tmp_path):
+    """A trajectory subsampled vs the dead points is held piecewise-constant
+    over its slice windows -- for the whole curve, not just a scalar."""
+    from jaxrens_al.dashboard.panels.rdf import NSRDFExpectationHeatmap
+
+    r = np.array([1.0, 2.0])
+    curves = [np.array([1.0, 1.0]), np.array([3.0, 1.0])]
+    d = _write_rdf_trajs(tmp_path / "nsdir", "ns", {0: curves}, r, {0: [0, 2]})
+    panel = NSRDFExpectationHeatmap(
+        result_dirs=[d],
+        prefix="ns",
+        cutoff=None,
+        reduction="peak_height",
+        n_T=3,
+        datapath=tmp_path,
+    )
+    panel._load_monitors = lambda dd: [_NDeadMonitor(4)]
+    data = panel.compute_data({})
+    # Held to [1,1,3,3] in the first bin -> <g> = 2 there, 1 in the second.
+    assert data.rdf[0][0] == pytest.approx([2.0, 1.0])
+    assert data.obs[0][0] == pytest.approx(2.0)
+
+
+# ---------------------------------------------------------------------------
+# The selection map (which pool configs the selector kept).
+# ---------------------------------------------------------------------------
+def test_frame_indices_reads_headers_only(tmp_path, write_configs):
+    from jaxrens_al.dashboard.panels.selection import frame_indices
+
+    path = write_configs(
+        tmp_path / "pool.extxyz",
+        4,
+        lambda i: {"iter": 3 * i, "run_id": i % 2},
+    )
+    it, run = frame_indices(path)
+    assert it.tolist() == [0, 3, 6, 9]
+    assert run.tolist() == [0, 1, 0, 1]
+
+    # Frames without the provenance keys are simply dropped.
+    plain = write_configs(tmp_path / "plain.extxyz", 3)
+    assert frame_indices(plain)[0].size == 0
+
+
+def test_selection_map_panel_pool_and_groups(tmp_path, write_configs):
+    from jaxrens_al.dashboard.panels.selection import SelectionMapPanel
+
+    pool = write_configs(
+        tmp_path / "pool.extxyz",
+        10,
+        lambda i: {"iter": i, "run_id": i % 3},
+    )
+    sel = write_configs(
+        tmp_path / "sel.extxyz",
+        3,
+        lambda i: {"iter": 2 * i, "run_id": i % 3},
+    )
+    panel = SelectionMapPanel(
+        [("0", [sel])], pool_files=[pool], datapath=tmp_path
+    )
+    data = panel.compute_data({})
+    assert data["n_pool"] == 10
+    assert data["pool_stride"] == 1
+    assert data["groups"][0]["iter"] == [0, 2, 4]
+    assert data["groups"][0]["run_id"] == [0, 1, 2]
+
+    # The background is context: above the cap it is strided down.
+    capped = SelectionMapPanel(
+        [("0", [sel])],
+        pool_files=[pool],
+        max_pool_points=4,
+        datapath=tmp_path,
+    )
+    capped_data = capped.compute_data({})
+    assert capped_data["n_pool"] == 10
+    assert capped_data["pool_stride"] == 3
+    assert len(capped_data["pool"]["iter"]) == 4
+
+
+def test_selection_map_panel_renders(tmp_path, write_configs):
+    import matplotlib.pyplot as plt
+
+    from jaxrens_al.dashboard.panels.selection import SelectionMapPanel
+
+    sel = write_configs(
+        tmp_path / "sel.extxyz", 3, lambda i: {"iter": i, "run_id": 0}
+    )
+    panel = SelectionMapPanel([("0", [sel])], datapath=tmp_path)
+    panel.data = panel.compute_data({})
+    fig, panel.ax = plt.subplots()
+    panel.plot_data()
+    assert "iteration" in panel.ax.get_xlabel()
+    assert "replica" in panel.ax.get_ylabel()
+    plt.close(fig)

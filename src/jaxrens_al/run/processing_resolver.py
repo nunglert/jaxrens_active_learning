@@ -501,6 +501,33 @@ def _build_steinhardt(param_dicts: list):
 register_processor_kind("steinhardt", _build_steinhardt)
 
 
+def _build_rdf(param_dicts: list):
+    """One ``RDFProcessor`` for every RDF panel -- they must agree on the grid.
+
+    The processor writes cutoff-free ``r_rdf`` / ``rdf_total`` keys and two
+    steps of the same name can't coexist in one pipeline, so a second
+    ``(cutoff, nbins)`` cannot be annotated in the same pass. Panels differing
+    only in their *reduction* share one need (the need carries just the grid),
+    so this is only hit when two ``add:`` entries really ask for different
+    grids.
+    """
+    from remote_handler.processing.processors import RDFProcessor
+
+    grids = {(p["cutoff"], p["nbins"]) for p in param_dicts}
+    if len(grids) > 1:
+        raise ValueError(
+            f"RDF panels must share one (cutoff, nbins); got {sorted(grids)}. "
+            "The 'rdf' processor writes cutoff-free r_rdf/rdf_total keys, so "
+            "only one grid can be annotated per pass -- use a single cutoff / "
+            "nbins across the rdf_expectation add: entries."
+        )
+    cutoff, nbins = next(iter(grids))
+    return RDFProcessor(cutoff=cutoff, nbins=int(nbins))
+
+
+register_processor_kind("rdf", _build_rdf)
+
+
 __all__ = [
     "resolve_processing",
     "resolve_model_evaluations",

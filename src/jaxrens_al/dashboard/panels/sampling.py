@@ -23,6 +23,11 @@ from jaxrens_al.dashboard.run_layout import sampled_configs_per_iteration
 class NSSampledEnergyPanel(Entry):
     """Per-iteration distribution of sampled ``ns_energy`` (box per iteration).
 
+    **Opt-in** -- not in any curated default set (``panel_specs``). Only the
+    cross-iteration mode says anything: on a single-iteration page (an AL
+    iteration page, or the NS section) it renders as one lone box. Re-add it
+    with ``add: [{type: sampled_ns_energy}]``.
+
     Two construction modes:
 
     * Cross-iteration (pass ``calchome``): one box per AL iteration, read from

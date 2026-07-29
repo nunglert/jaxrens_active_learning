@@ -42,6 +42,8 @@ from jaxrens_al.dashboard.run_layout import (
     sampled_configs,
     sampled_configs_per_iteration,
     sampling_model_for_iteration,
+    selected_configs,
+    selected_configs_per_iteration,
     training_error_files,
     training_error_for_iteration,
     training_mace_for_iteration,
@@ -76,6 +78,9 @@ class RunContext:
     datapath: Path
     eval_files: list = field(default_factory=list)
     sampled_files: list = field(default_factory=list)
+    # The candidates the SelectorActor stage kept out of ``sampled_files``
+    # (staged runs only; empty for a classic loop with no selector stage).
+    selected_files: list = field(default_factory=list)
     npz_files: list = field(default_factory=list)
     error_files: list = field(default_factory=list)
     mace_logs: list = field(default_factory=list)
@@ -188,6 +193,7 @@ def summary_context(
         datapath=Path(datapath),
         eval_files=evaluated_configs(calchome, progress),
         sampled_files=sampled_configs(calchome, progress),
+        selected_files=selected_configs(calchome, progress),
         npz_files=training_npz_files(calchome),
         error_files=training_error_files(calchome),
         mace_logs=mace_logs,
@@ -208,6 +214,7 @@ def iteration_context(
     *,
     eval_files=None,
     sampled_files=None,
+    selected_files=None,
     eos_reference=None,
     eos_backend: Optional[str] = None,
     eos_cutoff: Optional[float] = None,
@@ -222,6 +229,8 @@ def iteration_context(
 
     ``eval_files`` / ``sampled_files`` may be passed in (the CLI already has
     them per iteration) to avoid re-reading ``AL_progress.json`` each page.
+    ``selected_files`` (the selector stage's candidates) is looked up the same
+    way and is simply empty for a run without that stage.
 
     ``eos_backend`` defaults to auto-detection from this iteration's trainer
     artifacts (:func:`detect_backend` -- MACE logs / a ``.bundle`` model ->
@@ -233,6 +242,9 @@ def iteration_context(
         eval_files = evaluated_configs_per_iteration(calchome)[index]
     if sampled_files is None:
         sampled_files = sampled_configs_per_iteration(calchome)[index]
+    if selected_files is None:
+        per_iter = selected_configs_per_iteration(calchome)
+        selected_files = per_iter[index] if index < len(per_iter) else []
     ns_dir = ns_result_dir(it_dir, prefix=ns_prefix)
     mace_logs = training_mace_for_iteration(it_dir)
     model_file = model_for_iteration(calchome, index, it_dir=it_dir)
@@ -242,6 +254,7 @@ def iteration_context(
         datapath=Path(datapath),
         eval_files=eval_files,
         sampled_files=sampled_files,
+        selected_files=selected_files,
         npz_files=training_npz_for_iteration(it_dir),
         error_files=training_error_for_iteration(it_dir),
         mace_logs=mace_logs,

@@ -26,7 +26,9 @@ from jaxrens_al.dashboard.panels.quests import (
     QuestsPCAPanel,
     ResampledGridPanel,
 )
+from jaxrens_al.dashboard.panels.rdf import NSRDFExpectationHeatmap
 from jaxrens_al.dashboard.panels.sampling import NSSampledEnergyPanel
+from jaxrens_al.dashboard.panels.selection import SelectionMapPanel
 from jaxrens_al.dashboard.panels.steinhardt import (
     SteinhardtDistributionPanel,
     SteinhardtExpectationHeatmap,
@@ -53,11 +55,13 @@ __all__ = [
     "SamplingParityPanel",
     "MoveAcceptancePanel",
     "NSEnergyTracePanel",
+    "NSRDFExpectationHeatmap",
     "NSSampledEnergyPanel",
     "PhaseDiagramPanel",
     "QuestsPCAPanel",
     "RESwapAcceptancePanel",
     "ResampledGridPanel",
+    "SelectionMapPanel",
     "SteinhardtDistributionPanel",
     "SteinhardtExpectationHeatmap",
     "SteinhardtHeatmapPanel",

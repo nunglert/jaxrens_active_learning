@@ -19,6 +19,7 @@ from jaxrens_al.dashboard import (  # noqa: E402
     iteration_context,
     summary_context,
 )
+from jaxrens_al.dashboard.panel_specs import make_spec  # noqa: E402
 
 pytestmark = pytest.mark.local
 
@@ -35,7 +36,6 @@ def test_summary_assembles_present_panels(make_calchome, tmp_path):
     assert {
         "dataset_growth",
         "sampled_energy_volume",
-        "sampled_ns_energy",
         "neuralil_parity",
         "neuralil_training_curve",
     } <= names
@@ -57,7 +57,6 @@ def test_summary_assembles_all_panels(make_calchome, tmp_path):
     assert names == {
         "dataset_growth",
         "sampled_energy_volume",
-        "sampled_ns_energy",
         "neuralil_parity",
         "neuralil_training_curve",
         "ns_thermodynamics",
@@ -88,7 +87,6 @@ def test_iteration_assembles_all_panels(
     # dataset_growth is cumulative (summary-only); everything else appears.
     assert names == {
         "sampled_energy_volume",
-        "sampled_ns_energy",
         "quests_pca",
         "resampled_grid",
         "eos",
@@ -292,12 +290,24 @@ def test_iteration_assembles_present_panels(make_calchome, tmp_path):
     # atomic_envs is opt-in now (needs a PCA reference), so it is not here.
     assert names == {
         "sampled_energy_volume",
-        "sampled_ns_energy",
         "neuralil_parity",
         "neuralil_training_curve",
     }
     assert "dataset_growth" not in names
+    # Dropped from the curated set: a single-iteration page would show one box.
+    assert "sampled_ns_energy" not in names
 
+
+def test_sampled_ns_energy_is_opt_in(make_calchome, tmp_path):
+    """Not a default, but an ``add:`` entry brings the box back."""
+    calchome = make_calchome(tmp_path, n_iter=2, with_training=True)
+    datapath = calchome / "dashboard" / "1"
+    datapath.mkdir(parents=True)
+
+    cfg = {"add": [make_spec("sampled_ns_energy")]}
+    board = build_iteration_dashboard(
+        calchome, 1, datapath=datapath, panel_config=cfg
+    )
     box = next(e for e in board.entries if e.name == "sampled_ns_energy")
     assert box.data["iterations"] == [1]  # box positioned at this iteration
 
@@ -342,7 +352,6 @@ def test_assemble_summary_panel_order(make_calchome, tmp_path):
     assert names == [
         "dataset_growth",
         "sampled_energy_volume",
-        "sampled_ns_energy",
         "neuralil_parity",
         "neuralil_training_curve",
     ]
@@ -413,3 +422,63 @@ def test_render_layouts_for_inspection(
 
     for pdf in (summary_pdf, iteration_pdf):
         assert pdf.exists() and pdf.stat().st_size > 0
+
+
+# --------------------------------------------------------------------------
+# Selector stage: the selection map, and a second thermodynamic quantity.
+# --------------------------------------------------------------------------
+def test_selection_map_registers_only_with_selector_output(
+    make_calchome, tmp_path
+):
+    """The panel is a curated default but self-gates on a selector stage."""
+    plain = make_calchome(tmp_path / "plain", n_iter=1)
+    dp = plain / "dashboard"
+    dp.mkdir(parents=True, exist_ok=True)
+    ctx = iteration_context(plain, dp, 0)
+    assert "selection_map" not in {e.name for e in assemble(ctx)}
+
+    staged = make_calchome(
+        tmp_path / "staged", n_iter=1, n_selected=2, staged=True
+    )
+    dp2 = staged / "dashboard"
+    dp2.mkdir(parents=True, exist_ok=True)
+    ctx2 = iteration_context(staged, dp2, 0)
+    assert ctx2.selected_files
+    panels = {e.name: e for e in assemble(ctx2)}
+    assert "selection_map" in panels
+
+    # It reads the selected configs against the full sampler pool.
+    data = panels["selection_map"].compute_data({})
+    assert data["groups"][0]["iter"] == [0, 2]
+    assert data["n_pool"] == 5  # the iteration's sampled configs
+
+
+def test_selection_map_summary_groups_by_iteration(make_calchome, tmp_path):
+    calchome = make_calchome(tmp_path, n_iter=2, n_selected=2, staged=True)
+    dp = calchome / "dashboard"
+    dp.mkdir(parents=True, exist_ok=True)
+    ctx = summary_context(calchome, dp)
+    panel = {e.name: e for e in assemble(ctx)}["selection_map"]
+    data = panel.compute_data({})
+    # One series per AL iteration; the pool background is dropped (it would
+    # be every iteration's full NS pool).
+    assert [g["label"] for g in data["groups"]] == ["0", "1"]
+    assert data["n_pool"] == 0
+
+
+def test_volume_thermodynamics_coexists_with_heat_capacity(
+    make_calchome, tmp_path
+):
+    """A second ns_thermodynamics quantity gets its own (quantity-keyed) name,
+    so it does not collide with the curated heat-capacity panel."""
+    from jaxrens_al.dashboard.panel_specs import parse_panel_config
+
+    calchome = make_calchome(tmp_path, n_iter=1, with_ns=True)
+    dp = calchome / "dashboard"
+    dp.mkdir(parents=True, exist_ok=True)
+    ctx = iteration_context(calchome, dp, 0)
+    cfg = parse_panel_config(
+        {"add": [{"type": "ns_thermodynamics", "quantity": "volume"}]}
+    )
+    names = {e.name for e in assemble(ctx, panel_config=cfg)}
+    assert {"ns_thermodynamics", "ns_volume"} <= names

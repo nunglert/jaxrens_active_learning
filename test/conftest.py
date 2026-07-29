@@ -160,6 +160,7 @@ def _make_calchome(
     n_iter=2,
     n_evaluated=3,
     n_sampled=5,
+    n_selected=0,
     with_forces=True,
     with_training=False,
     with_mace_training=False,
@@ -175,11 +176,15 @@ def _make_calchome(
 ):
     """Build a remote_handler-style run dir under ``tmp_path``.
 
-    ``n_evaluated`` / ``n_sampled`` are an int (same every iteration) or a
-    per-iteration list; ``0`` skips that actor's output for an iteration (so a
-    panel simply gets no input). Evaluated (DFT) configs carry ``REF_forces``
-    by default (the evaluated-energy/volume panel reads them), like real
-    evaluator output; sampled configs carry ``ns_energy`` + ``run_id``.
+    ``n_evaluated`` / ``n_sampled`` / ``n_selected`` are an int (same every
+    iteration) or a per-iteration list; ``0`` skips that actor's output for an
+    iteration (so a panel simply gets no input). Evaluated (DFT) configs carry
+    ``REF_forces`` by default (the evaluated-energy/volume panel reads them),
+    like real evaluator output; sampled configs carry ``ns_energy`` +
+    ``run_id`` + ``iter`` (jaxrens' per-frame provenance). ``n_selected``
+    writes a ``selector_output/`` file per iteration holding the first
+    ``n_selected`` sampled frames -- the selector stage's candidates, which the
+    selection-map panel reads.
     ``eval_with_surrogate`` adds an ``ns_energy`` (sampler surrogate) key to
     the evaluated configs, so the surrogate-vs-DFT parity/error panels appear.
     ``with_mace_training`` drops a MACE ``*_train.txt`` JSON-lines log under
@@ -209,6 +214,7 @@ def _make_calchome(
 
     ev_counts = _per_iter(n_evaluated)
     sa_counts = _per_iter(n_sampled)
+    se_counts = _per_iter(n_selected)
 
     calchome = tmp_path / "calchome"
     (calchome / "evaluator_output").mkdir(parents=True)
@@ -241,17 +247,26 @@ def _make_calchome(
             )
             entry["evaluator_output"] = [e]
 
+        def _sampled_info(i, it=it):
+            # jaxrens provenance: the dead-point index within the NS run and
+            # the replica that produced it.
+            return {
+                "ns_energy": -10.0 - it + 0.1 * i,
+                "run_id": i % 2,
+                "iter": 2 * i,
+            }
+
         if sa_counts[it]:
             s = f"sampler_output/s{it}.extxyz"
-            _write_configs(
-                calchome / s,
-                sa_counts[it],
-                lambda i, it=it: {
-                    "ns_energy": -10.0 - it + 0.1 * i,
-                    "run_id": i % 2,
-                },
-            )
+            _write_configs(calchome / s, sa_counts[it], _sampled_info)
             entry["sampler_output"] = [s]
+
+        if se_counts[it]:
+            # The selector keeps a subset of the pool, provenance intact.
+            (calchome / "selector_output").mkdir(exist_ok=True)
+            sel = f"selector_output/sel{it}.extxyz"
+            _write_configs(calchome / sel, se_counts[it], _sampled_info)
+            entry["selector_output"] = [sel]
 
         if with_training:
             tdir = calchome / str(it) / "training" / "results"

@@ -78,13 +78,83 @@ def test_only_flag_restricts_panels(make_calchome, tmp_path):
     pdf = pytest.importorskip("pypdf")
 
     # Iteration 0 has no sampler output, so --only sampled_ns_energy leaves it
-    # empty -> 2 pages (iters 1, 2), not 3.
+    # empty -> 2 pages (iters 1, 2), not 3. The panel is opt-in now, so the
+    # auto-discovered config has to add it back first.
     calchome = make_calchome(tmp_path, n_iter=3, n_sampled=[0, 5, 5])
+    (calchome / "dashboard.yaml").write_text(
+        "add:\n  - {type: sampled_ns_energy}\n"
+    )
 
     rc = main([str(calchome), "--force", "--only", "sampled_ns_energy"])
     assert rc == 0
     assert not (calchome / "plots" / "Iteration0.pdf").exists()
     assert len(pdf.PdfReader(str(calchome / "dashboard.pdf")).pages) == 2
+
+
+def test_iterations_flag_renders_only_the_named_iteration(
+    make_calchome, tmp_path
+):
+    """--iterations renders that page alone, into its own combined PDF."""
+    pytest.importorskip("alviz")
+    pdf = pytest.importorskip("pypdf")
+
+    calchome = make_calchome(tmp_path, n_iter=3)
+
+    rc = main([str(calchome), "--force", "--iterations", "1"])
+    assert rc == 0
+    # A subset gets its own combined file, so the whole-run report survives.
+    combined = calchome / "dashboard_it1.pdf"
+    assert len(pdf.PdfReader(str(combined)).pages) == 1
+    assert not (calchome / "dashboard.pdf").exists()
+    assert (calchome / "plots" / "Iteration1.pdf").exists()
+    assert not (calchome / "plots" / "Iteration0.pdf").exists()
+
+
+def test_iterations_flag_accepts_negative_and_multiple(
+    make_calchome, tmp_path
+):
+    """-1 is the last recorded iteration; several indices sort + dedup."""
+    pytest.importorskip("alviz")
+    pdf = pytest.importorskip("pypdf")
+
+    calchome = make_calchome(tmp_path, n_iter=3)
+
+    rc = main([str(calchome), "--force", "--iterations", "-1", "0", "0"])
+    assert rc == 0
+    combined = calchome / "dashboard_it0_2.pdf"
+    assert len(pdf.PdfReader(str(combined)).pages) == 2
+    assert (calchome / "plots" / "Iteration0.pdf").exists()
+    assert (calchome / "plots" / "Iteration2.pdf").exists()
+    assert not (calchome / "plots" / "Iteration1.pdf").exists()
+
+
+def test_iterations_flag_rejects_out_of_range(make_calchome, tmp_path):
+    calchome = make_calchome(tmp_path, n_iter=2)
+    assert main([str(calchome), "--force", "--iterations", "5"]) == 1
+    assert main([str(calchome), "--force", "--iterations", "-3"]) == 1
+
+
+def test_iterations_flag_selects_an_unrecorded_iteration_section(
+    make_calchome, tmp_path
+):
+    """A positive index may reach an on-disk iteration the progress file never
+    recorded -- it has no AL page, but --sections still renders it."""
+    pytest.importorskip("alviz")
+    pdf = pytest.importorskip("pypdf")
+
+    calchome = make_calchome(tmp_path, n_iter=2, with_training=True)
+    res = calchome / "2" / "train" / "results"
+    res.mkdir(parents=True)
+    (res / "error_0.txt").write_text(
+        "i_epoch=0\nModel #1:\nF_RMSE = 0.5 eV/A. \nE_RMSE = 0.2 eV. \n"
+    )
+
+    rc = main([str(calchome), "--force", "--sections", "--iterations", "2"])
+    assert rc == 0
+    assert not (calchome / "plots" / "Iteration2.pdf").exists()
+    # Only iteration 2's training section page.
+    combined = calchome / "dashboard_it2.pdf"
+    assert len(pdf.PdfReader(str(combined)).pages) == 1
 
 
 def test_sections_flag_emits_per_iteration_section_pages(

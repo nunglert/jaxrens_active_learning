@@ -25,12 +25,23 @@ import numpy as np
 # Panel spec (parameterized: which thermodynamic quantity).
 # ---------------------------------------------------------------------------
 from alviz import PanelSpec, register_panel
-from alviz.panels import HeatmapData, HeatmapPanel, heatmap_pcolormesh
+from alviz.panels import HeatmapData, HeatmapPanel
+
+from jaxrens_al.dashboard.panels.ns_expectation import (
+    SwapAxesHeatmapMixin,
+    load_monitors,
+)
 
 _QUANTITIES = ("heat_capacity", "volume")
 
+# Colorbar/title label per quantity (``HeatmapData.quantity``).
+_QUANTITY_LABEL = {
+    "heat_capacity": "heat_capacity",
+    "volume": r"$\langle V \rangle$ ($\mathrm{\AA}^3$)",
+}
 
-class NSThermodynamicsHeatmap(HeatmapPanel):
+
+class NSThermodynamicsHeatmap(SwapAxesHeatmapMixin, HeatmapPanel):
     """Heat-capacity or mean-volume vs temperature from jaxrens NS runs.
 
     Args:
@@ -92,13 +103,31 @@ class NSThermodynamicsHeatmap(HeatmapPanel):
         Multi-run is the only loader: a single-run output is just the
         one-replica edge case of ``from_multi_run_directory``.
         """
-        from jaxrens.postprocess import MonitorCollection
+        return load_monitors(result_dir, self._prefix)
 
-        return list(
-            MonitorCollection.from_multi_run_directory(
-                result_dir, prefix=self._prefix
+    @staticmethod
+    def _volumes(mon):
+        """The per-dead-point cell volumes of one replica.
+
+        ``MonitorCollection.from_multi_run_directory`` deliberately leaves
+        ``dead_volumes`` None: for an NPT (``EnsembleBackend``) run the stored
+        energy is already the enthalpy ``H = U + P*V``, so feeding the volume
+        column into the NS weights would double-count ``P*V``. It stashes the
+        bare cell-volume series as ``volume_trace`` instead -- which is exactly
+        what an ``<V>(T)`` expectation needs. ``dead_volumes`` remains the
+        fallback for a Monitor built by ``Monitor.from_directory``.
+        """
+        vols = getattr(mon, "volume_trace", None)
+        if vols is None:
+            vols = getattr(mon, "dead_volumes", None)
+        if vols is None:
+            raise ValueError(
+                "NSThermodynamicsHeatmap(quantity='volume'): replica "
+                f"{getattr(mon, 'label', '?')} carries no volume series "
+                "('volume_trace' / 'dead_volumes') -- an NVT run has no "
+                "volume to average."
             )
-        )
+        return np.asarray(vols, dtype=float)
 
     def compute_data(self, shared_ressources: dict) -> HeatmapData:
         if not self._result_dirs:
@@ -113,7 +142,7 @@ class NSThermodynamicsHeatmap(HeatmapPanel):
                 if self._quantity == "heat_capacity":
                     obs = mon.heat_capacity(T, k_B=self._k_B)
                 else:  # volume
-                    obs = mon.expectation(mon.dead_volumes, T, k_B=self._k_B)
+                    obs = mon.expectation(self._volumes(mon), T, k_B=self._k_B)
                 rows.append(np.asarray(obs, dtype=float).tolist())
 
         if self._pressures is not None:
@@ -122,31 +151,11 @@ class NSThermodynamicsHeatmap(HeatmapPanel):
             p = [float(i) for i in range(len(rows))]
 
         return HeatmapData(
-            t=T.tolist(), p=p, obs=rows, quantity=self._quantity
+            t=T.tolist(),
+            p=p,
+            obs=rows,
+            quantity=_QUANTITY_LABEL.get(self._quantity, self._quantity),
         )
-
-    def plot_data(self):
-        # Default orientation (T on x, P on y) is alviz's; defer to it.
-        if not self._swap_axes:
-            return super().plot_data()
-
-        # P on x, T on y: transpose the grid and swap the axis labels, but
-        # still render through alviz's helper (colorbar/scaling/cmap reused).
-        d = self.data
-        kw = dict(self._plot_kwargs)
-        if d.quantity and "label" not in kw:
-            kw["label"] = d.quantity
-        t_label = kw.pop("T_label", r"$T$")
-        p_label = kw.pop("P_label", r"$\log P$")
-        obs_t = np.asarray(d.obs, dtype=float).T  # (len(t), len(p))
-        # heatmap_pcolormesh plots pcolormesh(arg1, arg2, obs) with
-        # xlabel=T_label, ylabel=P_label -> feed pressures as x, temps as y
-        # and route the labels accordingly.
-        heatmap_pcolormesh(
-            self.ax, d.p, d.t, obs_t, T_label=p_label, P_label=t_label, **kw
-        )
-        if d.quantity:
-            self.ax.set_title(d.quantity)
 
 
 class ThermodynamicsSpec(PanelSpec):
@@ -159,6 +168,21 @@ class ThermodynamicsSpec(PanelSpec):
     temperatures: list | None = None
 
 
+def _thermo_name(spec):
+    """Quantity-keyed name, so several quantities coexist on one page.
+
+    The heat-capacity instance keeps the historical ``ns_thermodynamics``
+    name (config ``disable:`` / ``only:`` keys and JSON caches refer to it); a
+    second quantity added via ``add:`` becomes ``ns_<quantity>`` --
+    ``build_entries`` rejects duplicate names, so they must differ.
+    """
+    if spec.name:
+        return spec.name
+    if spec.quantity == "heat_capacity":
+        return "ns_thermodynamics"
+    return f"ns_{spec.quantity}"
+
+
 def _build_thermodynamics(spec, ctx, c):
     if not ctx.ns_dirs:
         return None
@@ -169,6 +193,7 @@ def _build_thermodynamics(spec, ctx, c):
         k_B=spec.k_B,
         prefix=ctx.ns_prefix,
         swap_axes=spec.swap_axes,
+        name=_thermo_name(spec),
         **c,
     )
 

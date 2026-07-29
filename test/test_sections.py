@@ -49,10 +49,11 @@ def test_ns_section_core_panels(tmp_path):
         d, temperatures=np.linspace(0.1, 1.0, 5), datapath=tmp_path
     )
     names = _names(entries)
-    # Always present when energies exist; trajectory present -> sampled panel.
-    assert {"ns_energy_trace", "ns_thermodynamics", "sampled_ns_energy"} <= (
-        names
-    )
+    # Always present when energies exist.
+    assert {"ns_energy_trace", "ns_thermodynamics"} <= names
+    # sampled_ns_energy is opt-in: one NS dir is a single box, so it is not
+    # part of the curated NS set.
+    assert "sampled_ns_energy" not in names
     # No adaptation/re_stats stubs -> those panels absent.
     assert "step_sizes" not in names
     assert "re_swap_rates" not in names

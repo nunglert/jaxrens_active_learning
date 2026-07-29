@@ -340,6 +340,18 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Skip these panels (by name).",
     )
     parser.add_argument(
+        "--iterations",
+        nargs="+",
+        type=int,
+        default=None,
+        metavar="I",
+        help="Render only these AL iterations (default: all), e.g. "
+        "--iterations 3, or --iterations -1 for the last. Handy for testing a "
+        "panel: a remote annotation/evaluation job then covers just these "
+        "iterations' trajectories. The combined PDF defaults to "
+        "<calchome>/dashboard_it<I>.pdf so it does not clobber the full one.",
+    )
+    parser.add_argument(
         "--recompute",
         nargs="+",
         default=None,
@@ -404,6 +416,62 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _select_iterations(progress, it_dirs, requested) -> list:
+    """The AL iteration indices to render -- all of them, or a subset.
+
+    ``requested`` (``--iterations``) may use negative indices and is returned
+    sorted + de-duplicated. A *positive* index may reach past the recorded
+    iterations to any further working dir on disk, so an iteration
+    ``AL_progress.json`` never recorded (a crashed loop) can still be selected
+    for its ``--sections`` pages; a *negative* one counts back from the last
+    **recorded** iteration, since ``-1`` means "the last one with results", not
+    "an in-flight working dir". Raises ``ValueError`` naming the range when an
+    index falls outside it.
+    """
+    on_disk = [int(d.name) for d in it_dirs]
+    n_rec = len(progress)
+    n_known = max([n_rec] + [i + 1 for i in on_disk])
+    if not requested:
+        return list(range(n_rec))
+    if n_known == 0:
+        raise ValueError("--iterations: this run has no iterations.")
+    out = []
+    for i in requested:
+        j = i + (n_rec or n_known) if i < 0 else i
+        if not 0 <= j < n_known:
+            raise ValueError(
+                f"--iterations {i}: this run has {n_known} iteration(s) "
+                f"(valid: 0..{n_known - 1}, or -1..-{n_known})."
+            )
+        out.append(j)
+    return sorted(set(out))
+
+
+def _section_indices(it_dirs, wanted) -> list:
+    """The on-disk iteration dirs ``--sections`` should render, in order.
+
+    Sections come from the working dirs, not the progress file, so a crashed
+    iteration ``AL_progress.json`` never recorded still renders -- hence
+    ``wanted=None`` (no ``--iterations`` given) means *every* dir on disk. An
+    explicit subset filters them the same way it filters the AL pages.
+    """
+    on_disk = sorted(int(d.name) for d in it_dirs)
+    if wanted is None:
+        return on_disk
+    return [i for i in on_disk if i in set(wanted)]
+
+
+def _output_name(indices, n_iter: int) -> str:
+    """The default combined-PDF name for the selected iterations.
+
+    A full run keeps ``dashboard.pdf``; a subset gets its own file, so testing
+    one iteration never clobbers the whole-run report.
+    """
+    if list(indices) == list(range(n_iter)):
+        return "dashboard.pdf"
+    return f"dashboard_it{'_'.join(str(i) for i in indices)}.pdf"
+
+
 def main(argv: list[str] | None = None) -> int:
     """Entry point. Returns a process exit code."""
     logging.basicConfig(level=logging.INFO, stream=sys.stdout)
@@ -444,7 +512,24 @@ def main(argv: list[str] | None = None) -> int:
         logger.error(str(exc))
         return 1
 
-    output = Path(args.output) if args.output else calchome / "dashboard.pdf"
+    # Which iterations to render. run_layout is json+pathlib only, so reading
+    # the progress here (before the heavy imports below) stays cheap, and the
+    # subset is known in time to name the output file.
+    from jaxrens_al.dashboard.run_layout import iteration_dirs, load_progress
+
+    progress = load_progress(calchome)
+    it_dirs = iteration_dirs(calchome)
+    try:
+        indices = _select_iterations(progress, it_dirs, args.iterations)
+    except ValueError as exc:
+        logger.error(str(exc))
+        return 1
+
+    output = (
+        Path(args.output)
+        if args.output
+        else calchome / _output_name(indices, len(progress))
+    )
 
     if output.exists() and not args.force and not args.dry_run:
         logger.info(
@@ -470,8 +555,6 @@ def main(argv: list[str] | None = None) -> int:
         detect_ns_prefix,
         evaluated_configs_per_iteration,
         iteration_dir,
-        iteration_dirs,
-        load_progress,
         ns_result_dir,
         sampled_configs_per_iteration,
         training_results_dir,
@@ -482,8 +565,24 @@ def main(argv: list[str] | None = None) -> int:
         training_section,
     )
 
-    progress = load_progress(calchome)
     n_iter = len(progress)
+    # AL pages exist only for recorded iterations; a selected-but-unrecorded
+    # one (crashed loop) still gets its --sections pages from disk.
+    page_indices = [i for i in indices if i < n_iter]
+    # --sections walks the working dirs; only an explicit subset filters it.
+    sec_filter = indices if args.iterations else None
+    if args.iterations:
+        logger.info(
+            "Rendering iteration(s) %s of %d.",
+            ", ".join(str(i) for i in indices),
+            n_iter,
+        )
+        for i in indices:
+            if i >= n_iter:
+                logger.info(
+                    f"  iter {i}: not recorded in AL_progress.json; only its "
+                    f"--sections pages can render."
+                )
     eval_per_iter = evaluated_configs_per_iteration(calchome, progress)
     samp_per_iter = sampled_configs_per_iteration(calchome, progress)
 
@@ -492,7 +591,6 @@ def main(argv: list[str] | None = None) -> int:
 
     # jaxrens out_file_prefix: honour --prefix, else sniff it off the first
     # iteration's NS energies (a MACE run writes 'mace_sn16', not 'ns').
-    it_dirs = iteration_dirs(calchome)
     ns_prefix = args.prefix
     if ns_prefix is None:
         ns_prefix = next(
@@ -622,8 +720,8 @@ def main(argv: list[str] | None = None) -> int:
             )
 
     if args.dry_run:
-        logger.info(f"Dry run: {n_iter} AL iteration(s).")
-        for i in range(n_iter):
+        logger.info(f"Dry run: {len(page_indices)} AL iteration(s).")
+        for i in page_indices:
             board = _page(i, compute=False)
             entries = board.entries if board else []
             names = (
@@ -632,8 +730,7 @@ def main(argv: list[str] | None = None) -> int:
             )
             logger.info(f"  iter {i:<3} {len(entries)} panel(s): {names}")
         if args.sections:
-            for it_dir in iteration_dirs(calchome):
-                i = int(it_dir.name)
+            for i in _section_indices(it_dirs, sec_filter):
                 for _stem, board, title in _section_pages(i):
                     logger.info(
                         f"  section {title}: {len(board.entries)} panel(s)"
@@ -649,7 +746,7 @@ def main(argv: list[str] | None = None) -> int:
     with tempfile.TemporaryDirectory() as sec_tmp:
         sec_dir = Path(sec_tmp)
         pages = []  # (page_path, board, suptitle)
-        for i in range(n_iter):
+        for i in page_indices:
             board = _page(i, compute=False)
             if board is None:
                 logger.info(f"iter {i}: no panels with data; skipping page.")
@@ -658,8 +755,8 @@ def main(argv: list[str] | None = None) -> int:
                 (plots_dir / f"Iteration{i}.pdf", board, f"AL iteration {i}")
             )
         if args.sections:
-            for it_dir in iteration_dirs(calchome):
-                for stem, board, title in _section_pages(int(it_dir.name)):
+            for i in _section_indices(it_dirs, sec_filter):
+                for stem, board, title in _section_pages(i):
                     pages.append((sec_dir / f"{stem}.pdf", board, title))
 
         if not pages:

@@ -47,7 +47,6 @@ def test_summary_panels_match(rich):
     assert _names(assemble(summary_context(calchome, dp))) == [
         "dataset_growth",
         "sampled_energy_volume",
-        "sampled_ns_energy",
         "neuralil_parity",
         "neuralil_training_curve",
         "mace_training_curve",
@@ -61,7 +60,6 @@ def test_iteration_panels_match(rich):
     cfg = {"add": [SteinhardtSpec(r_cut=3.5, l=6)]}  # opt-in via config
     assert _names(assemble(ctx, panel_config=cfg)) == [
         "sampled_energy_volume",
-        "sampled_ns_energy",
         "quests_pca",
         "resampled_grid",
         "acceptance_rates",

@@ -10,6 +10,55 @@ of `README.md`): tag a release with `git tag vX.Y.Z` and the package version
 follows automatically. To release, rename the `[Unreleased]` section below to
 the new `## [X.Y.Z] — YYYY-MM-DD`, add a fresh empty `[Unreleased]`, then tag.
 
+## [Unreleased]
+
+### Added
+- **`jaxrens-al dashboard --iterations I [I ...]`.** Renders only the named AL
+  iterations instead of the whole run — the switch for trying a panel out, since
+  the remote annotation / model-evaluation pass then covers just those
+  iterations' trajectories rather than every iteration's. Negative indices count
+  back from the last recorded iteration (`--iterations -1`); a positive index may
+  reach an on-disk working dir `AL_progress.json` never recorded, whose
+  `--sections` pages still render. The combined PDF defaults to
+  `dashboard_it<I>.pdf`, so testing one iteration never clobbers the whole-run
+  `dashboard.pdf`. Also settable as `iterations:` in `dashboard.yaml`.
+- **Selected-configs map (`selection_map`), a curated default panel.** Plots the
+  selector stage's picks on an (NS `iter` × `run_id`) grid, over the sampler's
+  full candidate pool in grey — so "which part of the NS run, and which
+  replicas, did the selector actually draw from" is visible per iteration (and,
+  on the summary page, one colour per AL iteration). Self-gates on a recorded
+  `selector_output`, so a classic (selector-free) run is unaffected. Reads only
+  the extxyz headers, never building an `Atoms` per frame, since NS pools run to
+  hundreds of MB.
+- **`<g(r)>(T)` RDF expectation panel (`rdf_expectation`).** Pairs
+  `remote_handler`'s built-in `rdf` processor (declared as a `ProcessingNeed`,
+  run by the existing resolver — `rdf` is registered as a second processor kind)
+  with each replica's jaxrens `Monitor`. The whole `(replica, T, r)` surface is
+  cached in the panel's JSON; what gets plotted is a selectable scalar
+  `reduction` of each curve: `peak_height` (default), `peak_position`, `order`
+  (τ = ∫|g−1|dr/Δr), `coordination` (4πρ∫r²g dr, with ρ = N/`<V>`(T) reweighted
+  in the same pass and the window defaulting to the first minimum after the
+  first peak), or `mean` over an `[r_min, r_max]` window. Repeatable and
+  param-keyed (`rdf_<reduction>_rc<cutoff>`); entries differing only in
+  `reduction` share one annotation job.
+- **`panels/ns_expectation.py`**, the shared seam behind every NS expectation
+  panel: replica trajectory/Monitor discovery, the subsampled-trajectory
+  hold-to-dead-points reconstruction (now also for vector-valued observables),
+  a `reweight` that applies the NS weights to a whole curve in one matmul
+  (verified against `Monitor.expectation`), and the P-on-x/T-on-y heatmap mixin
+  the Steinhardt / thermodynamics / RDF panels previously each copied.
+
+### Fixed
+- **`ns_thermodynamics` with `quantity: volume` works again.** It read
+  `Monitor.dead_volumes`, which `MonitorCollection.from_multi_run_directory`
+  deliberately leaves `None` (an NPT run's stored energy is already the enthalpy
+  `U + P*V`; the bare cell-volume series is stashed as `volume_trace`), so
+  `<V>(T)` raised instead of plotting. It now reads `volume_trace` with
+  `dead_volumes` as the fallback, and raises an explicit "NVT run has no volume"
+  error when neither exists. A second `ns_thermodynamics` entry also no longer
+  collides with the curated heat-capacity panel: the name is quantity-keyed
+  (`ns_volume`), while `heat_capacity` keeps the historical `ns_thermodynamics`.
+
 ## [0.1.0] — 2026-07-21
 
 ### Added

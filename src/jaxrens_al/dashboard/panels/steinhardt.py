@@ -49,8 +49,14 @@ import numpy as np
 # Panel spec (parameterized + repeatable: several l / r_cut at once).
 # ---------------------------------------------------------------------------
 from alviz import Entry, JsonDict, PanelSpec, register_panel
-from alviz.panels import HeatmapData, HeatmapPanel, heatmap_pcolormesh
+from alviz.panels import HeatmapData, HeatmapPanel
 
+from jaxrens_al.dashboard.panels.ns_expectation import (
+    SwapAxesHeatmapMixin,
+    hold_to_dead_points,
+    load_monitors,
+    replica_traj_files,
+)
 from jaxrens_al.dashboard.panels.processing import (
     ProcessingConsumer,
     ProcessingNeed,
@@ -358,7 +364,9 @@ class SteinhardtHeatmapPanel(_SteinhardtSource, HeatmapPanel):
         )
 
 
-class SteinhardtExpectationHeatmap(ProcessingConsumer, HeatmapPanel):
+class SteinhardtExpectationHeatmap(
+    ProcessingConsumer, SwapAxesHeatmapMixin, HeatmapPanel
+):
     """Nested-sampling expectation ``<q_l>(T)`` per replica (like the C_v map).
 
     The NS analogue of :class:`SteinhardtHeatmapPanel`: rather than binning
@@ -452,12 +460,7 @@ class SteinhardtExpectationHeatmap(ProcessingConsumer, HeatmapPanel):
         Globs ``<prefix>.run*.traj.extxyz`` (which excludes the ``.snap.``
         snapshot files); sorted order matches the Monitors' ``runNN`` order.
         """
-        return [
-            str(p)
-            for p in sorted(
-                Path(result_dir).glob(f"{self._prefix}.run*.traj.extxyz")
-            )
-        ]
+        return replica_traj_files(result_dir, self._prefix)
 
     def _load_monitors(self, result_dir):
         """Monitors for one NS output dir, one per replica (test seam).
@@ -466,13 +469,7 @@ class SteinhardtExpectationHeatmap(ProcessingConsumer, HeatmapPanel):
         :meth:`~jaxrens_al.dashboard.panels.thermodynamics.NSThermodynamicsHeatmap.
         _load_monitors`; a single-run output is the one-replica edge case.
         """
-        from jaxrens.postprocess import MonitorCollection
-
-        return list(
-            MonitorCollection.from_multi_run_directory(
-                result_dir, prefix=self._prefix
-            )
-        )
+        return load_monitors(result_dir, self._prefix)
 
     def processing_needs(self) -> list:
         if self._r_cut is None:
@@ -528,34 +525,12 @@ class SteinhardtExpectationHeatmap(ProcessingConsumer, HeatmapPanel):
     def _to_dead_point_observable(self, vals, idx, n_dead, replica):
         """Reconstruct a per-dead-point observable of length ``n_dead``.
 
-        A jaxrens trajectory is usually a regular *slice* of the dead points
-        (``output.traj_interval``), so ``vals`` is shorter than ``n_dead``. NS
-        reweighting needs a value at every dead point, but consecutive dead
-        points barely differ, so we hold each retained value across its slice
-        window (piecewise constant, keyed by ``iter``) -- a good approximation
-        that lets ``Monitor.expectation`` reweight with the full NS weights.
-        A full-resolution trajectory (``len(vals) == n_dead``) is used as-is.
+        Shared with the other NS expectation panels -- see
+        :func:`jaxrens_al.dashboard.panels.ns_expectation.hold_to_dead_points`.
         """
-        if len(vals) == n_dead:
-            return vals
-        if idx is None:
-            raise ValueError(
-                f"SteinhardtExpectationHeatmap: replica {replica} has "
-                f"{len(vals)} annotated configs but the NS run has {n_dead} "
-                f"dead points, and the pool carries no 'iter' index to align "
-                f"the subsampled trajectory. Re-annotate from a jaxrens "
-                f"trajectory (its frames carry 'iter')."
-            )
-        if idx.min() < 0 or idx.max() >= n_dead:
-            raise ValueError(
-                f"SteinhardtExpectationHeatmap: replica {replica} dead-point "
-                f"indices ('iter') span [{idx.min()}, {idx.max()}] but the NS "
-                f"run has {n_dead} dead points -- pool and run mismatched."
-            )
-        # For each dead point, the most recent retained config's value.
-        pos = np.searchsorted(idx, np.arange(n_dead), side="right") - 1
-        pos = np.clip(pos, 0, len(vals) - 1)
-        return np.asarray(vals, float)[pos]
+        return hold_to_dead_points(
+            vals, idx, n_dead, replica, type(self).__name__
+        )
 
     def compute_data(self, shared_ressources: dict) -> HeatmapData:
         if not self._result_dirs:
@@ -606,26 +581,6 @@ class SteinhardtExpectationHeatmap(ProcessingConsumer, HeatmapPanel):
             obs=rows,
             quantity=f"<{self._param}{self._l}>",
         )
-
-    def plot_data(self):
-        # Default orientation (T on x, P on y) is alviz's; defer to it.
-        if not self._swap_axes:
-            return super().plot_data()
-
-        # P on x, T on y: transpose the grid and swap the axis labels, still
-        # rendering through alviz's helper (colorbar/scaling/cmap reused).
-        d = self.data
-        kw = dict(self._plot_kwargs)
-        if d.quantity and "label" not in kw:
-            kw["label"] = d.quantity
-        t_label = kw.pop("T_label", r"$T$")
-        p_label = kw.pop("P_label", r"$\log P$")
-        obs_t = np.asarray(d.obs, dtype=float).T  # (len(t), len(p))
-        heatmap_pcolormesh(
-            self.ax, d.p, d.t, obs_t, T_label=p_label, P_label=t_label, **kw
-        )
-        if d.quantity:
-            self.ax.set_title(d.quantity)
 
 
 class SteinhardtSpec(PanelSpec):
