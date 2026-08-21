@@ -66,10 +66,12 @@ interface for `jaxrens` — it does *not* use `remote_handler`'s own deprecated
     `.energies` + `.final.checkpoint.h5` (NumPy postprocess — no JAX needed
     to build the dashboard).
 - `jaxrens_al.run.reference_db` — builds a **starting/reference structure
-  database** for iteration zero: fetch an element's experimentally observed
-  phases from the Materials Project (`fetch_mp_elemental`), expand each into a
-  cloud of rattled, volume-scaled supercells (`rattle_atoms`), and write an
-  `extxyz` (`build_reference_database`, or the `jaxrens-al refdb` CLI). The
+  database** for iteration zero: fetch a system's experimentally observed
+  phases from the Materials Project (`fetch_mp_structures` — an element
+  `"Si"`, a formula `"SiO2"` or a chemical system `"Si-O"`; `fetch_mp_elemental`
+  is the elemental special case), expand each into a cloud of rattled,
+  volume-scaled supercells (`rattle_atoms`), and write an `extxyz`
+  (`build_reference_database`, or the `jaxrens-al refdb` CLI). The
   Materials Project query needs the `[refdb]` extra (`mp_api` + `pymatgen`);
   the rattling half is pure numpy + ase.
 - `examples/run_al.py` — concrete wiring of the AL loop (jaxrens sampler +
@@ -138,14 +140,24 @@ changes per version are tracked in [`CHANGELOG.md`](CHANGELOG.md).
 
 ## Build a starting database
 
-Before the first AL iteration you need seed structures. `reference_db` turns an
-element into a rattled, volume-scaled `extxyz` drawn from its Materials Project
-phases (needs the `[refdb]` extra and an `MP_API_KEY`):
+Before the first AL iteration you need seed structures. `reference_db` turns a
+*system* into a rattled, volume-scaled `extxyz` drawn from its Materials Project
+phases (needs the `[refdb]` extra and an `MP_API_KEY`). The system is an
+**element** (`Si` — all pure-Si polymorphs), a **formula** (`SiO2` — every
+polymorph of that stoichiometry) or a **chemical system** (`Si-O` — every Si-O
+compound; `--include-subsystems` adds the end members, since a bare chemsys
+matches materials of *exactly* those elements):
 
 ```bash
 export MP_API_KEY=...
 jaxrens-al refdb Si si_start.extxyz --target-cutoff 3 \
     --rattle-strengths 0.0 0.2 --n-vol 20 --vol-min 0.9 --vol-max 1.1
+
+# A compound system: keep it to near-hull, DFT-sized, composition-balanced
+# phases -- a binary holds hundreds of polymorphs where an element holds a
+# handful, and the rattle grid multiplies every one of them.
+jaxrens-al refdb Li-Fe-O lfo_start.extxyz --include-subsystems \
+    --max-e-above-hull 0.05 --max-sites 20 --max-per-composition 3
 ```
 
 or programmatically:
@@ -156,7 +168,19 @@ from jaxrens_al.run.reference_db import build_reference_database
 configs = build_reference_database(
     "Si", target_cutoff=3.0, output="si_start.extxyz"
 )
+configs = build_reference_database(
+    "SiO2",                    # or "Si-O" / ["Si", "O"] for the whole system
+    target_cutoff=3.0,
+    max_e_above_hull=0.05,     # eV/atom above the convex hull
+    max_sites=20,              # DFT-cost guard (per unit cell)
+    max_per_composition=3,     # polymorphs per stoichiometry
+    output="sio2_start.extxyz",
+)
 ```
+
+Every fetched structure carries `mp_id`, `spacegroup`, `formula`,
+`e_above_hull` and `is_stable` in its `info`, and the set is ordered
+most-stable-first (so a `max_structures` cut keeps the relevant phases).
 
 ## Visualize a run
 

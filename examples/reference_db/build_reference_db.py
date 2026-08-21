@@ -14,7 +14,8 @@ This script builds both from the Materials Project and labels them with VASP at
 ``VASPEvaluator`` configuration (edit ``DFT_INCAR`` / the cluster block to match
 YOUR ``run_al.py``; that is what makes the levels identical). The recipe:
 
-  1. fetch the element's experimentally observed phases (``fetch_mp_elemental``);
+  1. fetch the system's experimentally observed phases (``fetch_mp_structures``
+     -- an element ``Sn``, a formula ``SiO2`` or a chemsys ``Li-Fe-O``);
   2. per phase, a zero-rattle volume scan  -> ``eos_<phase>.extxyz`` (EOS);
   3. a rattled+scaled pool across all phases -> extra diversity for the PCA;
   4. DFT-label every set with one shared evaluator;
@@ -25,7 +26,9 @@ real-shaped placeholder; edit it to match YOUR ``run_al.py``. The DFT cluster is
 resolved by name from a CLI argument (``--cluster <name>`` -> ``<name>.json``
 under ``REMOTE_HANDLER_CONFIG_DIR``, the same registry your AL loop uses)::
 
-    python build_reference_db.py --cluster dirona --element Sn
+    python build_reference_db.py --cluster dirona --system Sn
+    python build_reference_db.py --cluster dirona --system Li-Fe-O \
+        --include-subsystems --max-e-above-hull 0.05 --max-sites 20
 
 Needs the ``[run]`` + ``[refdb]`` extras, a configured cluster
 (``REMOTE_HANDLER_CONFIG_DIR`` + SSH config) and ``MP_API_KEY``. Set
@@ -62,7 +65,7 @@ from remote_handler.workflows import evaluators
 
 from jaxrens_al.run.reference_db import (
     eos_phase_scans,
-    fetch_mp_elemental,
+    fetch_mp_structures,
     rattle_atoms,
 )
 from jaxrens_al.run.reference_eval import (
@@ -74,7 +77,17 @@ logging.basicConfig(level=logging.INFO, stream=sys.stdout)
 
 # --- toggles --------------------------------------------------------------
 STUB = False  # True: mock DFT locally (no cluster/VASP); MP fetch still runs.
-ELEMENT = "Sn"
+SYSTEM = "Sn"  # element ("Sn"), formula ("SiO2") or chemsys ("Li-Fe-O")
+
+# Materials Project phase filters. Harmless for an element (a handful of
+# phases); ESSENTIAL for a compound system, where every extra phase is a whole
+# DFT volume scan -- MP holds hundreds of polymorphs per binary.
+MP_FILTERS = dict(
+    include_subsystems=False,  # chemsys only: also fetch Li-O, Fe, ...
+    max_e_above_hull=None,  # eV/atom above the convex hull
+    max_sites=None,  # skip unit cells bigger than this (DFT cost)
+    max_per_composition=None,  # polymorphs per stoichiometry
+)
 
 # --- reference-database grid ---------------------------------------------
 TARGET_CUTOFF = 4.0  # supercell must host this (Å); match the model's r_cut.
@@ -138,26 +151,67 @@ def main(argv=None) -> None:
         "AL loop). Loaded even in STUB mode (the stub evaluator ignores it).",
     )
     parser.add_argument(
-        "--element",
-        default=ELEMENT,
-        help=f"Chemical symbol to build the database for (default: {ELEMENT}).",
+        "--system",
+        default=SYSTEM,
+        help="Element (Sn), formula (SiO2) or chemsys (Li-Fe-O) to build the "
+        f"database for (default: {SYSTEM}).",
+    )
+    parser.add_argument(
+        "--include-subsystems",
+        action="store_true",
+        default=MP_FILTERS["include_subsystems"],
+        help="For a chemsys, also fetch every sub-system (Li-Fe-O -> also "
+        "Li-O, Fe, ...); a bare chemsys matches EXACTLY those elements.",
+    )
+    parser.add_argument(
+        "--max-e-above-hull",
+        type=float,
+        default=MP_FILTERS["max_e_above_hull"],
+        metavar="EV",
+        help="Keep only phases within this hull distance (eV/atom).",
+    )
+    parser.add_argument(
+        "--max-sites",
+        type=int,
+        default=MP_FILTERS["max_sites"],
+        metavar="N",
+        help="Skip unit cells with more than N atoms (DFT-cost guard).",
+    )
+    parser.add_argument(
+        "--max-per-composition",
+        type=int,
+        default=MP_FILTERS["max_per_composition"],
+        metavar="N",
+        help="Keep at most N polymorphs per composition (most stable first).",
     )
     args = parser.parse_args(argv)
 
     os.environ.setdefault("REMOTE_HANDLER_CONFIG_DIR", str(HOME / "config"))
     dft_cluster = ClusterConfig.from_name(args.cluster)
 
-    # 1. Fetch the element's experimentally observed phases.
-    phases = fetch_mp_elemental(args.element)
+    # 1. Fetch the system's experimentally observed phases.
+    phases = fetch_mp_structures(
+        args.system,
+        include_subsystems=args.include_subsystems,
+        max_e_above_hull=args.max_e_above_hull,
+        max_sites=args.max_sites,
+        max_per_composition=args.max_per_composition,
+    )
     logging.info(
-        "Fetched %d %s phase(s) from Materials Project.",
+        "Fetched %d %s phase(s) from Materials Project: %s",
         len(phases),
-        args.element,
+        args.system,
+        ", ".join(sorted({p.info.get("formula", "?") for p in phases})),
     )
 
-    # 2. Per-phase zero-rattle volume scans (one EOS curve each).
+    # 2. Per-phase zero-rattle volume scans (one EOS curve each). Several
+    #    compositions -> put the formula in the file stem, so an EOS curve
+    #    says WHICH compound it belongs to.
     eos_scans = eos_phase_scans(
-        phases, vol_scalings=EOS_VOL_SCALINGS, target_cutoff=TARGET_CUTOFF
+        phases,
+        vol_scalings=EOS_VOL_SCALINGS,
+        target_cutoff=TARGET_CUTOFF,
+        label_formula=len({p.info.get("formula") for p in phases}) > 1,
     )
 
     # 3. A rattled + volume-scaled pool across all phases (PCA diversity).

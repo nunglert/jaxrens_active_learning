@@ -132,6 +132,7 @@ def _build_eos_reference(params: dict, *, evaluator, out_dir, reuse: bool):
             )
             return listed
 
+    from jaxrens_al.run.reference_db import mp_query_kwargs, resolve_system
     from jaxrens_al.run.reference_eval import build_eos_reference
 
     # The EOS panel works per atom and rebuilds a cutoff-hosting supercell at
@@ -141,10 +142,11 @@ def _build_eos_reference(params: dict, *, evaluator, out_dir, reuse: bool):
     # (it still keys the build for reuse via the need's params).
     files = build_eos_reference(
         evaluator,
-        element=params["element"],
+        system=resolve_system(params.get("system"), params.get("element")),
         vol_scalings=params.get("vol_scalings"),
         target_cutoff=None,
         out_dir=out_dir,
+        **mp_query_kwargs(params),
     )
     out_dir.mkdir(parents=True, exist_ok=True)
     manifest.write_text(json.dumps([p.name for p in files]))
@@ -155,10 +157,13 @@ register_reference_kind("eos", _build_eos_reference)
 
 
 def _build_mp_reference(params: dict, *, evaluator, out_dir, reuse: bool):
-    """Produce (or reuse) an MP-drawn elemental reference config set.
+    """Produce (or reuse) an MP-drawn reference config set.
 
     The reference the atomic-environments PCA is fit on: Materials-Project
-    elemental phases + a rattle grid (:func:`build_reference_database`). Needs
+    phases of the requested system + a rattle grid
+    (:func:`build_reference_database`). The need's ``element``/``system``
+    param may name an element, a formula or a chemsys, and may carry any
+    ``MP_QUERY_KEYS`` filter (``max_e_above_hull``, ...). Needs
     **no** DFT evaluator (structures only, not labelled energies), so
     ``evaluator`` is ignored -- it just wants the ``[refdb]`` extra + network.
     Reuse is gated on a ``.mp_manifest.json`` sentinel written only after a
@@ -174,15 +179,19 @@ def _build_mp_reference(params: dict, *, evaluator, out_dir, reuse: bool):
             )
             return listed
 
-    from jaxrens_al.run.reference_db import build_reference_database
+    from jaxrens_al.run.reference_db import (
+        build_reference_database,
+        mp_query_kwargs,
+        resolve_system,
+    )
 
     out_dir.mkdir(parents=True, exist_ok=True)
     out_file = out_dir / "reference.extxyz"
     build_reference_database(
-        params["element"],
-        theoretical=params.get("theoretical", False),
+        resolve_system(params.get("system"), params.get("element")),
         target_cutoff=params.get("target_cutoff", 3.0),
         output=out_file,
+        **mp_query_kwargs(params),
     )
     manifest.write_text(json.dumps([out_file.name]))
     return [out_file]
@@ -191,6 +200,9 @@ def _build_mp_reference(params: dict, *, evaluator, out_dir, reuse: bool):
 register_reference_kind(
     "mp_elemental", _build_mp_reference, needs_evaluator=False
 )
+# Same builder under a system-agnostic name (the kind is no longer elemental);
+# ``mp_elemental`` stays registered so existing needs keep resolving.
+register_reference_kind("mp", _build_mp_reference, needs_evaluator=False)
 
 
 __all__ = [

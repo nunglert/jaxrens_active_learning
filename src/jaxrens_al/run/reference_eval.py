@@ -86,17 +86,20 @@ def concatenate_configs(paths, output) -> int:
 def build_eos_reference(
     evaluator,
     *,
-    element: str,
+    system: str | None = None,
+    element: str | None = None,
     vol_scalings=None,
     target_cutoff: float | None = 4.0,
     out_dir,
     workdir=None,
     api_key: str | None = None,
+    label_formula: bool | None = None,
+    **query,
 ) -> list[Path]:
-    """Fetch, volume-scan, and DFT-label one element's EOS reference phases.
+    """Fetch, volume-scan, and DFT-label one system's EOS reference phases.
 
     Composes the reference producers -- :func:`~jaxrens_al.run.reference_db.
-    fetch_mp_elemental` (Materials Project phases) -> ``eos_phase_scans``
+    fetch_mp_structures` (Materials Project phases) -> ``eos_phase_scans``
     (zero-rattle volume scan per phase) -> :func:`evaluate_config_sets` (DFT
     label) -- and publishes one ``eos_<phase>.extxyz`` per phase, exactly what
     the EOS panel reads. Not a ``remote_handler`` ``Processor`` (the executor is
@@ -106,7 +109,10 @@ def build_eos_reference(
     Args:
         evaluator: A configured ``GroundTruthEvaluator`` (duck-typed; reuse the
             one from your AL loop so the DFT level matches).
-        element: Chemical symbol to build the reference for.
+        system: What to build the reference for -- an element (``"Si"``), a
+            formula (``"SiO2"``) or a chemsys (``"Si-O"``).
+        element: Legacy alias for ``system`` (still accepted, and it too may
+            hold a formula or chemsys).
         vol_scalings: Cell-vector scale factors for the scan (default: the
             ``eos_phase_scans`` grid).
         target_cutoff: Supercell cutoff (Å) for the DFT scan, or ``None`` to
@@ -119,20 +125,40 @@ def build_eos_reference(
         workdir: Scratch dir for the evaluator's per-phase calc dirs (default:
             ``out_dir/work``).
         api_key: Materials Project key (default: ``$MP_API_KEY``).
+        label_formula: Put each phase's composition in its file stem
+            (``eos_SiO2_mp-6922.extxyz``). Defaults to ``True`` for a
+            multi-compound system (where bare ``mp-`` ids say nothing) and to
+            ``False`` for a single element, keeping legacy file names.
+        **query: Further Materials-Project filters passed to
+            :func:`~jaxrens_al.run.reference_db.fetch_mp_structures`
+            (``max_e_above_hull``, ``max_sites``, ``include_subsystems``,
+            ...). A compound system needs them: every extra phase is a whole
+            DFT volume scan.
 
     Returns:
         The per-phase labelled scan paths, one ``eos_<phase>.extxyz`` each.
     """
     import ase.io
 
-    from jaxrens_al.run.reference_db import eos_phase_scans, fetch_mp_elemental
+    from jaxrens_al.run.reference_db import (
+        eos_phase_scans,
+        fetch_mp_structures,
+        resolve_system,
+    )
 
     out_dir = Path(out_dir)
     workdir = Path(workdir) if workdir is not None else out_dir / "work"
 
-    phases = fetch_mp_elemental(element, api_key=api_key)
+    phases = fetch_mp_structures(
+        resolve_system(system, element), api_key=api_key, **query
+    )
+    if label_formula is None:  # one composition -> ids alone stay readable
+        label_formula = len({p.info.get("formula") for p in phases}) > 1
     scans = eos_phase_scans(
-        phases, vol_scalings=vol_scalings, target_cutoff=target_cutoff
+        phases,
+        vol_scalings=vol_scalings,
+        target_cutoff=target_cutoff,
+        label_formula=label_formula,
     )
     sets = {f"eos_{label}": scan for label, scan in scans.items()}
     labelled = evaluate_config_sets(evaluator, sets, workdir)

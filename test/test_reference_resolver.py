@@ -109,8 +109,8 @@ def _fake_eos_build(monkeypatch):
     """Patch the (DFT) build so reuse branches are testable with no cluster."""
     calls = []
 
-    def _build(evaluator, *, element, vol_scalings, target_cutoff, out_dir):
-        calls.append(element)
+    def _build(evaluator, *, system, vol_scalings, target_cutoff, out_dir):
+        calls.append(system)
         out = Path(out_dir)
         out.mkdir(parents=True, exist_ok=True)
         files = [out / "eos_mp-149.extxyz", out / "eos_mp-165.extxyz"]
@@ -161,8 +161,8 @@ def test_mp_reference_builds_then_reuses(tmp_path, monkeypatch):
 
     calls = []
 
-    def _build(element, *, theoretical, target_cutoff, output):
-        calls.append((element, target_cutoff))
+    def _build(system, *, target_cutoff, output, **query):
+        calls.append((system, target_cutoff))
         Path(output).write_text("")  # pretend an extxyz was written
         return []
 

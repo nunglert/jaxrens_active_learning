@@ -5,6 +5,9 @@ rattling -- since the Materials Project fetch needs network + the [refdb]
 extra. The MP path is covered just for its no-key/no-dep error handling.
 """
 
+import sys
+import types
+
 import numpy as np
 import pytest
 from ase import Atoms
@@ -12,12 +15,16 @@ from ase import Atoms
 pytest.importorskip("ase")
 
 from jaxrens_al.run.reference_db import (  # noqa: E402
+    _expand_subsystems,
     _hnf_diagonals,
     _max_cutoff,
+    _parse_system,
     build_reference_database,
     eos_phase_scans,
     fetch_mp_elemental,
+    fetch_mp_structures,
     find_supercell,
+    mp_query_kwargs,
     rattle_atoms,
 )
 
@@ -119,7 +126,7 @@ def test_build_reference_database_writes_extxyz(tmp_path, monkeypatch):
     import jaxrens_al.run.reference_db as refdb
 
     base = _bulk_si()
-    monkeypatch.setattr(refdb, "fetch_mp_elemental", lambda *a, **k: [base])
+    monkeypatch.setattr(refdb, "fetch_mp_structures", lambda *a, **k: [base])
     out = tmp_path / "ref.extxyz"
     configs = build_reference_database(
         "Si",
@@ -130,6 +137,37 @@ def test_build_reference_database_writes_extxyz(tmp_path, monkeypatch):
     )
     assert out.exists() and out.stat().st_size > 0
     assert len(configs) == 1
+
+
+def test_build_reference_database_accepts_legacy_element_kwarg(
+    tmp_path, monkeypatch
+):
+    """``element=`` predates general systems; it must keep working (and may
+    itself now hold a formula/chemsys, forwarded verbatim to the fetch)."""
+    import jaxrens_al.run.reference_db as refdb
+
+    seen = {}
+
+    def _fetch(system, **kwargs):
+        seen["system"] = system
+        seen.update(kwargs)
+        return [_bulk_si()]
+
+    monkeypatch.setattr(refdb, "fetch_mp_structures", _fetch)
+    build_reference_database(
+        element="SiO2",
+        vol_scalings=[1.0],
+        rattle_strengths=(0.0,),
+        target_cutoff=2.0,
+        max_e_above_hull=0.05,  # a query filter forwarded to the fetch
+    )
+    assert seen["system"] == "SiO2"
+    assert seen["max_e_above_hull"] == 0.05
+
+    with pytest.raises(ValueError, match="not both"):
+        build_reference_database("Si", element="Si")
+    with pytest.raises(ValueError, match="No system given"):
+        build_reference_database()
 
 
 # --------------------------------------------------------------------------
@@ -155,6 +193,20 @@ def test_eos_phase_scans_sanitizes_labels_for_filenames():
     a.info["spacegroup"] = "P6_3/mmc"  # space-group symbols carry a slash
     (label,) = eos_phase_scans([a], vol_scalings=[0.98, 1.0, 1.02])
     assert "/" not in label and label == "P6_3_mmc"
+
+
+def test_eos_phase_scans_can_label_by_composition():
+    # A multi-compound scan set: bare mp- ids say nothing about WHICH
+    # compound a curve belongs to, so the label can carry the formula.
+    a, b = _bulk_si(), _bulk_si(6.0)
+    a.info.update(mp_id="mp-149", formula="Si")
+    b.info.update(mp_id="mp-6930", formula="SiO2")
+    plain = eos_phase_scans([a, b], vol_scalings=[1.0], target_cutoff=None)
+    assert set(plain) == {"mp-149", "mp-6930"}  # default: unchanged
+    labelled = eos_phase_scans(
+        [a, b], vol_scalings=[1.0], target_cutoff=None, label_formula=True
+    )
+    assert set(labelled) == {"Si_mp-149", "SiO2_mp-6930"}
 
 
 def test_eos_phase_scans_none_cutoff_keeps_unit_cell():
@@ -191,3 +243,208 @@ def test_fetch_requires_api_key(monkeypatch):
     monkeypatch.delenv("MP_API_KEY", raising=False)
     with pytest.raises(ValueError, match="API key"):
         fetch_mp_elemental("Si")
+    with pytest.raises(ValueError, match="API key"):
+        fetch_mp_structures("SiO2")
+
+
+def test_fetch_requires_a_system(monkeypatch):
+    monkeypatch.setenv("MP_API_KEY", "dummy")
+    with pytest.raises(ValueError, match="No system given"):
+        fetch_mp_structures()
+    with pytest.raises(ValueError, match="not both"):
+        fetch_mp_structures("SiO2", chemsys="Si-O")
+
+
+# --------------------------------------------------------------------------
+# System spec -> Materials Project query constraint
+# --------------------------------------------------------------------------
+@pytest.mark.parametrize(
+    "system, expected",
+    [
+        ("Si", {"chemsys": "Si"}),  # element -> the one-element system
+        ("Sn ", {"chemsys": "Sn"}),
+        ("Si-O", {"chemsys": "O-Si"}),  # chemsys, alphabetised like MP's
+        ("O-Si", {"chemsys": "O-Si"}),
+        ("Li-Fe-O", {"chemsys": "Fe-Li-O"}),
+        ("*-*-O", {"chemsys": "*-*-O"}),  # wildcards keep their order
+        (["O", "Si"], {"chemsys": "O-Si"}),
+        (("Si", "O"), {"chemsys": "O-Si"}),
+        ("SiO2", {"formula": "SiO2"}),  # anything else is a formula
+        ("Li2FeSiO4", {"formula": "Li2FeSiO4"}),
+        ("ABC3", {"formula": "ABC3"}),
+    ],
+)
+def test_parse_system_dispatch(system, expected):
+    assert _parse_system(system) == expected
+
+
+@pytest.mark.parametrize("bad", ["", "  ", [], "Si-Xx", ["Si", "Xx"]])
+def test_parse_system_rejects_nonsense(bad):
+    with pytest.raises(ValueError):
+        _parse_system(bad)
+
+
+def test_expand_subsystems_covers_every_combination():
+    # MP's chemsys matches EXACTLY those elements, so a Si-O query returns no
+    # pure Si; the expansion is what puts the end members back in.
+    assert set(_expand_subsystems("Si-O")) == {"O", "Si", "O-Si"}
+    assert set(_expand_subsystems("Li-Fe-O")) == {
+        "Fe",
+        "Li",
+        "O",
+        "Fe-Li",
+        "Fe-O",
+        "Li-O",
+        "Fe-Li-O",
+    }
+    assert _expand_subsystems("*-O") == ["*-O"]  # nothing to expand
+
+
+# --------------------------------------------------------------------------
+# Query assembly + post-filters (a stubbed MPRester -- no network)
+# --------------------------------------------------------------------------
+class _FakeSummary:
+    def __init__(self, results):
+        self._results = results
+        self.query = None
+
+    def search(self, **kwargs):
+        kwargs.pop("fields", None)
+        self.query = kwargs
+        return self._results
+
+
+class _FakeDoc:
+    """The subset of an MP summary doc the fetch reads."""
+
+    def __init__(self, mp_id, formula, e_hull, nsites=2, spacegroup="Fm-3m"):
+        self.material_id = mp_id
+        self.formula_pretty = formula
+        self.energy_above_hull = e_hull
+        self.is_stable = e_hull == 0.0
+        self.nsites = nsites
+        self.symmetry = type("S", (), {"symbol": spacegroup})()
+        self.structure = None
+
+
+def _fake_mp(monkeypatch, results):
+    """Stub mp_api + pymatgen so the fetch runs offline; returns the summary
+    stub, whose ``.query`` records what was asked of the server."""
+    summary = _FakeSummary(results)
+
+    class _Rester:
+        def __init__(self, key):
+            self.key = key
+
+        def __enter__(self):
+            self.materials = type("M", (), {"summary": summary})()
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    mp_client = types.ModuleType("mp_api.client")
+    mp_client.MPRester = _Rester
+    mp_pkg = types.ModuleType("mp_api")
+    mp_pkg.client = mp_client
+    adaptor = types.ModuleType("pymatgen.io.ase")
+    adaptor.AseAtomsAdaptor = type(
+        "A", (), {"get_atoms": staticmethod(lambda structure: _bulk_si())}
+    )
+    for name, mod in [
+        ("mp_api", mp_pkg),
+        ("mp_api.client", mp_client),
+        ("pymatgen", types.ModuleType("pymatgen")),
+        ("pymatgen.io", types.ModuleType("pymatgen.io")),
+        ("pymatgen.io.ase", adaptor),
+    ]:
+        monkeypatch.setitem(sys.modules, name, mod)
+    monkeypatch.setenv("MP_API_KEY", "dummy")
+    return summary
+
+
+def test_fetch_builds_the_expected_query(monkeypatch):
+    summary = _fake_mp(monkeypatch, [])
+    fetch_mp_structures(
+        "Li-Fe-O",
+        include_subsystems=True,
+        max_e_above_hull=0.05,
+        max_sites=20,
+        num_elements=2,
+        exclude_elements=["H"],
+        only_stable=True,
+    )
+    assert summary.query == {
+        # every sub-system, so the end members and binaries come along
+        "chemsys": ["Fe", "Fe-Li", "Fe-Li-O", "Fe-O", "Li", "Li-O", "O"],
+        "theoretical": False,
+        "exclude_elements": ["H"],
+        "num_elements": (1, 2),
+        "energy_above_hull": (0.0, 0.05),
+        "is_stable": True,
+        "num_sites": (1, 20),
+    }
+
+
+def test_fetch_elemental_query_is_the_single_element_system(monkeypatch):
+    # The historical entry point keeps its meaning: pure-element polymorphs.
+    summary = _fake_mp(monkeypatch, [])
+    fetch_mp_elemental("Si", theoretical=True)
+    assert summary.query == {"chemsys": "Si", "theoretical": True}
+
+
+def test_fetch_ignores_subsystems_for_a_formula(monkeypatch):
+    summary = _fake_mp(monkeypatch, [])
+    fetch_mp_structures("SiO2", include_subsystems=True)
+    assert summary.query == {"formula": "SiO2", "theoretical": False}
+
+
+def test_fetch_tags_and_orders_by_stability(monkeypatch):
+    _fake_mp(
+        monkeypatch,
+        [
+            _FakeDoc("mp-2", "SiO2", 0.30),
+            _FakeDoc("mp-1", "Si", 0.00),
+            _FakeDoc("mp-3", "SiO2", 0.10),
+        ],
+    )
+    got = fetch_mp_structures("Si-O", include_subsystems=True)
+    assert [at.info["mp_id"] for at in got] == ["mp-1", "mp-3", "mp-2"]
+    assert got[0].info["formula"] == "Si"
+    assert got[0].info["is_stable"] is True
+    assert got[0].info["spacegroup"] == "Fm-3m"
+
+
+def test_fetch_caps_keep_the_most_stable(monkeypatch):
+    docs = [
+        _FakeDoc("mp-1", "Si", 0.00),
+        _FakeDoc("mp-2", "SiO2", 0.01),
+        _FakeDoc("mp-3", "SiO2", 0.02),
+        _FakeDoc("mp-4", "SiO2", 0.03),
+    ]
+    _fake_mp(monkeypatch, docs)
+    got = fetch_mp_structures("Si-O", max_structures=2)
+    assert [at.info["mp_id"] for at in got] == ["mp-1", "mp-2"]
+
+    _fake_mp(monkeypatch, docs)
+    # Per-composition cap: the SiO2 polymorph tail is trimmed, but SiO2 is
+    # not crowded out by the (more stable) element -- what max_structures
+    # alone would do.
+    got = fetch_mp_structures("Si-O", max_per_composition=1)
+    assert [at.info["mp_id"] for at in got] == ["mp-1", "mp-2"]
+    assert {at.info["formula"] for at in got} == {"Si", "SiO2"}
+
+
+def test_mp_query_kwargs_picks_only_query_filters():
+    picked = mp_query_kwargs(
+        {
+            "element": "Si",  # the system itself is not a filter
+            "target_cutoff": 3.0,  # a rattling knob
+            "level": "dft",  # a caller's own key
+            "max_e_above_hull": 0.05,
+            "max_sites": None,  # unset -> the fetch default wins
+            "theoretical": False,  # off -> not forwarded
+            "include_subsystems": True,
+        }
+    )
+    assert picked == {"max_e_above_hull": 0.05, "include_subsystems": True}

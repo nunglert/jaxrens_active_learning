@@ -97,7 +97,7 @@ def test_build_eos_reference_writes_per_phase_files(tmp_path, monkeypatch):
 
     monkeypatch.setattr(
         refdb,
-        "fetch_mp_elemental",
+        "fetch_mp_structures",
         lambda *a, **k: [_phase("mp-1"), _phase("mp-2")],
     )
 
@@ -128,3 +128,30 @@ def test_build_eos_reference_writes_per_phase_files(tmp_path, monkeypatch):
         frames = ase.io.read(str(f), index=":")
         assert len(frames) == 3  # one per volume scaling
         assert all("REF_energy" in at.info for at in frames)
+
+    # A multi-compound fetch instead: the stems carry the composition, since
+    # bare mp- ids would not say which compound a curve belongs to. (A
+    # single-composition system keeps the legacy stems asserted above.)
+    def _labelled(mp_id, formula):
+        at = _phase(mp_id)
+        at.info["formula"] = formula
+        return at
+
+    monkeypatch.setattr(
+        refdb,
+        "fetch_mp_structures",
+        lambda *a, **k: [_labelled("mp-1", "Sn"), _labelled("mp-2", "SnO2")],
+    )
+    files = build_eos_reference(
+        _EosEvaluator(),
+        system="Sn-O",  # a chemsys, not an element
+        vol_scalings=[1.0],
+        target_cutoff=2.0,
+        out_dir=tmp_path / "ref2",
+        workdir=tmp_path / "work2",
+        max_e_above_hull=0.05,  # a query filter reaches the fetch
+    )
+    assert {f.name for f in files} == {
+        "eos_Sn_mp-1.extxyz",
+        "eos_SnO2_mp-2.extxyz",
+    }

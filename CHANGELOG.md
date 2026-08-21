@@ -13,6 +13,36 @@ the new `## [X.Y.Z] — YYYY-MM-DD`, add a fresh empty `[Unreleased]`, then tag.
 ## [Unreleased]
 
 ### Added
+- **Reference databases for any compound, not just elements.**
+  `reference_db.fetch_mp_structures` generalises the Materials Project fetch:
+  the system spec is an element (`"Si"`), a formula (`"SiO2"`), a chemical
+  system (`"Si-O"`, `"Li-Fe-O"`, `"*-*-O"`) or a list of symbols, dispatched to
+  MP's `chemsys`/`formula` constraint by `_parse_system`. Since MP's `chemsys`
+  matches materials of *exactly* those elements, `include_subsystems=True`
+  expands a system over all its sub-systems (`Li-Fe-O` → also `Li-O`, `Fe`, …),
+  putting the end members back in. New phase-count filters — a compound system
+  holds orders of magnitude more polymorphs than an element, and each is
+  multiplied by the rattle grid: `max_e_above_hull`, `only_stable`, `max_sites`,
+  `max_per_composition`, `max_structures`, `elements`, `exclude_elements`,
+  `num_elements` (plus any other `mp_api` filter via `**extra_query`). Results
+  are ordered most-stable-first (ties by `mp_id`) so the caps keep the relevant
+  phases and the output is reproducible, and each structure is tagged with
+  `mp_id`, `spacegroup`, `formula`, `e_above_hull` and `is_stable`.
+  `build_reference_database`, `reference_eval.build_eos_reference` and the
+  `mp_elemental`/`eos` resolver kinds all take the general system and forward
+  the filters (`mp_query_kwargs` picks them out of a loose param bag);
+  `eos_phase_scans(label_formula=True)` puts the composition in each phase's
+  file stem (`eos_SiO2_mp-6922.extxyz`), which `build_eos_reference` enables
+  automatically for a multi-compound fetch. `jaxrens-al refdb` takes the system
+  as its positional argument with a *Materials Project filters* flag group
+  (`--include-subsystems`, `--max-e-above-hull`, `--only-stable`, `--max-sites`,
+  `--max-per-composition`, `--max-structures`, `--num-elements`,
+  `--exclude-elements`).
+  **Backwards compatible by addition**: `fetch_mp_elemental(element)` remains
+  the single-element entry point, `system=`/`element=` are interchangeable
+  (`resolve_system`), a legacy `element=` may now itself hold a formula or
+  chemsys (so a panel's `reference_element="Si-O"` works with no dashboard
+  change), and single-element EOS file stems are unchanged.
 - **`jaxrens-al dashboard --iterations I [I ...]`.** Renders only the named AL
   iterations instead of the whole run — the switch for trying a panel out, since
   the remote annotation / model-evaluation pass then covers just those
