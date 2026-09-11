@@ -252,6 +252,30 @@ def resolve_processing(
     return delivered
 
 
+def _submit_pending(pending) -> None:
+    """Submit every ``(key, RemoteTrajectoryProcessor)`` in ``pending``.
+
+    ``RemoteTrajectoryProcessor.run()`` bundles allocate+submit+**wait**
+    +collect into one blocking call, so a caller looping ``.run()`` over
+    several independent jobs (e.g. one per distinct model) only puts job
+    *N+1* on the SLURM queue once job *N* has entirely finished. Splitting
+    off ``allocate_data()`` + ``submit(only_start=True)`` -- the same split
+    ``ArrayScriptTask.detach()`` uses for crash-resume -- submits every job
+    up front instead, so independent jobs queue and run concurrently. Pair
+    with :func:`_collect_pending`.
+    """
+    for _, proc in pending:
+        proc.allocate_data()
+        proc.submit(only_start=True)
+
+
+def _collect_pending(pending) -> None:
+    """Wait for + harvest every job started by :func:`_submit_pending`."""
+    for _, proc in pending:
+        proc.executor.wait_until_finished()
+        proc.collect_and_harvest()
+
+
 def resolve_model_evaluations(
     panels,
     *,
@@ -276,7 +300,11 @@ def resolve_model_evaluations(
 
     One job per model (not one merged job) both dodges the pipeline's
     same-processor-name rule and avoids scoring every model on every other
-    model's configs. Args mirror :func:`resolve_processing`.
+    model's configs. Every model's job is submitted (:func:`_submit_pending`)
+    before any of them is awaited (:func:`_collect_pending`), so independent
+    models' jobs queue on the cluster concurrently instead of one only
+    reaching the queue once the previous model's job has fully finished. Args
+    mirror :func:`resolve_processing`.
 
     Returns:
         A ``{model -> {input_file -> annotated_file}}`` mapping (empty if no
@@ -304,7 +332,8 @@ def resolve_model_evaluations(
         )
         groups.setdefault(key, set()).update(n.inputs)
 
-    delivered: dict = {}
+    group_files: dict = {}  # key -> (mapping, inputs)
+    pending = []  # (key, RemoteTrajectoryProcessor) awaiting collection
     for (
         model,
         backend,
@@ -312,12 +341,14 @@ def resolve_model_evaluations(
         max_nb,
         cutoff,
     ), input_set in groups.items():
+        key = (model, backend, want_forces, max_nb, cutoff)
         inputs = sorted(input_set)
         energy_key, forces_key = model_eval_keys(model)
         tag = stable_tag(
             "meval", (model, backend, want_forces, max_nb, cutoff)
         )
         mapping = {f: Path(front_tag(f, tag)) for f in inputs}
+        group_files[key] = (mapping, inputs)
         todo = [
             f for f in inputs if not (reuse and _up_to_date(f, mapping[f]))
         ]
@@ -334,7 +365,7 @@ def resolve_model_evaluations(
                 len(inputs),
                 len(inputs) - len(todo),
             )
-            RemoteTrajectoryProcessor(
+            proc = RemoteTrajectoryProcessor(
                 traj_files=list(todo),
                 cluster_config=cluster_config,
                 remote_fs=remote_fs,
@@ -358,11 +389,18 @@ def resolve_model_evaluations(
                 jobname="AL_MODEL_EVAL",
                 loop_time=loop_time,
                 every=1,
-            ).run()
-        # Keyed by model, not input: distinct iterations' models annotate the
-        # *same* (shared) reference files into differently-tagged outputs, so a
-        # flat {input -> annotated} map would let the last model overwrite the
-        # rest. ``{model -> {input -> annotated}}`` keeps each panel's own.
+            )
+            pending.append((key, proc))
+
+    _submit_pending(pending)
+    _collect_pending(pending)
+
+    # Keyed by model, not input: distinct iterations' models annotate the
+    # *same* (shared) reference files into differently-tagged outputs, so a
+    # flat {input -> annotated} map would let the last model overwrite the
+    # rest. ``{model -> {input -> annotated}}`` keeps each panel's own.
+    delivered: dict = {}
+    for (model, *_rest), (mapping, inputs) in group_files.items():
         delivered.setdefault(model, {}).update({f: mapping[f] for f in inputs})
 
     deliver(consumers, "receive_model_eval", delivered)
@@ -390,8 +428,11 @@ def resolve_phase_labeling(
     distinct model** -- an ordered ``[relax, spacegroup]`` pipeline over that
     model's trajectories. Relaxation *mutates* structures, so this is its own
     job, isolated from the (annotation-only) Steinhardt / model-eval passes.
-    Delivers ``{model -> {input -> labelled_file}}`` back via
-    ``receive_phase_labels``. Args mirror :func:`resolve_processing`.
+    Every distinct model's job is submitted (:func:`_submit_pending`) before
+    any of them is awaited (:func:`_collect_pending`), so independent models'
+    jobs queue on the cluster concurrently instead of serially. Delivers
+    ``{model -> {input -> labelled_file}}`` back via ``receive_phase_labels``.
+    Args mirror :func:`resolve_processing`.
     """
     consumers, needs = collect_needs(panels, "phase_needs")
     if not needs:
@@ -412,12 +453,14 @@ def resolve_phase_labeling(
         )
         groups.setdefault(key, set()).update(n.inputs)
 
-    delivered: dict = {}
+    group_files: dict = {}  # key -> (mapping, inputs)
+    pending = []  # (key, RemoteTrajectoryProcessor) awaiting collection
     for key, input_set in groups.items():
         model, backend, method, fmax, steps, symprec, max_nb = key
         inputs = sorted(input_set)
         tag = stable_tag("phase", key)
         mapping = {f: Path(front_tag(f, tag)) for f in inputs}
+        group_files[key] = (mapping, inputs)
         todo = [
             f for f in inputs if not (reuse and _up_to_date(f, mapping[f]))
         ]
@@ -437,7 +480,7 @@ def resolve_phase_labeling(
                 len(inputs),
                 len(inputs) - len(todo),
             )
-            RemoteTrajectoryProcessor(
+            proc = RemoteTrajectoryProcessor(
                 traj_files=list(todo),
                 cluster_config=cluster_config,
                 remote_fs=remote_fs,
@@ -462,7 +505,14 @@ def resolve_phase_labeling(
                 jobname="AL_PHASE_LABEL",
                 loop_time=loop_time,
                 every=1,
-            ).run()
+            )
+            pending.append((key, proc))
+
+    _submit_pending(pending)
+    _collect_pending(pending)
+
+    delivered: dict = {}
+    for (model, *_rest), (mapping, inputs) in group_files.items():
         delivered.setdefault(model, {}).update({f: mapping[f] for f in inputs})
 
     deliver(consumers, "receive_phase_labels", delivered)

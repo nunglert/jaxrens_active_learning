@@ -338,10 +338,22 @@ def test_model_eval_processor_stages_plain_file(tmp_path):
     assert args["model_remote"] == "/remote/model.pkl"
 
 
+class _FakeExecutor:
+    """Stand-in for ``RemoteTask.executor``: the resolver's submit-all-then-
+    collect-all split only touches ``wait_until_finished``."""
+
+    def wait_until_finished(self):
+        pass
+
+
 class _FakeModelEvalHandler:
     """Fake RemoteTrajectoryProcessor: writes each model's keys onto the frames
     where the real handler's redistribute would (front_tag), so the resolver is
-    testable without a cluster or a real model."""
+    testable without a cluster or a real model. Exposes the same
+    allocate_data()/submit(only_start=)/executor.wait_until_finished()/
+    collect_and_harvest() split the resolver's submit-all-then-collect-all
+    pattern (:func:`~jaxrens_al.run.processing_resolver._submit_pending` /
+    ``_collect_pending``) calls instead of the blocking ``run()``."""
 
     calls = []
 
@@ -349,11 +361,18 @@ class _FakeModelEvalHandler:
         self.traj_files = traj_files
         self.tag = tag
         self.proc = processors[0]
+        self.executor = _FakeExecutor()
         _FakeModelEvalHandler.calls.append(
             {"tag": tag, "n_traj": len(traj_files), "model": self.proc.model}
         )
 
-    def run(self):
+    def allocate_data(self):
+        pass
+
+    def submit(self, only_start=False):
+        pass
+
+    def collect_and_harvest(self):
         import ase.io
         import numpy as np
         from remote_handler.core.atoms_shard import front_tag
@@ -1204,7 +1223,9 @@ def test_make_relax_batch_minimises_a_vmapped_bucket(method):
 
 class _FakePhaseHandler:
     """Fake RemoteTrajectoryProcessor for the phase pipeline: writes a
-    spacegroup onto each frame where redistribute would (front_tag)."""
+    spacegroup onto each frame where redistribute would (front_tag). Same
+    allocate_data/submit/executor.wait_until_finished/collect_and_harvest
+    split as :class:`_FakeModelEvalHandler`."""
 
     calls = []
 
@@ -1212,11 +1233,18 @@ class _FakePhaseHandler:
         self.traj_files = traj_files
         self.tag = tag
         self.steps = [p.name for p in processors]
+        self.executor = _FakeExecutor()
         _FakePhaseHandler.calls.append(
             {"tag": tag, "n_traj": len(traj_files), "steps": self.steps}
         )
 
-    def run(self):
+    def allocate_data(self):
+        pass
+
+    def submit(self, only_start=False):
+        pass
+
+    def collect_and_harvest(self):
         import ase.io
         from remote_handler.core.atoms_shard import front_tag
 
