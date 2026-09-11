@@ -5,6 +5,7 @@ stub-mode and config-assembly tests run with NO cluster, SSH, or jaxrens --
 only remote_handler + ase + pyyaml on the host.
 """
 
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
@@ -191,3 +192,169 @@ def test_body_template_is_shipped():
     body = template_dir() / "body_jaxrens.sh.j2"
     assert body.exists()
     assert "jaxrens run" in body.read_text()
+    assert "is_finished.info" in body.read_text()
+
+
+def test_pending_manifest_points_at_ns_sampler_results(
+    mock_remote_fs, mock_cluster_config, tmp_path
+):
+    """Reattach hook (DetachableTaskMixin): <calcdir>/ns_sampler/results.manifest.json."""
+    cfg = _write_base_config(tmp_path / "ns.yaml")
+    sampler = JaxrensNSSampler(
+        remote_fs=mock_remote_fs,
+        cluster_config=mock_cluster_config,
+        config_file=cfg,
+        stub=True,
+    )
+    calcdir = tmp_path / "6"
+    assert sampler.pending_manifest(calcdir) == (
+        calcdir / "ns_sampler" / "results.manifest.json"
+    )
+
+
+class _FakeNSTask:
+    """Stand-in for SingleScriptTask: records what the sampler asked it to
+    do instead of touching a cluster, and fakes a finished run by writing a
+    trajectory into local_savepath -- so ``get_sampled_configs`` is testable
+    for both the fresh-submit and the reattached (``collect_only``) path."""
+
+    build_calls: list = []
+    from_manifest_calls: list = []
+    submitted: list = []
+    collected: list = []
+    finish_result = True
+
+    def __init__(self, *, local_savepath, _record=True, **kw):
+        self.kw = kw
+        self.local_savepath = Path(local_savepath)
+        if _record:  # not for from_manifest's reconstruction -- see below
+            _FakeNSTask.build_calls.append(
+                {"local_savepath": local_savepath, **kw}
+            )
+
+    def copy_path(self, path):
+        return f"/remote/{Path(path).name}"
+
+    copy_file = copy_path
+
+    def allocate_data(self):
+        pass
+
+    def submit(self, only_start=False):
+        _FakeNSTask.submitted.append(self)
+
+    def finish_check(self):
+        return _FakeNSTask.finish_result
+
+    def collect_results(self):
+        _FakeNSTask.collected.append(self)
+        self.local_savepath.mkdir(parents=True, exist_ok=True)
+        from ase import Atoms
+
+        ase.io.write(
+            self.local_savepath / "ns.run00.traj.extxyz",
+            [Atoms("Cu", positions=[[0, 0, 0]], cell=[5, 5, 5], pbc=True)],
+        )
+
+    @classmethod
+    def from_manifest(cls, manifest_path, remote_fs=None, **extra):
+        cls.from_manifest_calls.append(str(manifest_path))
+        return cls(
+            local_savepath=Path(str(manifest_path)[: -len(".manifest.json")]),
+            _record=False,
+        )
+
+
+@pytest.fixture
+def fake_ns_task(monkeypatch):
+    _FakeNSTask.build_calls.clear()
+    _FakeNSTask.from_manifest_calls.clear()
+    _FakeNSTask.submitted.clear()
+    _FakeNSTask.collected.clear()
+    _FakeNSTask.finish_result = True
+    monkeypatch.setattr("jaxrens_al.run.sampler.SingleScriptTask", _FakeNSTask)
+    monkeypatch.setattr(
+        "remote_handler.core.tasks.SingleScriptTask", _FakeNSTask
+    )
+    return _FakeNSTask
+
+
+def test_fresh_run_builds_and_submits_a_task(
+    mock_remote_fs, mock_cluster_config, tmp_path, fake_ns_task
+):
+    """The normal (not reattached) path: builds a task, ships the model,
+    submits, and collects -- unlike collect_only, sampler_input IS used."""
+    cfg = _write_base_config(tmp_path / "ns.yaml")
+    calcdir = tmp_path / "0"
+    calcdir.mkdir()
+    model_file = tmp_path / "model_0.pkl"
+    model_file.write_bytes(b"mock")
+
+    sampler = JaxrensNSSampler(
+        remote_fs=mock_remote_fs,
+        cluster_config=mock_cluster_config,
+        config_file=cfg,
+        out_file_prefix="ns",
+    )
+    sampler.update(calcdir, model_file)
+    assert len(fake_ns_task.build_calls) == 1  # built, not reattached
+    assert not fake_ns_task.from_manifest_calls
+
+    sampled = sampler.get_sampled_configs()
+    assert len(fake_ns_task.submitted) == 1  # actually submitted
+    assert len(fake_ns_task.collected) == 1
+    assert sampled.exists()
+
+
+def test_collect_only_reattaches_without_resubmitting(
+    mock_remote_fs, mock_cluster_config, tmp_path, fake_ns_task
+):
+    """collect_only=True must never touch sampler_input/ship a model/build a
+    fresh task, and get_sampled_configs must collect without submitting --
+    the behaviour StagedActiveLearningHandler._reattach_if_pending relies on
+    to avoid duplicating an in-flight job after a driver crash."""
+    cfg = _write_base_config(tmp_path / "ns.yaml")
+    calcdir = tmp_path / "6"
+    calcdir.mkdir()
+
+    sampler = JaxrensNSSampler(
+        remote_fs=mock_remote_fs,
+        cluster_config=mock_cluster_config,
+        config_file=cfg,
+        out_file_prefix="ns",
+        collect_only=True,
+    )
+    # sampler_input=None -- collect_only must never read it (no model to
+    # inject, no job to build).
+    sampler.update(calcdir, None)
+    assert not fake_ns_task.build_calls  # no fresh task built
+    assert fake_ns_task.from_manifest_calls == [
+        str(calcdir / "ns_sampler" / "results.manifest.json")
+    ]
+
+    sampled = sampler.get_sampled_configs()
+    assert not fake_ns_task.submitted  # never resubmitted
+    assert len(fake_ns_task.collected) == 1
+    assert sampled.exists()
+
+
+def test_collect_only_raises_if_job_not_actually_finished(
+    mock_remote_fs, mock_cluster_config, tmp_path, fake_ns_task
+):
+    """No is_finished.info (still running, killed, or timed out) must raise
+    rather than silently trusting whatever partial trajectory is on disk."""
+    fake_ns_task.finish_result = False
+    cfg = _write_base_config(tmp_path / "ns.yaml")
+    calcdir = tmp_path / "6"
+    calcdir.mkdir()
+
+    sampler = JaxrensNSSampler(
+        remote_fs=mock_remote_fs,
+        cluster_config=mock_cluster_config,
+        config_file=cfg,
+        collect_only=True,
+    )
+    sampler.update(calcdir, None)
+    with pytest.raises(WorkflowError, match="has not finished"):
+        sampler.get_sampled_configs()
+    assert not fake_ns_task.collected

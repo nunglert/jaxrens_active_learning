@@ -51,7 +51,7 @@ import yaml
 from ase import Atoms
 from remote_handler.core.cluster_handler import ClusterConfig
 from remote_handler.core.file_handler import FileSystemHandlerBase
-from remote_handler.core.tasks import SingleScriptTask
+from remote_handler.core.tasks import DetachableTaskMixin, SingleScriptTask
 from remote_handler.exceptions import FileSystemError, WorkflowError
 from remote_handler.workflows.active_learning_base import Sampler
 
@@ -84,7 +84,7 @@ def _set_dotted(config: dict, dotted_key: str, value) -> None:
     node[parts[-1]] = value
 
 
-class JaxrensNSSampler(Sampler):
+class JaxrensNSSampler(DetachableTaskMixin, Sampler):
     """Native jaxrens nested-sampling Sampler (``remote_handler.Sampler``).
 
     A pure producer: runs NS and returns *all* dead points. Candidate
@@ -116,7 +116,21 @@ class JaxrensNSSampler(Sampler):
             search path).
         stub: Dry-run without a cluster; emit mock NS dead points for testing.
         stub_n_dead: Number of mock dead points to emit in ``stub`` mode.
+        collect_only: If True, ``update`` reconstructs the job submitted by an
+            earlier, ``collect_only=False`` call (from the manifest written
+            beside ``<calcdir>/ns_sampler/results``, via
+            ``SingleScriptTask.from_manifest``) instead of shipping the model,
+            building a fresh config, and submitting a new job; and
+            ``get_sampled_configs`` skips the (already-done) submission.
+            ``sampler_input`` is not read in this mode. This is what lets
+            ``StagedActiveLearningHandler`` reattach to (rather than
+            duplicate) an in-flight NS job after the *driving process* --
+            not necessarily the job itself -- dies (a dropped SSH session, a
+            killed local process). See ``DetachableTaskMixin``.
     """
+
+    # calcdir/ns_sampler -- see DetachableTaskMixin.
+    _iteration_subdir = "ns_sampler"
 
     def __init__(
         self,
@@ -133,6 +147,7 @@ class JaxrensNSSampler(Sampler):
         job_type_template: str = "body_jaxrens.sh.j2",
         stub: bool = False,
         stub_n_dead: int = 64,
+        collect_only: bool = False,
     ):
         super().__init__()
         self.remote_fs = remote_fs
@@ -152,6 +167,7 @@ class JaxrensNSSampler(Sampler):
         self.job_type_template = job_type_template
         self.stub = stub
         self.stub_n_dead = stub_n_dead
+        self.collect_only = collect_only
 
         if backend_type is not None and backend_type not in _BACKEND_TYPES:
             raise WorkflowError(
@@ -218,57 +234,69 @@ class JaxrensNSSampler(Sampler):
         Args:
             calcdir: This iteration's working directory.
             sampler_input: Trained model file (or list -- the latest is used)
-                to plug into ``backend.checkpoint_path``.
+                to plug into ``backend.checkpoint_path``. Not read when
+                ``collect_only`` (see the class docstring).
             **kwargs: Schedule overrides as dotted jaxrens keys, e.g.
                 ``{"run.n_live": 400, "run.n_mcmc_steps": 30}``.
         """
-        self.ns_dir = Path(calcdir) / "ns_sampler"
-        self.results_dir = self.ns_dir / "results"
+        self.ns_dir = self.iteration_dir(calcdir)
+        self.results_dir = self.results_dir_for(calcdir)
         os.makedirs(self.ns_dir, exist_ok=True)
-
-        model_file = sampler_input
-        if isinstance(model_file, (list, tuple)):
-            model_file = model_file[-1]
-        self.model_file = Path(model_file)
-        it = Path(calcdir).name
+        self.config_path = self.ns_dir / "ns_config.yaml"
 
         if self.stub:
             return
 
-        self.config_path = self.ns_dir / "ns_config.yaml"
-        self.ns_task = SingleScriptTask(
-            script_file=None,
-            input_file=self.config_path,
-            local_savepath=self.results_dir,
-            cluster_config=self.cluster_config,
-            remote_fs=self.remote_fs,
-            logfile="ns.log",
-            remote_savepath=self.remote_savepath,
-            collect_only=False,
-            loop_time=self.loop_time,
-            jobname=f"AL_NS_{it}",
-            n_processors=self.n_gpu_parallel,
-            additional_files=self.additional_files,
-            job_type_template=self.job_type_template,
-        )
+        if not self.collect_only:
+            model_file = sampler_input
+            if isinstance(model_file, (list, tuple)):
+                model_file = model_file[-1]
+            self.model_file = Path(model_file)
+        it = Path(calcdir).name
 
-        # Ship the model (and start structure) and point the config at the
-        # resulting remote paths. ``copy_path`` (not ``copy_file``) so a
-        # mace-jax model *bundle directory* ships recursively, not just a
-        # single-file checkpoint.
-        model_remote = str(self.ns_task.copy_path(self.model_file))
-        start_remote = None
-        if self.start_config_file is not None:
-            start_remote = str(self.ns_task.copy_file(self.start_config_file))
-
-        config = self._build_config(model_remote, start_remote, dict(kwargs))
-        with open(self.config_path, "w") as f:
-            yaml.safe_dump(
-                config, f, default_flow_style=False, sort_keys=False
+        def _build_task() -> SingleScriptTask:
+            task = SingleScriptTask(
+                script_file=None,
+                input_file=self.config_path,
+                local_savepath=self.results_dir,
+                cluster_config=self.cluster_config,
+                remote_fs=self.remote_fs,
+                logfile="ns.log",
+                remote_savepath=self.remote_savepath,
+                collect_only=False,
+                loop_time=self.loop_time,
+                jobname=f"AL_NS_{it}",
+                n_processors=self.n_gpu_parallel,
+                additional_files=self.additional_files,
+                job_type_template=self.job_type_template,
             )
 
-        # Copies the config + writes the SLURM jobfile on the remote.
-        self.ns_task.allocate_data()
+            # Ship the model (and start structure) and point the config at
+            # the resulting remote paths. ``copy_path`` (not ``copy_file``)
+            # so a mace-jax model *bundle directory* ships recursively, not
+            # just a single-file checkpoint.
+            model_remote = str(task.copy_path(self.model_file))
+            start_remote = None
+            if self.start_config_file is not None:
+                start_remote = str(task.copy_file(self.start_config_file))
+
+            config = self._build_config(
+                model_remote, start_remote, dict(kwargs)
+            )
+            with open(self.config_path, "w") as f:
+                yaml.safe_dump(
+                    config, f, default_flow_style=False, sort_keys=False
+                )
+            return task
+
+        # collect_only=True reconstructs via SingleScriptTask.from_manifest
+        # (the mixin's default) rather than building a fresh task, which is
+        # exactly why _build_task above (never called on that path) is the
+        # only place touching sampler_input/model shipping/config writing.
+        # build_or_resume_single_task also does the allocate_data() call.
+        self.ns_task = self.build_or_resume_single_task(
+            self.results_dir, _build_task
+        )
 
     def get_sampled_configs(self) -> Path:
         """Run jaxrens, collect every dead point, and write them to extxyz.
@@ -281,7 +309,22 @@ class JaxrensNSSampler(Sampler):
             logger.info("stub mode -- creating mock NS dead points")
             all_ats = self._create_stub_outputs()
         else:
-            self.ns_task.run()
+            # Submit (unless collect_only -- already submitted in another
+            # process), then require the completion marker before trusting
+            # whatever trajectory files are on disk -- rather than the
+            # single task.run() convenience call, which unconditionally
+            # re-runs allocate_data() (wrong for collect_only) and skips
+            # this check (a killed/timed-out job still leaves *some*
+            # partial .traj.extxyz files behind).
+            self.submit_if_needed(self.ns_task)
+            if not self.ns_task.finish_check():
+                raise WorkflowError(
+                    "jaxrens NS job has not finished (no is_finished.info "
+                    f"in {self.results_dir}) -- it may still be running, "
+                    "have been killed/timed out, or failed. Rerun once the "
+                    "cluster job completes."
+                )
+            self.ns_task.collect_results()
             all_ats = self._read_trajectories()
 
         os.makedirs(self.results_dir, exist_ok=True)

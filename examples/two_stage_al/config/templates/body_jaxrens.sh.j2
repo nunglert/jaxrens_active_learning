@@ -5,3 +5,11 @@
 # ``<out_file_prefix>.run{NN}.traj.extxyz`` (multi-replica) in the job cwd and
 # are collected back by the SingleScriptTask.
 jaxrens run -c {{ input_file }} --n-gpus {{ n_cores }} --force
+
+# Success marker checked by SingleScriptTask.finish_check on the host (see
+# JaxrensNSSampler.get_sampled_configs) -- the wrapping job script's
+# `set -euo pipefail` means this line is never reached if `jaxrens run`
+# above failed, so its presence is a real completion signal, not just
+# "the job ended" (which a killed/timed-out run also leaves partial
+# .traj.extxyz files behind for).
+echo "jaxrens run finished" > is_finished.info
