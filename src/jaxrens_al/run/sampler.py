@@ -40,8 +40,10 @@ jaxrens). ``jaxrens`` itself only runs on the cluster; the host side needs just
 
 from __future__ import annotations
 
+import json
 import logging
 import os
+import re
 from pathlib import Path
 from typing import Optional, Union
 
@@ -132,6 +134,26 @@ class JaxrensNSSampler(DetachableTaskMixin, Sampler):
             has not finished yet, how long (seconds) to keep polling for its
             completion marker (every ``loop_time``) before giving up and
             raising, instead of failing on the very first check.
+        max_resubmits: Auto-resume across the cluster's walltime limit. When
+            > 1 (and not ``collect_only``), a fresh submit fires the first
+            job with ``only_start=True`` and additionally pre-queues up to
+            ``max_resubmits - 1`` standby continuations in the *same* remote
+            directory, each ``sbatch --dependency=afternotok:<previous>`` on
+            the identical rendered script -- SLURM only starts a standby
+            link if the previous one ends in anything but ``COMPLETED``
+            (covers a walltime ``TIMEOUT`` as well as a genuine failure,
+            uniformly, with no need to classify which); if a link actually
+            succeeds, later ones just sit ``PENDING`` until cancelled. The
+            body template (``body_jaxrens.sh.j2``) self-detects ``--resume``
+            vs. ``--force`` from whether a checkpoint already exists, so
+            every link runs the same script. Waiting for completion then
+            reuses ``wait_if_needed``'s file-based polling (job identity
+            doesn't matter -- only ``is_finished.info`` in the shared
+            directory), and any still-``PENDING`` standby links are
+            cancelled once it appears. ``1`` (default) is today's
+            behaviour: one job, no chain. Size ``reattach_max_wait`` to
+            cover the whole chain (e.g. ``max_resubmits`` times the
+            cluster's walltime) if you want a bound at all.
     """
 
     # calcdir/ns_sampler -- see DetachableTaskMixin.
@@ -154,6 +176,7 @@ class JaxrensNSSampler(DetachableTaskMixin, Sampler):
         stub_n_dead: int = 64,
         collect_only: bool = False,
         reattach_max_wait: Optional[float] = None,
+        max_resubmits: int = 1,
     ):
         super().__init__()
         self.remote_fs = remote_fs
@@ -175,6 +198,9 @@ class JaxrensNSSampler(DetachableTaskMixin, Sampler):
         self.stub_n_dead = stub_n_dead
         self.collect_only = collect_only
         self.reattach_max_wait = reattach_max_wait
+        if max_resubmits < 1:
+            raise WorkflowError("max_resubmits must be >= 1.")
+        self.max_resubmits = max_resubmits
 
         if backend_type is not None and backend_type not in _BACKEND_TYPES:
             raise WorkflowError(
@@ -316,15 +342,41 @@ class JaxrensNSSampler(DetachableTaskMixin, Sampler):
             logger.info("stub mode -- creating mock NS dead points")
             all_ats = self._create_stub_outputs()
         else:
-            self.submit_if_needed(self.ns_task)
-            self.wait_if_needed(
-                self.ns_task,
-                max_wait=self.reattach_max_wait,
-                error_message=(
-                    "jaxrens NS job did not finish successfully (no "
-                    f"is_finished.info in {self.results_dir})."
-                ),
+            error_message = (
+                "jaxrens NS job did not finish successfully (no "
+                f"is_finished.info in {self.results_dir})."
             )
+            if self.max_resubmits > 1 and not self.collect_only:
+                # Fresh submit with auto-resume chaining: fire job 1
+                # (only_start) and pre-queue the standby continuations
+                # ourselves -- submit_if_needed's plain blocking submit()
+                # only ever tracks one job id, which is wrong once a later
+                # chain link may be the one that actually finishes.
+                self._submit_chain()
+                # Reuse wait_if_needed's file-based polling branch (job
+                # identity doesn't matter, only is_finished.info in this
+                # directory) by pretending to be a reattach for the
+                # duration of the wait -- submission above already did
+                # what submit_if_needed would have, so this doesn't
+                # double-submit anything.
+                prev_collect_only = self.collect_only
+                self.collect_only = True
+                try:
+                    self.wait_if_needed(
+                        self.ns_task,
+                        max_wait=self.reattach_max_wait,
+                        error_message=error_message,
+                    )
+                finally:
+                    self.collect_only = prev_collect_only
+            else:
+                self.submit_if_needed(self.ns_task)
+                self.wait_if_needed(
+                    self.ns_task,
+                    max_wait=self.reattach_max_wait,
+                    error_message=error_message,
+                )
+            self._cleanup_chain()
             self.ns_task.collect_results()
             all_ats = self._read_trajectories()
 
@@ -335,6 +387,85 @@ class JaxrensNSSampler(DetachableTaskMixin, Sampler):
         return output_file
 
     # -- helpers ----------------------------------------------------------
+
+    def _chain_path(self) -> Path:
+        """Local sidecar tracking this NS job's auto-resume chain job ids.
+
+        Mirrors ``DetachableTaskMixin.manifest_path``'s
+        ``<results_dir>.manifest.json`` naming, so a driver that restarts
+        mid-chain finds it the same deterministic way the manifest is found.
+        """
+        return Path(str(self.results_dir) + ".chain.json")
+
+    def _submit_chain(self) -> None:
+        """Fire the NS job plus ``max_resubmits - 1`` standby continuations.
+
+        Each standby link is ``sbatch --dependency=afternotok:<previous>``
+        against the *same* rendered ``run_slurm.sh`` in the *same* remote
+        directory -- SLURM only starts it once the previous link ends in
+        anything but ``COMPLETED`` (a walltime ``TIMEOUT`` included, with no
+        need to tell that apart from a genuine failure here). If a link
+        actually succeeds, every later one just sits ``PENDING`` until
+        :meth:`_cleanup_chain` cancels it. The body template self-detects
+        ``--resume`` vs. ``--force`` from an existing checkpoint, so every
+        link runs the identical script -- nothing here needs to know which
+        attempt it is.
+        """
+        self.ns_task.submit(only_start=True)
+        job_ids = [str(self.ns_task.executor.pid)]
+        calcdir = self.ns_task.calcdir
+        for i in range(self.max_resubmits - 1):
+            link = i + 2  # link 1 is the job just fired above
+            result = self.remote_fs.run_command(
+                f"cd {calcdir} && sbatch "
+                f"-e slurm_chain{link}.err -o slurm_chain{link}.out "
+                f"--dependency=afternotok:{job_ids[-1]} run_slurm.sh"
+            )
+            match = re.search(r"(\d+)", result.stdout)
+            if not match:
+                logger.warning(
+                    "Could not parse a job id from chain link %d's sbatch "
+                    "output (stdout=%r stderr=%r); stopping the chain at "
+                    "%d link(s) instead of the requested %d.",
+                    link,
+                    result.stdout,
+                    result.stderr,
+                    len(job_ids),
+                    self.max_resubmits,
+                )
+                break
+            job_ids.append(match.group(1))
+        logger.info(
+            "Submitted jaxrens NS auto-resume chain in %s: jobs %s",
+            calcdir,
+            job_ids,
+        )
+        with open(self._chain_path(), "w") as f:
+            json.dump(job_ids, f)
+
+    def _cleanup_chain(self) -> None:
+        """Cancel any still-pending standby chain jobs once collected.
+
+        Safe to call unconditionally -- after a fresh chain submit, after
+        reattaching to one, or when chaining was never used at all (no
+        sidecar file, a no-op). Cancelling an already-finished or vanished
+        job id is a harmless no-op for ``scancel``.
+        """
+        chain_path = self._chain_path()
+        if not chain_path.exists():
+            return
+        with open(chain_path) as f:
+            job_ids = json.load(f)
+        if job_ids:
+            result = self.remote_fs.run_command(f"scancel {' '.join(job_ids)}")
+            if result.returncode != 0:
+                logger.warning(
+                    "scancel for leftover NS chain jobs %s returned %d: %s",
+                    job_ids,
+                    result.returncode,
+                    result.stderr,
+                )
+        chain_path.unlink()
 
     def _read_trajectories(self) -> list[Atoms]:
         """Read jaxrens ``.traj.extxyz`` outputs, tagging each with run_id."""

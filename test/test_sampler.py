@@ -13,7 +13,7 @@ import pytest
 pytest.importorskip("remote_handler")
 import ase.io  # noqa: E402
 from remote_handler.core.cluster_handler import ClusterConfig  # noqa: E402
-from remote_handler.exceptions import WorkflowError  # noqa: E402
+from remote_handler.exceptions import TaskError, WorkflowError  # noqa: E402
 from remote_handler.workflows.active_learning_base import Sampler  # noqa: E402
 
 from jaxrens_al.run.sampler import JaxrensNSSampler, _set_dotted  # noqa: E402
@@ -212,6 +212,13 @@ def test_pending_manifest_points_at_ns_sampler_results(
     )
 
 
+class _FakeExecutor:
+    """Just enough of a real executor for _submit_chain's job.executor.pid."""
+
+    def __init__(self):
+        self.pid = None
+
+
 class _FakeNSTask:
     """Stand-in for SingleScriptTask: records what the sampler asked it to
     do instead of touching a cluster, and fakes a finished run by writing a
@@ -223,10 +230,13 @@ class _FakeNSTask:
     submitted: list = []
     collected: list = []
     finish_result = True
+    next_pid = 1000
 
     def __init__(self, *, local_savepath, _record=True, **kw):
         self.kw = kw
         self.local_savepath = Path(local_savepath)
+        self.calcdir = Path(f"/remote/{self.local_savepath.name}")
+        self.executor = _FakeExecutor()
         if _record:  # not for from_manifest's reconstruction -- see below
             _FakeNSTask.build_calls.append(
                 {"local_savepath": local_savepath, **kw}
@@ -242,6 +252,8 @@ class _FakeNSTask:
 
     def submit(self, only_start=False):
         _FakeNSTask.submitted.append(self)
+        _FakeNSTask.next_pid += 1
+        self.executor.pid = _FakeNSTask.next_pid
 
     def finish_check(self):
         return _FakeNSTask.finish_result
@@ -272,6 +284,7 @@ def fake_ns_task(monkeypatch):
     _FakeNSTask.submitted.clear()
     _FakeNSTask.collected.clear()
     _FakeNSTask.finish_result = True
+    _FakeNSTask.next_pid = 1000
     monkeypatch.setattr("jaxrens_al.run.sampler.SingleScriptTask", _FakeNSTask)
     monkeypatch.setattr(
         "remote_handler.core.tasks.SingleScriptTask", _FakeNSTask
@@ -353,8 +366,133 @@ def test_collect_only_raises_if_job_not_actually_finished(
         cluster_config=mock_cluster_config,
         config_file=cfg,
         collect_only=True,
+        reattach_max_wait=0,  # fail on the first poll, no real sleeping
     )
     sampler.update(calcdir, None)
-    with pytest.raises(WorkflowError, match="has not finished"):
+    with pytest.raises(TaskError, match="did not finish successfully"):
         sampler.get_sampled_configs()
     assert not fake_ns_task.collected
+
+
+# ---------------------------------------------------------------------------
+# Auto-resume chaining (max_resubmits > 1): sbatch --dependency=afternotok.
+# ---------------------------------------------------------------------------
+class _FakeCommandResult:
+    def __init__(self, returncode=0, stdout="", stderr=""):
+        self.returncode = returncode
+        self.stdout = stdout
+        self.stderr = stderr
+
+
+@pytest.fixture
+def chain_remote_fs():
+    """A remote_fs whose run_command fakes sbatch/scancel, recording calls."""
+    fs = MagicMock()
+    fs.slurm_config = {"savepath": "/remote/path"}
+    fs.run_command_calls = []
+    next_id = {"n": 2000}
+
+    def _run_command(command):
+        fs.run_command_calls.append(command)
+        if command.startswith("scancel"):
+            return _FakeCommandResult(0, "", "")
+        next_id["n"] += 1
+        return _FakeCommandResult(0, f"Submitted batch job {next_id['n']}\n")
+
+    fs.run_command.side_effect = _run_command
+    return fs
+
+
+def test_max_resubmits_rejects_less_than_one(
+    mock_remote_fs, mock_cluster_config, tmp_path
+):
+    cfg = _write_base_config(tmp_path / "ns.yaml")
+    with pytest.raises(WorkflowError, match="max_resubmits"):
+        JaxrensNSSampler(
+            remote_fs=mock_remote_fs,
+            cluster_config=mock_cluster_config,
+            config_file=cfg,
+            stub=True,
+            max_resubmits=0,
+        )
+
+
+def test_chain_submission_queues_standbys_and_cleans_up_on_success(
+    mock_cluster_config, tmp_path, fake_ns_task, chain_remote_fs
+):
+    """max_resubmits=3: job 1 fired with only_start, 2 standby links queued
+    via sbatch --dependency=afternotok, all cancelled once collected."""
+    cfg = _write_base_config(tmp_path / "ns.yaml")
+    calcdir = tmp_path / "0"
+    calcdir.mkdir()
+    model_file = tmp_path / "model_0.pkl"
+    model_file.write_bytes(b"mock")
+
+    sampler = JaxrensNSSampler(
+        remote_fs=chain_remote_fs,
+        cluster_config=mock_cluster_config,
+        config_file=cfg,
+        out_file_prefix="ns",
+        max_resubmits=3,
+    )
+    sampler.update(calcdir, model_file)
+    sampler.get_sampled_configs()
+
+    # Only job 1 ever goes through task.submit() -- the standby links are
+    # raw sbatch calls, not separate SingleScriptTask instances.
+    assert len(fake_ns_task.submitted) == 1
+
+    sbatch_calls = [
+        c for c in chain_remote_fs.run_command_calls if "sbatch" in c
+    ]
+    assert len(sbatch_calls) == 2  # links 2 and 3
+    assert "--dependency=afternotok:" in sbatch_calls[0]
+    assert "--dependency=afternotok:" in sbatch_calls[1]
+    # link 2 depends on job 1's id, link 3 on link 2's (chained, not all on
+    # job 1).
+    job1_id = str(fake_ns_task.submitted[0].executor.pid)
+    assert f"afternotok:{job1_id}" in sbatch_calls[0]
+    assert f"afternotok:{job1_id}" not in sbatch_calls[1]
+
+    # Finished on the very first check (fake finish_result=True) -> every
+    # chain id (including job 1's own, a harmless no-op) gets cancelled in
+    # one scancel call, and the sidecar is removed.
+    scancel_calls = [
+        c for c in chain_remote_fs.run_command_calls if "scancel" in c
+    ]
+    assert len(scancel_calls) == 1
+    assert job1_id in scancel_calls[0]
+    assert not sampler._chain_path().exists()
+
+
+def test_chain_stops_early_when_sbatch_output_is_unparsable(
+    mock_cluster_config, tmp_path, fake_ns_task
+):
+    """A chain link whose sbatch call fails shouldn't crash the sampler --
+    it just stops queuing further standbys with whatever it already has."""
+    cfg = _write_base_config(tmp_path / "ns.yaml")
+    calcdir = tmp_path / "0"
+    calcdir.mkdir()
+    model_file = tmp_path / "model_0.pkl"
+    model_file.write_bytes(b"mock")
+
+    fs = MagicMock()
+    fs.run_command.return_value = _FakeCommandResult(1, "", "sbatch: error")
+
+    sampler = JaxrensNSSampler(
+        remote_fs=fs,
+        cluster_config=mock_cluster_config,
+        config_file=cfg,
+        out_file_prefix="ns",
+        max_resubmits=3,
+    )
+    sampler.update(calcdir, model_file)
+    sampler.get_sampled_configs()  # must not raise
+
+    # One failed attempt at link 2 (chain stops there), then one scancel
+    # call for whatever it did manage to queue (just job 1's own id).
+    assert fs.run_command.call_count == 2
+    first_call_args = fs.run_command.call_args_list[0].args[0]
+    assert "sbatch" in first_call_args
+    second_call_args = fs.run_command.call_args_list[1].args[0]
+    assert "scancel" in second_call_args
