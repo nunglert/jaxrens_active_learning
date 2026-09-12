@@ -127,6 +127,11 @@ class JaxrensNSSampler(DetachableTaskMixin, Sampler):
             duplicate) an in-flight NS job after the *driving process* --
             not necessarily the job itself -- dies (a dropped SSH session, a
             killed local process). See ``DetachableTaskMixin``.
+        reattach_max_wait: Forwarded to ``DetachableTaskMixin.wait_if_needed``
+            as ``max_wait``: when ``collect_only`` and the reattached job
+            has not finished yet, how long (seconds) to keep polling for its
+            completion marker (every ``loop_time``) before giving up and
+            raising, instead of failing on the very first check.
     """
 
     # calcdir/ns_sampler -- see DetachableTaskMixin.
@@ -148,6 +153,7 @@ class JaxrensNSSampler(DetachableTaskMixin, Sampler):
         stub: bool = False,
         stub_n_dead: int = 64,
         collect_only: bool = False,
+        reattach_max_wait: Optional[float] = None,
     ):
         super().__init__()
         self.remote_fs = remote_fs
@@ -168,6 +174,7 @@ class JaxrensNSSampler(DetachableTaskMixin, Sampler):
         self.stub = stub
         self.stub_n_dead = stub_n_dead
         self.collect_only = collect_only
+        self.reattach_max_wait = reattach_max_wait
 
         if backend_type is not None and backend_type not in _BACKEND_TYPES:
             raise WorkflowError(
@@ -309,21 +316,15 @@ class JaxrensNSSampler(DetachableTaskMixin, Sampler):
             logger.info("stub mode -- creating mock NS dead points")
             all_ats = self._create_stub_outputs()
         else:
-            # Submit (unless collect_only -- already submitted in another
-            # process), then require the completion marker before trusting
-            # whatever trajectory files are on disk -- rather than the
-            # single task.run() convenience call, which unconditionally
-            # re-runs allocate_data() (wrong for collect_only) and skips
-            # this check (a killed/timed-out job still leaves *some*
-            # partial .traj.extxyz files behind).
             self.submit_if_needed(self.ns_task)
-            if not self.ns_task.finish_check():
-                raise WorkflowError(
-                    "jaxrens NS job has not finished (no is_finished.info "
-                    f"in {self.results_dir}) -- it may still be running, "
-                    "have been killed/timed out, or failed. Rerun once the "
-                    "cluster job completes."
-                )
+            self.wait_if_needed(
+                self.ns_task,
+                max_wait=self.reattach_max_wait,
+                error_message=(
+                    "jaxrens NS job did not finish successfully (no "
+                    f"is_finished.info in {self.results_dir})."
+                ),
+            )
             self.ns_task.collect_results()
             all_ats = self._read_trajectories()
 
