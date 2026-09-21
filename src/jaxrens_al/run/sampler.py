@@ -154,6 +154,9 @@ class JaxrensNSSampler(DetachableTaskMixin, Sampler):
             behaviour: one job, no chain. Size ``reattach_max_wait`` to
             cover the whole chain (e.g. ``max_resubmits`` times the
             cluster's walltime) if you want a bound at all.
+        time_limit: Forwarded to ``SingleScriptTask`` as the job's cluster
+            walltime (e.g. ``"24:00:00"``). ``None`` defers to the
+            ``cluster_config`` default.
     """
 
     # calcdir/ns_sampler -- see DetachableTaskMixin.
@@ -177,6 +180,7 @@ class JaxrensNSSampler(DetachableTaskMixin, Sampler):
         collect_only: bool = False,
         reattach_max_wait: Optional[float] = None,
         max_resubmits: int = 1,
+        time_limit: Optional[str] = None,
     ):
         super().__init__()
         self.remote_fs = remote_fs
@@ -201,6 +205,7 @@ class JaxrensNSSampler(DetachableTaskMixin, Sampler):
         if max_resubmits < 1:
             raise WorkflowError("max_resubmits must be >= 1.")
         self.max_resubmits = max_resubmits
+        self.time_limit = time_limit
 
         if backend_type is not None and backend_type not in _BACKEND_TYPES:
             raise WorkflowError(
@@ -302,6 +307,7 @@ class JaxrensNSSampler(DetachableTaskMixin, Sampler):
                 n_processors=self.n_gpu_parallel,
                 additional_files=self.additional_files,
                 job_type_template=self.job_type_template,
+                time_limit=self.time_limit,
             )
 
             # Ship the model (and start structure) and point the config at
