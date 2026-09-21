@@ -329,9 +329,6 @@ def resolve_model_evaluations(
             n.want_forces,
             n.max_neighbors,
             n.min_image_cutoff,
-            n.batch_size,
-            n.max_neighbors_list,
-            n.max_neighbors_offset,
         )
         groups.setdefault(key, set()).update(n.inputs)
 
@@ -343,34 +340,12 @@ def resolve_model_evaluations(
         want_forces,
         max_nb,
         cutoff,
-        batch_size,
-        max_nb_list,
-        max_nb_offset,
     ), input_set in groups.items():
-        key = (
-            model,
-            backend,
-            want_forces,
-            max_nb,
-            cutoff,
-            batch_size,
-            max_nb_list,
-            max_nb_offset,
-        )
+        key = (model, backend, want_forces, max_nb, cutoff)
         inputs = sorted(input_set)
         energy_key, forces_key = model_eval_keys(model)
         tag = stable_tag(
-            "meval",
-            (
-                model,
-                backend,
-                want_forces,
-                max_nb,
-                cutoff,
-                batch_size,
-                max_nb_list,
-                max_nb_offset,
-            ),
+            "meval", (model, backend, want_forces, max_nb, cutoff)
         )
         mapping = {f: Path(front_tag(f, tag)) for f in inputs}
         group_files[key] = (mapping, inputs)
@@ -407,9 +382,6 @@ def resolve_model_evaluations(
                         want_forces=want_forces,
                         max_neighbors=max_nb,
                         min_image_cutoff=cutoff,
-                        batch_size=batch_size,
-                        max_neighbors_list=list(max_nb_list),
-                        max_neighbors_offset=max_nb_offset,
                     )
                 ],
                 tag=tag,
