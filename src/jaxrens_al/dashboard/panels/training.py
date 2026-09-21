@@ -158,7 +158,16 @@ class ModelParityPanel(ModelEvalConsumer, ParityPanel):
             ``neuralil``).
         energy_ref_key / forces_ref_key: info/array keys of the DFT reference.
         remote_eval: Evaluate the model on a GPU cluster instead of in-process.
-        max_neighbors: Static neighbor-buffer size for the backend call.
+        max_neighbors: Static neighbor-buffer size for the backend call (the
+            starting bucket when ``max_neighbors_list`` is given).
+        batch_size: Configs per vmapped backend call (see
+            :func:`jaxrens_al.dashboard.panels.model_eval.score_atoms`). Unset
+            evaluates one config per call.
+        max_neighbors_list: Neighbour-bucket ladder; sizes the buffer from the
+            geometry instead of pinning it at ``max_neighbors``. Only used
+            together with ``batch_size``.
+        max_neighbors_offset: Headroom above the observed neighbour count when
+            picking a bucket.
     """
 
     name = "model_parity"
@@ -175,6 +184,9 @@ class ModelParityPanel(ModelEvalConsumer, ParityPanel):
         show_forces: bool = True,
         remote_eval: bool = False,
         max_neighbors: int = 50,
+        batch_size: int | None = None,
+        max_neighbors_list=None,
+        max_neighbors_offset: int = 4,
         plot_kwargs: dict = None,
         **kwargs,
     ):
@@ -193,6 +205,9 @@ class ModelParityPanel(ModelEvalConsumer, ParityPanel):
         self._remote_eval = bool(remote_eval)
         self._model_eval_annotated: dict = {}
         self._max_neighbors = max_neighbors
+        self._batch_size = batch_size
+        self._max_neighbors_list = max_neighbors_list
+        self._max_neighbors_offset = max_neighbors_offset
 
     def model_eval_needs(self) -> list:
         """Score the config set with the model on the cluster (remote mode)."""
@@ -205,6 +220,9 @@ class ModelParityPanel(ModelEvalConsumer, ParityPanel):
                 self._backend_type,
                 want_forces=self._show_forces,
                 max_neighbors=self._max_neighbors,
+                batch_size=self._batch_size,
+                max_neighbors_list=self._max_neighbors_list,
+                max_neighbors_offset=self._max_neighbors_offset,
             )
         ]
 
@@ -230,6 +248,9 @@ class ModelParityPanel(ModelEvalConsumer, ParityPanel):
             atoms_list,
             want_forces=self._show_forces,
             max_neighbors=self._max_neighbors,
+            batch_size=self._batch_size,
+            max_neighbors_list=self._max_neighbors_list,
+            max_neighbors_offset=self._max_neighbors_offset,
         )
 
     def _predict_remote(self, frames):
@@ -547,6 +568,9 @@ class ModelParitySpec(PanelSpec):
     show_forces: bool = True
     remote_eval: bool | None = None
     max_neighbors: int = 50
+    batch_size: int | None = None
+    max_neighbors_list: list | None = None
+    max_neighbors_offset: int = 4
 
 
 def _build_model_parity(spec, ctx, c):
@@ -569,6 +593,9 @@ def _build_model_parity(spec, ctx, c):
             show_forces=spec.show_forces,
             remote_eval=remote_eval,
             max_neighbors=spec.max_neighbors,
+            batch_size=spec.batch_size,
+            max_neighbors_list=spec.max_neighbors_list,
+            max_neighbors_offset=spec.max_neighbors_offset,
             **c,
         )
     return None
@@ -590,6 +617,9 @@ class SamplingParitySpec(PanelSpec):
     show_forces: bool = True
     remote_eval: bool | None = None
     max_neighbors: int = 50
+    batch_size: int | None = None
+    max_neighbors_list: list | None = None
+    max_neighbors_offset: int = 4
 
 
 def _build_sampling_parity(spec, ctx, c):
@@ -611,6 +641,9 @@ def _build_sampling_parity(spec, ctx, c):
             show_forces=spec.show_forces,
             remote_eval=remote_eval,
             max_neighbors=spec.max_neighbors,
+            batch_size=spec.batch_size,
+            max_neighbors_list=spec.max_neighbors_list,
+            max_neighbors_offset=spec.max_neighbors_offset,
             **c,
         )
     return None

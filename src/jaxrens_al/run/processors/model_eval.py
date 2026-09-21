@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import tarfile
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
@@ -56,6 +56,9 @@ class ModelEvalArgs(ScriptInput):
     # 0.0 -> off; >0 -> score each frame on the smallest supercell hosting this
     # cutoff (Å), scaling the energy back to the input cell's atom count.
     min_image_cutoff: float = 0.0
+    batch_size: Optional[int] = None
+    max_neighbors_list: list = field(default_factory=list)
+    max_neighbors_offset: int = 4
 
     def validate(self, root: Optional[Path] = None) -> None:
         if not self.model_remote:
@@ -71,6 +74,21 @@ class ModelEvalArgs(ScriptInput):
         if not isinstance(self.max_neighbors, int) or self.max_neighbors <= 0:
             raise ScriptInputError(
                 "model_eval: 'max_neighbors' must be a positive int"
+            )
+        if self.batch_size is not None and (
+            not isinstance(self.batch_size, int) or self.batch_size <= 0
+        ):
+            raise ScriptInputError(
+                "model_eval: 'batch_size' must be a positive int or null"
+            )
+        ladder = list(self.max_neighbors_list)
+        if ladder and (
+            not all(isinstance(b, int) and b > 0 for b in ladder)
+            or ladder != sorted(ladder)
+        ):
+            raise ScriptInputError(
+                "model_eval: 'max_neighbors_list' must be positive ints "
+                "in ascending order"
             )
 
 
@@ -91,6 +109,9 @@ def run(atoms_list, args, calcpath=None):
     want_forces = bool(args.get("want_forces", False))
     max_neighbors = int(args.get("max_neighbors", 50))
     cutoff = float(args.get("min_image_cutoff", 0.0) or 0.0)
+    batch_size = args.get("batch_size")
+    ladder = list(args.get("max_neighbors_list") or [])
+    offset = int(args.get("max_neighbors_offset", 4))
 
     energies, forces = score_atoms(
         model_path,
@@ -99,6 +120,9 @@ def run(atoms_list, args, calcpath=None):
         want_forces=want_forces,
         max_neighbors=max_neighbors,
         min_image_cutoff=cutoff if cutoff > 0 else None,
+        batch_size=batch_size,
+        max_neighbors_list=ladder or None,
+        max_neighbors_offset=offset,
     )
     for i, atoms in enumerate(atoms_list):
         atoms.info[energy_key] = energies[i]
@@ -135,11 +159,20 @@ class ModelEvalProcessor(Processor):
         backend: jaxrens backend to load it with (``"mace"`` / ``"neuralil"``).
         energy_key / forces_key: ``info`` / ``arrays`` keys to write under.
         want_forces: Also compute per-atom forces (parity needs them).
-        max_neighbors: Static neighbour-buffer size for the backend call.
+        max_neighbors: Static neighbour-buffer size for the backend call (the
+            starting bucket when ``max_neighbors_list`` is given).
         min_image_cutoff: When set (Å), score each frame on the smallest
             supercell hosting the cutoff, scaling the energy back to the input
             cell's atom count (for a unit-cell EOS reference); ``None`` scores
             as-is.
+        batch_size: Configs per vmapped backend call. Unset evaluates one at a
+            time, which leaves a GPU idle on small cells.
+        max_neighbors_list: Neighbour-bucket ladder. Set it and the buffer is
+            sized per batch from the geometry instead of pinned at
+            ``max_neighbors``; the ladder bounds how many XLA compilations the
+            job pays for. Only used together with ``batch_size``.
+        max_neighbors_offset: Headroom above the observed neighbour count when
+            picking a bucket.
     """
 
     name = "model_eval"
@@ -154,6 +187,9 @@ class ModelEvalProcessor(Processor):
         want_forces: bool = False,
         max_neighbors: int = 50,
         min_image_cutoff: float | None = None,
+        batch_size: int | None = None,
+        max_neighbors_list=None,
+        max_neighbors_offset: int = 4,
     ):
         self.model = Path(model)
         self.backend = backend
@@ -164,6 +200,13 @@ class ModelEvalProcessor(Processor):
         self.min_image_cutoff = (
             0.0 if min_image_cutoff is None else float(min_image_cutoff)
         )
+        self.batch_size = None if batch_size is None else int(batch_size)
+        self.max_neighbors_list = (
+            sorted(int(b) for b in max_neighbors_list)
+            if max_neighbors_list
+            else []
+        )
+        self.max_neighbors_offset = int(max_neighbors_offset)
         self._is_archive = self.model.is_dir()
         self._staged: Optional[Path] = None
 
@@ -194,6 +237,9 @@ class ModelEvalProcessor(Processor):
             want_forces=self.want_forces,
             max_neighbors=self.max_neighbors,
             min_image_cutoff=self.min_image_cutoff,
+            batch_size=self.batch_size,
+            max_neighbors_list=self.max_neighbors_list,
+            max_neighbors_offset=self.max_neighbors_offset,
         ).to_dict()
 
 

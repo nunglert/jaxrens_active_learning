@@ -44,11 +44,18 @@ class ModelEvalNeed:
         backend: jaxrens backend to load the model with (``"mace"`` / etc.).
         want_forces: Also annotate per-atom model forces (parity needs them;
             the EOS energy curve does not).
-        max_neighbors: Static neighbour-buffer size for the backend call.
+        max_neighbors: Static neighbour-buffer size for the backend call (the
+            starting bucket when ``max_neighbors_list`` is given).
         min_image_cutoff: When set (Å), each frame is scored on the smallest
             supercell hosting the cutoff (the annotated energy is scaled back to
             the input cell's atom count). Lets the EOS panel keep a unit-cell
             DFT reference; ``None`` (parity) scores frames as-is.
+        batch_size: Configs per vmapped backend call (see
+            :func:`score_atoms`). Unset keeps the one-config-per-call path.
+        max_neighbors_list: Neighbour-bucket ladder (see :func:`score_atoms`).
+            Only used together with ``batch_size``.
+        max_neighbors_offset: Headroom above the observed neighbour count when
+            picking a bucket.
     """
 
     inputs: tuple
@@ -57,6 +64,9 @@ class ModelEvalNeed:
     want_forces: bool = False
     max_neighbors: int = 50
     min_image_cutoff: float | None = None
+    batch_size: int | None = None
+    max_neighbors_list: tuple = ()
+    max_neighbors_offset: int = 4
 
     @classmethod
     def make(
@@ -68,6 +78,9 @@ class ModelEvalNeed:
         want_forces: bool = False,
         max_neighbors: int = 50,
         min_image_cutoff: float | None = None,
+        batch_size: int | None = None,
+        max_neighbors_list=None,
+        max_neighbors_offset: int = 4,
     ) -> "ModelEvalNeed":
         return cls(
             tuple(str(i) for i in inputs),
@@ -76,6 +89,13 @@ class ModelEvalNeed:
             want_forces,
             int(max_neighbors),
             None if min_image_cutoff is None else float(min_image_cutoff),
+            None if batch_size is None else int(batch_size),
+            (
+                tuple(sorted(int(b) for b in max_neighbors_list))
+                if max_neighbors_list
+                else ()
+            ),
+            int(max_neighbors_offset),
         )
 
 
