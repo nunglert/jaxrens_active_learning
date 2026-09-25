@@ -320,17 +320,39 @@ def score_atoms(
 
     energies = []
     forces = [] if want_forces else None
-    for w, scale in zip(walkers, scales):
+    for i, (w, scale) in enumerate(zip(walkers, scales)):
         if want_forces:
             res = eval_energy_and_forces(
                 backend, w.positions, w.types, w.cell, max_neighbors
             )
+            _check_overflow(res, i, max_neighbors)
             energies.append(float(res.energy))
             forces.append(np.asarray(res.forces, dtype=float))
         else:
             res = backend(w.positions, w.types, w.cell, max_neighbors)
+            _check_overflow(res, i, max_neighbors)
             energies.append(float(res[0]) / scale)
     return energies, forces
+
+
+def _check_overflow(res, index: int, max_neighbors: int) -> None:
+    """Raise if a backend call silently truncated its neighbour list.
+
+    ``max_neighbors`` sizes a fixed per-atom edge buffer (see ``score_atoms``'s
+    non-batched path above); JAX's ``size=`` truncation on overflow drops
+    excess edges without erroring, so an undersized buffer for a dense/
+    compressed structure would otherwise return an ordinary-looking but wrong
+    energy with no signal anything went wrong -- this makes that failure loud
+    instead of silent.
+    """
+    if bool(res.overflow):
+        raise RuntimeError(
+            f"score_atoms: neighbour buffer overflow on structure {index} -- "
+            f"needed {int(res.max_neighbor_count)} neighbours/atom, "
+            f"max_neighbors={max_neighbors}. Pass a larger max_neighbors (or "
+            "use batch_size + max_neighbors_list for automatic sizing) -- "
+            "the returned energy would otherwise be silently wrong."
+        )
 
 
 def model_eval_keys(model) -> tuple:
