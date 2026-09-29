@@ -374,6 +374,38 @@ def test_eos_panel_remote_eval_declares_need_and_reads_annotation(
     assert len(ph["e_nnff"]) == 9 and len(ph["e_dft"]) == 9
 
 
+def test_eos_panel_forwards_the_neighbour_ladder_to_its_need(
+    eos_reference, tmp_path
+):
+    from jaxrens_al.dashboard.panels.eos import EquationOfStatePanel
+
+    ref = eos_reference(tmp_path / "eos_a.extxyz")
+    panel = EquationOfStatePanel(
+        references=[ref],
+        model_file="bundle_dir",
+        backend_type="mace",
+        remote_eval=True,
+        max_neighbors_list=[120, 20, 60],
+        max_neighbors_offset=6,
+        batch_size=4,
+        datapath=tmp_path,
+    )
+    (need,) = panel.model_eval_needs()
+    assert need.max_neighbors_list == (20, 60, 120)  # sorted, hashable
+    assert need.max_neighbors_offset == 6 and need.batch_size == 4
+    hash(need)  # still dedupable
+
+    # Default stays the static buffer.
+    (plain,) = EquationOfStatePanel(
+        references=[ref],
+        model_file="bundle_dir",
+        backend_type="mace",
+        remote_eval=True,
+        datapath=tmp_path,
+    ).model_eval_needs()
+    assert plain.max_neighbors_list == () and plain.batch_size is None
+
+
 def test_eos_panel_remote_eval_errors_without_annotation(
     eos_reference, tmp_path
 ):

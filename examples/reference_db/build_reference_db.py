@@ -39,12 +39,12 @@ config + key/network are needed even then).
 Render the outputs afterwards through the existing dashboard wiring:
 
   * EOS curves on the AL page -- each iteration's model is scored on the
-    per-phase scans (needs a trained model in the run)::
+    per-phase scans (needs a trained model in the run). The EOS panel is not
+    a default; add it in the calchome's ``dashboard.yaml`` (``target_cutoff``
+    = the model's r_max)::
 
-        jaxrens-al-dashboard <calchome> --eos-reference reference_db/eos_*.extxyz
-
-    (equivalently an ``eos-reference: [...]`` key in the calchome's
-    ``dashboard.yaml``).
+        add:
+          - {type: eos, references: [reference_db/], target_cutoff: 6.0}
 
   * PCA of atomic environments + energy/volume spread of the reference
     database, via the standalone DFT section::
@@ -248,10 +248,12 @@ def main(argv=None) -> None:
 
     logging.info("Wrote %d EOS phase file(s) to %s", len(eos_files), OUT_DIR)
     logging.info("Wrote %d-config reference database -> %s", n, ref_db)
-    eos_args = " ".join(str(f) for f in eos_files)
+    eos_args = ", ".join(str(f) for f in eos_files)
     print("\nRender these through the dashboard:")
-    print("  # EOS curves on the AL page (scores the run's model per phase):")
-    print(f"  jaxrens-al-dashboard <calchome> --eos-reference {eos_args}")
+    print("  # EOS curves on the AL page: add to <calchome>/dashboard.yaml")
+    print("  # (target_cutoff = the model's r_max):")
+    print(f"  #   add: [{{type: eos, references: [{eos_args}],")
+    print("  #          target_cutoff: 6.0}]")
     print("  # PCA + energy/volume of the reference database (DFT section):")
     print(f"  jaxrens-al-dashboard dft {ref_db}")
 

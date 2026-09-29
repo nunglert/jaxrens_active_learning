@@ -329,24 +329,33 @@ def resolve_model_evaluations(
             n.want_forces,
             n.max_neighbors,
             n.min_image_cutoff,
+            n.batch_size,
+            n.max_neighbors_list,
+            n.max_neighbors_offset,
         )
         groups.setdefault(key, set()).update(n.inputs)
 
     group_files: dict = {}  # key -> (mapping, inputs)
     pending = []  # (key, RemoteTrajectoryProcessor) awaiting collection
-    for (
-        model,
-        backend,
-        want_forces,
-        max_nb,
-        cutoff,
-    ), input_set in groups.items():
-        key = (model, backend, want_forces, max_nb, cutoff)
+    for key, input_set in groups.items():
+        (
+            model,
+            backend,
+            want_forces,
+            max_nb,
+            cutoff,
+            batch_size,
+            ladder,
+            offset,
+        ) = key
         inputs = sorted(input_set)
         energy_key, forces_key = model_eval_keys(model)
-        tag = stable_tag(
-            "meval", (model, backend, want_forces, max_nb, cutoff)
-        )
+        # The bucketing knobs join the tag only when set, so a static-buffer
+        # need keeps its pre-existing tag (and on-disk annotations are reused).
+        tag_key = (model, backend, want_forces, max_nb, cutoff)
+        if batch_size is not None or ladder:
+            tag_key += (batch_size, ladder, offset)
+        tag = stable_tag("meval", tag_key)
         mapping = {f: Path(front_tag(f, tag)) for f in inputs}
         group_files[key] = (mapping, inputs)
         todo = [
@@ -382,6 +391,9 @@ def resolve_model_evaluations(
                         want_forces=want_forces,
                         max_neighbors=max_nb,
                         min_image_cutoff=cutoff,
+                        batch_size=batch_size,
+                        max_neighbors_list=list(ladder),
+                        max_neighbors_offset=offset,
                     )
                 ],
                 tag=tag,

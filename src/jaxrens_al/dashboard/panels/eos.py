@@ -19,6 +19,7 @@ import numpy as np
 # Panel spec.
 # ---------------------------------------------------------------------------
 from alviz import Entry, JsonDict, PanelSpec, register_panel
+from pydantic import model_validator
 
 from jaxrens_al.dashboard.panels.model_eval import (
     ModelEvalConsumer,
@@ -148,7 +149,15 @@ class EquationOfStatePanel(ReferenceConsumer, ModelEvalConsumer, Entry):
         backend_type: jaxrens backend to load the model with.
         remote_eval: Evaluate the model on a GPU cluster (via the ``model_eval``
             processor) instead of in-process. Required for a MACE-jax bundle.
-        max_neighbors: Static neighbor-buffer size for the backend call.
+        max_neighbors: Static neighbor-buffer size for the backend call (the
+            starting bucket when ``max_neighbors_list`` is set).
+        max_neighbors_list: Neighbour-bucket ladder (e.g. ``[20, 40, 60, 90,
+            120]``). Set it and the buffer is sized per batch from each frame's
+            geometry and grown on overflow, instead of pinned at
+            ``max_neighbors`` -- the compressed end of a volume scan packs far
+            more neighbours than the expanded end. ``None`` keeps it static.
+        max_neighbors_offset: Headroom above the observed neighbour count.
+        batch_size: Frames per vmapped backend call (``None`` = one per call).
     """
 
     name = "eos"
@@ -167,6 +176,9 @@ class EquationOfStatePanel(ReferenceConsumer, ModelEvalConsumer, Entry):
         backend_type: str = "neuralil",
         remote_eval: bool = False,
         max_neighbors: int = 50,
+        max_neighbors_list=None,
+        max_neighbors_offset: int = 4,
+        batch_size: int | None = None,
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
@@ -184,6 +196,13 @@ class EquationOfStatePanel(ReferenceConsumer, ModelEvalConsumer, Entry):
         self._remote_eval = bool(remote_eval)
         self._model_eval_annotated: dict = {}
         self._max_neighbors = max_neighbors
+        self._max_neighbors_list = (
+            sorted(int(b) for b in max_neighbors_list)
+            if max_neighbors_list
+            else None
+        )
+        self._max_neighbors_offset = int(max_neighbors_offset)
+        self._batch_size = None if batch_size is None else int(batch_size)
         # Need-mode inputs: the resolver fetches + DFT-labels these and fills
         # ``_references`` via ``receive_references``.
         self._element = element
@@ -231,6 +250,7 @@ class EquationOfStatePanel(ReferenceConsumer, ModelEvalConsumer, Entry):
                 want_forces=False,
                 max_neighbors=self._max_neighbors,
                 min_image_cutoff=self._target_cutoff,
+                **self._bucket_kwargs(),
             )
         ]
 
@@ -267,8 +287,17 @@ class EquationOfStatePanel(ReferenceConsumer, ModelEvalConsumer, Entry):
             want_forces=False,
             max_neighbors=self._max_neighbors,
             min_image_cutoff=self._target_cutoff,
+            **self._bucket_kwargs(),
         )
         return energies
+
+    def _bucket_kwargs(self) -> dict:
+        """The neighbour-bucketing knobs, shared by local + remote scoring."""
+        return dict(
+            batch_size=self._batch_size,
+            max_neighbors_list=self._max_neighbors_list,
+            max_neighbors_offset=self._max_neighbors_offset,
+        )
 
     def allocate_panels(self, fig):
         self._fig = fig
@@ -378,27 +407,47 @@ class EquationOfStatePanel(ReferenceConsumer, ModelEvalConsumer, Entry):
 class EOSSpec(PanelSpec):
     """Equation-of-state panel: explicit references or a declared build.
 
-    Set ``references`` (per-phase volume-scan extxyz, already DFT-labelled, or
-    a directory holding them) to read them directly, or ``element`` to declare
-    a reference need the run-side ``resolve_references`` fetches + DFT-labels
-    (with on-disk reuse). With neither, the run-global ``--eos-reference``
-    files/dir are used if present. ``backend`` inherits the run's
-    ``eos_backend`` when unset. ``remote_eval`` runs the model on a GPU cluster
-    (auto-on for the ``mace`` backend, which is GPU-only); ``None`` = auto.
+    Not a curated default -- it renders only from an explicit ``add:`` entry,
+    which must carry everything EOS-specific itself (there are no run-global
+    EOS settings to inherit):
+
+    * exactly one of ``references`` (per-phase volume-scan extxyz, already
+      DFT-labelled, or a directory holding them) or ``element`` (declare a
+      reference need the run-side ``resolve_references`` fetches + DFT-labels,
+      with on-disk reuse);
+    * ``target_cutoff`` -- the cutoff (Å, the model's r_max) each unit-cell
+      reference frame is replicated to host before scoring. Required: a wrong
+      value silently mis-scores every frame, so there is no default.
+
+    ``backend`` / ``remote_eval`` default to the run's *model* settings (the
+    auto-detected backend and ``--remote-model-eval``, shared with the
+    model-parity panel) -- they describe the model, not the EOS.
     """
 
     type: str = "eos"
-    references: list | None = None
+    references: list | str | None = None
     element: str | None = None
     vol_scalings: list | None = None
     n_vol: int = 11
     vol_min: float = 0.9
     vol_max: float = 1.1
-    target_cutoff: float = 4.0
+    target_cutoff: float
     level: str = "dft"
     backend: str | None = None
     remote_eval: bool | None = None
     max_neighbors: int = 50
+    max_neighbors_list: list | None = None
+    max_neighbors_offset: int = 4
+    batch_size: int | None = None
+
+    @model_validator(mode="after")
+    def _one_reference_source(self):
+        if (self.references is None) == (self.element is None):
+            raise ValueError(
+                "eos panel needs exactly one of 'references' (volume-scan "
+                "file(s) or a directory) or 'element' (build them)."
+            )
+        return self
 
 
 def _build_eos(spec, ctx, c):
@@ -411,22 +460,17 @@ def _build_eos(spec, ctx, c):
         else ctx.remote_model_eval
     )
     # The panel replicates each (unit-cell) reference frame to a supercell
-    # hosting this cutoff before scoring the model. It drives BOTH the reference
-    # (element=) build and the explicit-file model re-score, so set it in
-    # ``common`` -- a run-global ``--eos-cutoff`` (the model's r_cut) wins
-    # unless this spec set target_cutoff explicitly.
-    target_cutoff = spec.target_cutoff
-    if (
-        ctx.eos_cutoff is not None
-        and "target_cutoff" not in spec.model_fields_set
-    ):
-        target_cutoff = ctx.eos_cutoff
+    # hosting this cutoff before scoring the model; it drives BOTH the
+    # reference (element=) build and the explicit-file model re-score.
     common = dict(
         model_file=ctx.model_file,
         backend_type=backend,
         remote_eval=remote_eval,
-        target_cutoff=target_cutoff,
+        target_cutoff=spec.target_cutoff,
         max_neighbors=spec.max_neighbors,
+        max_neighbors_list=spec.max_neighbors_list,
+        max_neighbors_offset=spec.max_neighbors_offset,
+        batch_size=spec.batch_size,
         **c,
     )
     if spec.element:
@@ -439,10 +483,11 @@ def _build_eos(spec, ctx, c):
             level=spec.level,
             **common,
         )
-    references = spec.references or ctx.eos_reference
-    if references:
-        return EquationOfStatePanel(references=references, **common)
-    return None
+    # A scalar (one file / one directory) must not be iterated char by char.
+    references = spec.references
+    if isinstance(references, str):
+        references = [references]
+    return EquationOfStatePanel(references=references, **common)
 
 
 register_panel("eos", EOSSpec, _build_eos)

@@ -44,11 +44,16 @@ class ModelEvalNeed:
         backend: jaxrens backend to load the model with (``"mace"`` / etc.).
         want_forces: Also annotate per-atom model forces (parity needs them;
             the EOS energy curve does not).
-        max_neighbors: Static neighbour-buffer size for the backend call.
+        max_neighbors: Static neighbour-buffer size for the backend call
+            (the starting bucket when ``max_neighbors_list`` is set).
         min_image_cutoff: When set (Å), each frame is scored on the smallest
             supercell hosting the cutoff (the annotated energy is scaled back to
             the input cell's atom count). Lets the EOS panel keep a unit-cell
             DFT reference; ``None`` (parity) scores frames as-is.
+        batch_size: Configs per vmapped backend call; ``None`` = one per call.
+        max_neighbors_list: Neighbour-bucket ladder (ascending tuple); empty
+            pins the buffer at ``max_neighbors``. See :func:`score_atoms`.
+        max_neighbors_offset: Headroom above the observed neighbour count.
     """
 
     inputs: tuple
@@ -57,6 +62,9 @@ class ModelEvalNeed:
     want_forces: bool = False
     max_neighbors: int = 50
     min_image_cutoff: float | None = None
+    batch_size: int | None = None
+    max_neighbors_list: tuple = ()
+    max_neighbors_offset: int = 4
 
     @classmethod
     def make(
@@ -68,6 +76,9 @@ class ModelEvalNeed:
         want_forces: bool = False,
         max_neighbors: int = 50,
         min_image_cutoff: float | None = None,
+        batch_size: int | None = None,
+        max_neighbors_list=None,
+        max_neighbors_offset: int = 4,
     ) -> "ModelEvalNeed":
         return cls(
             tuple(str(i) for i in inputs),
@@ -76,6 +87,9 @@ class ModelEvalNeed:
             want_forces,
             int(max_neighbors),
             None if min_image_cutoff is None else float(min_image_cutoff),
+            None if batch_size is None else int(batch_size),
+            tuple(sorted(int(b) for b in max_neighbors_list or ())),
+            int(max_neighbors_offset),
         )
 
 
@@ -249,7 +263,9 @@ def score_atoms(
     smallest ladder entry with ``max_neighbors_offset`` slots of headroom, and
     grown on an overflow report. Restricting sizes to the ladder is what keeps
     the number of XLA compilations bounded; sizing each batch exactly would
-    recompile constantly. Only used with ``batch_size``.
+    recompile constantly. Setting a ladder routes through the batched path
+    even without ``batch_size`` (one config per batch then), so it is never
+    silently ignored.
 
     ``min_image_cutoff`` (Å): when set, each structure is first replicated into
     the smallest supercell hosting the cutoff (jaxrens' neighbour list is
@@ -302,14 +318,15 @@ def score_atoms(
         walkers.append(ase_atoms_to_walker(atoms, symbol_map))
         scales.append(scale)
 
-    if batch_size is not None and int(batch_size) > 1:
+    batched = batch_size is not None and int(batch_size) > 1
+    if batched or max_neighbors_list:
         return _score_batched(
             backend,
             walkers,
             scales,
             want_forces=want_forces,
             max_neighbors=int(max_neighbors),
-            batch_size=int(batch_size),
+            batch_size=int(batch_size) if batched else 1,
             ladder=(
                 tuple(sorted(int(b) for b in max_neighbors_list))
                 if max_neighbors_list

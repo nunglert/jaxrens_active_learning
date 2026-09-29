@@ -32,7 +32,7 @@ readme = "README.md"
 [project.optional-dependencies]
 run = [
     "remote_handler[dev,mace_freeze,quests,neuralil,steinhardt] @ git+ssh://git@gitlab.tuwien.ac.at/e165-03-1_theoretische_materialchemie/madsen-s-research-group/remote_handler.git@dev-NU",
-    "jaxrens[mace,neuralil,nequix,jaxmd] @ git+ssh://git@github.com/nunglert/jaxrens.git@dev-NU",
+    "jaxrens[mace,neuralil,nequix,jaxmd] @ git+ssh://git@github.com/nunglert/jaxrens.git@main",
 ]
 refdb = [
     "mp_api",

@@ -104,10 +104,12 @@ def apply_config(
     """Fold a config file's values in as defaults, return re-parsed ``args``.
 
     Resolves ``--config`` (else :func:`find_config` on the run dir), loads it,
-    drops unknown keys (with a warning) and the non-overridable positional /
-    ``config``, applies the rest via ``parser.set_defaults`` and re-parses --
-    so a config supplies defaults while any CLI flag still wins. No-op (returns
-    ``args`` unchanged) when no config is found.
+    drops the non-overridable positional / ``config``, applies the rest via
+    ``parser.set_defaults`` and re-parses -- so a config supplies defaults
+    while any CLI flag still wins. An unknown key raises ``ValueError`` (with
+    a did-you-mean hint) instead of being dropped: a misspelled setting would
+    otherwise silently fall back to its default. No-op (returns ``args``
+    unchanged) when no config is found.
 
     ``run_dir`` is the directory a ``dashboard.*`` config is auto-discovered in
     (default: the ``positional`` arg's value -- the AL CLI's calchome ``path``).
@@ -146,25 +148,44 @@ def apply_config(
     # A ``global:`` block is an alias for the flat keys (both forms work); an
     # explicit flat key wins over the block.
     block = cfg.pop("global", None)
-    if isinstance(block, dict):
-        for k, v in block.items():
-            cfg.setdefault(str(k).replace("-", "_"), v)
+    if block is not None and not isinstance(block, dict):
+        raise ValueError(
+            f"{path}: 'global' must be a mapping of settings, got "
+            f"{type(block).__name__}."
+        )
+    for k, v in (block or {}).items():
+        cfg.setdefault(str(k).replace("-", "_"), v)
 
-    valid = {a.dest for a in parser._actions}
+    valid = {a.dest for a in parser._actions} - {"help"}
     unknown = sorted(set(cfg) - valid)
     if unknown:
-        logger.warning(
-            "%s: ignoring unknown config key(s): %s",
-            path,
-            ", ".join(unknown),
-        )
-    cfg = {k: v for k, v in cfg.items() if k in valid}
+        raise ValueError(_unknown_keys_message(path, unknown, valid))
     parser.set_defaults(**cfg)
     logger.info("Applied dashboard config %s (%d setting(s)).", path, len(cfg))
     new_args = parser.parse_args(argv)
     if any(v is not None for v in panel_raw.values()):
         new_args.panel_config_raw = panel_raw
     return new_args
+
+
+def _unknown_keys_message(path, unknown, valid) -> str:
+    """Name each unknown config key, with the closest valid one if any."""
+    import difflib
+
+    def _show(key):  # long-option spelling, as the config files use it
+        return key.replace("_", "-")
+
+    lines = []
+    for key in unknown:
+        close = difflib.get_close_matches(key, sorted(valid), n=1)
+        hint = f" (did you mean '{_show(close[0])}'?)" if close else ""
+        lines.append(f"  {_show(key)}{hint}")
+    return (
+        f"{path}: unknown config key(s):\n" + "\n".join(lines) + "\n"
+        "Flat / `global:` keys must be options of this dashboard (see "
+        "`jaxrens-al dashboard init-config`); panel settings go on an "
+        "`add:` / `panels:` entry."
+    )
 
 
 def _config_value_repr(v) -> str:

@@ -326,6 +326,39 @@ def test_model_eval_processor_is_a_processor_spec(tmp_path):
     ModelEvalArgs.from_dict(args).validate()
 
 
+def test_model_eval_processor_forwards_the_bucket_ladder(tmp_path):
+    from jaxrens_al.run.processors import ModelEvalArgs, ModelEvalProcessor
+
+    pkl = tmp_path / "model.pkl"
+    pkl.write_bytes(b"\x00")
+    proc = ModelEvalProcessor(
+        pkl,
+        backend="neuralil",
+        batch_size=8,
+        max_neighbors_list=[60, 20, 40],
+        max_neighbors_offset=2,
+    )
+    args = proc.build_args("/remote")
+    assert args["batch_size"] == 8
+    assert args["max_neighbors_list"] == [20, 40, 60]  # sorted
+    assert args["max_neighbors_offset"] == 2
+    ModelEvalArgs.from_dict(args).validate()
+
+    # Unset -> the static-buffer defaults (no ladder, no batching).
+    plain = ModelEvalProcessor(pkl, backend="neuralil").build_args("/remote")
+    assert plain["batch_size"] is None and plain["max_neighbors_list"] == []
+
+
+def test_model_eval_args_reject_unsorted_ladder():
+    from remote_handler.exceptions import ScriptInputError
+
+    from jaxrens_al.run.processors import ModelEvalArgs
+
+    args = ModelEvalArgs(model_remote="m", max_neighbors_list=[40, 20])
+    with pytest.raises(ScriptInputError, match="ascending"):
+        args.validate()
+
+
 def test_model_eval_processor_stages_plain_file(tmp_path):
     from jaxrens_al.run.processors import ModelEvalProcessor
 
@@ -363,7 +396,12 @@ class _FakeModelEvalHandler:
         self.proc = processors[0]
         self.executor = _FakeExecutor()
         _FakeModelEvalHandler.calls.append(
-            {"tag": tag, "n_traj": len(traj_files), "model": self.proc.model}
+            {
+                "tag": tag,
+                "n_traj": len(traj_files),
+                "model": self.proc.model,
+                "proc": self.proc,
+            }
         )
 
     def allocate_data(self):
@@ -439,6 +477,52 @@ def test_resolve_model_evaluations_one_job_per_model(monkeypatch, tmp_path):
     # reference file did NOT get overwritten to bundleB for the bundleA panel.
     assert p1b.received != p3.received
     assert p1b.received == p1.received  # same model+input -> same annotation
+
+
+def test_resolve_model_evaluations_forwards_ladder_keeps_static_tag(
+    monkeypatch, tmp_path
+):
+    """A laddered need reaches the processor under its own tag, while a
+    static-buffer need keeps its pre-ladder tag (old annotations reused)."""
+    from jaxrens_al.dashboard.panels.model_eval import ModelEvalNeed
+    from jaxrens_al.run.processing_resolver import (
+        resolve_model_evaluations,
+        stable_tag,
+    )
+
+    ref = _refs(tmp_path, "eos_a.extxyz")
+    _FakeModelEvalHandler.calls.clear()
+    monkeypatch.setattr(
+        "remote_handler.processing.RemoteTrajectoryProcessor",
+        _FakeModelEvalHandler,
+    )
+
+    class _Panel:
+        def __init__(self, need):
+            self._need = need
+
+        def model_eval_needs(self):
+            return [self._need]
+
+        def receive_model_eval(self, mapping):
+            pass
+
+    static = ModelEvalNeed.make([ref], "bundleA", "mace")
+    laddered = ModelEvalNeed.make(
+        [ref], "bundleA", "mace", max_neighbors_list=[20, 40, 60]
+    )
+    ctx = dict(cluster_config=None, remote_fs=None, remote_savepath="/remote")
+    resolve_model_evaluations([_Panel(static), _Panel(laddered)], **ctx)
+
+    calls = {
+        tuple(c["proc"].max_neighbors_list): c
+        for c in _FakeModelEvalHandler.calls
+    }
+    assert set(calls) == {(), (20, 40, 60)}  # two distinct jobs
+    assert calls[()]["tag"] == stable_tag(
+        "meval", ("bundleA", "mace", False, 50, None)
+    )
+    assert calls[(20, 40, 60)]["tag"] != calls[()]["tag"]
 
 
 def test_run_model_eval_annotates_atoms(tmp_path):
@@ -670,6 +754,29 @@ def test_score_atoms_sizes_the_neighbour_bucket_from_the_ladder(monkeypatch):
     )
     # 28 + 4 = 32 -> the smallest ladder entry that fits is 40, not the
     # fixed 50 the call was given.
+    assert set(B.calls) == {40}
+
+
+def test_score_atoms_ladder_without_batch_size_still_buckets(monkeypatch):
+    """A ladder alone (no batch_size) is honoured, not silently ignored."""
+    pytest.importorskip("jaxrens")
+
+    import jaxrens.backends.loader as loader
+
+    from jaxrens_al.dashboard.panels.model_eval import score_atoms
+
+    B = _stub_backend(needed=28)
+    B.calls.clear()
+    monkeypatch.setattr(loader, "load_backend", lambda *a, **k: B())
+
+    score_atoms(
+        "m",
+        "mace",
+        _si_cells(3),
+        max_neighbors=50,
+        max_neighbors_list=[20, 30, 40, 50, 60],
+        max_neighbors_offset=4,
+    )
     assert set(B.calls) == {40}
 
 
