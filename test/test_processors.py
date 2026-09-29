@@ -890,6 +890,148 @@ def test_committee_eval_args_reject_short_committee():
         CommitteeEvalArgs(model_remotes=["only"]).validate()
 
 
+def test_committee_eval_processor_single_file_ensemble(tmp_path):
+    from jaxrens_al.run.processors import (
+        CommitteeEvalArgs,
+        CommitteeEvalProcessor,
+    )
+
+    pkl = tmp_path / "ensemble.pkl"
+    pkl.write_bytes(b"\x00")
+    proc = CommitteeEvalProcessor(
+        [pkl],
+        backend="neuralil",
+        single_file_ensemble=True,
+        supercell_trafo=(2, 2, 2),
+    )
+    assert proc.shared_files() == [str(pkl)]
+    args = proc.build_args("/remote")
+    assert args["model_remotes"] == ["/remote/ensemble.pkl"]
+    assert args["single_file_ensemble"] is True
+    assert args["supercell_trafo"] == [2, 2, 2]
+    CommitteeEvalArgs.from_dict(args).validate()
+
+    with pytest.raises(ValueError, match="exactly one"):
+        CommitteeEvalProcessor([pkl, pkl], single_file_ensemble=True)
+
+
+@pytest.mark.parametrize(
+    "kw, match",
+    [
+        (
+            {"model_remotes": ["a", "b"], "single_file_ensemble": True},
+            "exactly one",
+        ),
+        (
+            {"model_remotes": ["a", "b"], "supercell_trafo": [2, 2]},
+            "three positive ints",
+        ),
+    ],
+)
+def test_committee_eval_args_single_file_validation(kw, match):
+    from jaxrens_al.run.processors import CommitteeEvalArgs
+
+    with pytest.raises(ScriptInputError, match=match):
+        CommitteeEvalArgs(**kw).validate()
+
+
+def test_run_committee_eval_single_file_ensemble(monkeypatch):
+    """One ensemble checkpoint -> std/mean over its members, per config."""
+    import numpy as np
+    from ase import Atoms
+
+    from jaxrens_al.dashboard.panels import model_eval as me
+    from jaxrens_al.run.processors import committee_eval
+
+    atoms = [
+        Atoms("H2", positions=[[0, 0, 0], [0, 0, 0.7]], cell=[5] * 3, pbc=True)
+        for _ in range(2)
+    ]
+    seen = {}
+
+    def _members(path, backend, al, **kw):
+        seen.update(path=path, backend=backend, **kw)
+        # Per config: (M=2,) energies and (M, N=2, 3) forces.
+        energies = [np.array([1.0, 2.0]), np.array([3.0, 5.0])]
+        forces = [np.stack([np.zeros((2, 3)), np.ones((2, 3))])] * 2
+        return energies, forces
+
+    monkeypatch.setattr(me, "score_members", _members)
+    monkeypatch.setattr(
+        me,
+        "score_atoms",
+        lambda *a, **k: pytest.fail("single-file path must not score files"),
+    )
+    out = committee_eval.run(
+        atoms,
+        {
+            "backend": "neuralil",
+            "model_remotes": ["ens.pkl"],
+            "is_archive": False,
+            "energy_key": "energy_uncertainty",
+            "forces_key": "forces_uncertainty",
+            "single_file_ensemble": True,
+            "supercell_trafo": [2, 2, 2],
+        },
+    )
+    assert seen["path"] == "ens.pkl" and seen["backend"] == "neuralil"
+    assert seen["supercell_trafo"] == [2, 2, 2]
+    assert out[0].info["energy_uncertainty"] == pytest.approx(0.5)
+    assert out[1].info["energy_uncertainty"] == pytest.approx(1.0)
+    np.testing.assert_allclose(out[0].arrays["forces_uncertainty"], 0.5)
+    np.testing.assert_allclose(out[0].arrays["committee_forces"], 0.5)
+
+
+def test_score_members_keeps_the_ensemble_axis(monkeypatch):
+    """score_members returns (M,) energies / (M, N, 3) forces per config."""
+    pytest.importorskip("jaxrens")
+    from typing import NamedTuple
+
+    import jax.numpy as jnp
+    import jaxrens.backends.loader as loader
+    import numpy as np
+    from ase import Atoms
+
+    from jaxrens_al.dashboard.panels.model_eval import score_members
+
+    class _Res(NamedTuple):
+        energy: jnp.ndarray
+        forces: jnp.ndarray
+        max_neighbor_count: jnp.ndarray
+        overflow: jnp.ndarray
+        energy_members: jnp.ndarray
+        forces_members: jnp.ndarray
+
+    loaded = {}
+
+    class _Ensemble:
+        atomic_numbers = [14]
+        symbol_map = {"Si": 0}
+
+        def members(self, p, t, c, max_neighbors):
+            e = jnp.stack([p.sum(), 2.0 * p.sum()])  # M = 2
+            f = jnp.stack([jnp.zeros_like(p), jnp.ones_like(p)])
+            return _Res(
+                e.mean(), f.mean(0), jnp.asarray(3), jnp.asarray(False), e, f
+            )
+
+    def _load(kind, **kw):
+        loaded.update(kind=kind, **kw)
+        return _Ensemble()
+
+    monkeypatch.setattr(loader, "load_backend", _load)
+    frames = [
+        Atoms("Si2", positions=[[0, 0, 0], [1, 1, 1]], cell=[6] * 3, pbc=True)
+    ]
+    energies, forces = score_members(
+        "ens.pkl", "neuralil", frames, supercell_trafo=[2, 2, 2]
+    )
+    assert loaded["kind"] == "neuralil"
+    assert loaded["supercell_trafo"] == (2, 2, 2)
+    assert energies[0].shape == (2,) and forces[0].shape == (2, 2, 3)
+    np.testing.assert_allclose(energies[0], [3.0, 6.0])
+
+
 def test_driver_registered_committee_eval_with_schema():
     assert "committee_eval" in REGISTRY
     validate_args("committee_eval", {"model_remotes": ["a", "b"]})

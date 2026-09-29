@@ -238,6 +238,17 @@ class CommitteeUncertaintySelector(Selector):
         output_filename: Name of the written extxyz inside the stage calcdir.
         reuse: Skip re-annotating a pool whose committee output already exists
             and is no older than the input (a stage retry contacts no cluster).
+        single_file_ensemble: The committee is ONE checkpoint holding every
+            member (a NeuralIL ensemble ``.pkl``, which is what
+            ``NeuralilILTrainer`` emits) -- scored per member through the
+            backend's ``members`` method. A single file then counts as a full
+            committee (``min_committee`` does not apply). See
+            :class:`NeuralILCommitteeUncertaintySelector`.
+        supercell_trafo: Backend periodic-image expansion ``(a, b, c)`` for
+            the committee eval -- match the NS config's
+            ``backend.supercell_trafo``. ``None`` = backend default, which for
+            NeuralIL is (1, 1, 1): too small whenever the model cutoff exceeds
+            half the cell width.
     """
 
     def __init__(
@@ -259,6 +270,8 @@ class CommitteeUncertaintySelector(Selector):
         batch_size: int | None = None,
         max_neighbors_list=None,
         max_neighbors_offset: int = 4,
+        single_file_ensemble: bool = False,
+        supercell_trafo=None,
         shard_size: int = 512,
         n_processors: int = 1,
         num_parallel: int = 8,
@@ -273,17 +286,27 @@ class CommitteeUncertaintySelector(Selector):
             )
         if min_committee < 2:
             raise ValueError("min_committee must be at least 2 (a committee).")
+        self.single_file_ensemble = bool(single_file_ensemble)
+        self.supercell_trafo = (
+            tuple(int(x) for x in supercell_trafo) if supercell_trafo else None
+        )
         self.static_models = (
             [str(m) for m in models] if models is not None else None
         )
-        if (
-            self.static_models is not None
-            and len(self.static_models) < min_committee
-        ):
-            raise ValueError(
-                f"A static committee needs at least {min_committee} models; "
-                f"got {len(self.static_models)}."
-            )
+        if self.static_models is not None:
+            if self.single_file_ensemble and len(self.static_models) != 1:
+                raise ValueError(
+                    "single_file_ensemble needs exactly one static model (the "
+                    f"ensemble checkpoint); got {len(self.static_models)}."
+                )
+            if (
+                not self.single_file_ensemble
+                and len(self.static_models) < min_committee
+            ):
+                raise ValueError(
+                    f"A static committee needs at least {min_committee} "
+                    f"models; got {len(self.static_models)}."
+                )
         self.committee_input = committee_input
         self.pre_stride = int(pre_stride) if pre_stride is not None else None
         self.cluster = cluster
@@ -297,7 +320,10 @@ class CommitteeUncertaintySelector(Selector):
                 f"{force_metric!r}"
             )
         self.force_metric = force_metric
-        self.min_committee = int(min_committee)
+        # A single-file ensemble is a whole committee in one path.
+        self.min_committee = (
+            1 if self.single_file_ensemble else int(min_committee)
+        )
         self.cold_start = bool(cold_start)
         self.max_neighbors = int(max_neighbors)
         self.batch_size = None if batch_size is None else int(batch_size)
@@ -472,6 +498,13 @@ class CommitteeUncertaintySelector(Selector):
                 self.batch_size,
                 tuple(self.max_neighbors_list),
                 self.max_neighbors_offset,
+            )
+            # Only when set, so a multi-file committee keeps its existing tag
+            # (and its on-disk annotations stay reusable).
+            + (
+                (self.single_file_ensemble, self.supercell_trafo)
+                if self.single_file_ensemble or self.supercell_trafo
+                else ()
             ),
         )
         mapping = {p: Path(front_tag(str(p), tag)) for p in paths}
@@ -506,6 +539,8 @@ class CommitteeUncertaintySelector(Selector):
                         batch_size=self.batch_size,
                         max_neighbors_list=self.max_neighbors_list,
                         max_neighbors_offset=self.max_neighbors_offset,
+                        single_file_ensemble=self.single_file_ensemble,
+                        supercell_trafo=self.supercell_trafo,
                     )
                 ],
                 tag=tag,
@@ -522,3 +557,32 @@ class CommitteeUncertaintySelector(Selector):
                 "CommitteeUncertaintySelector has not produced output yet."
             )
         return self._output
+
+
+class NeuralILCommitteeUncertaintySelector(CommitteeUncertaintySelector):
+    """:class:`CommitteeUncertaintySelector` for a NeuralIL ensemble.
+
+    ``NeuralilILTrainer`` writes its whole ensemble (``n_ensemble`` members)
+    into ONE ``.pkl``, so the committee is a single file scored per member
+    via the NeuralIL backend's ``members`` method (``single_file_ensemble``)
+    rather than one model per file. Everything else -- the GPU job, the
+    pre-stride, the absolute/relative rankers, the iteration-0 stride cold
+    start, wiring via :func:`jaxrens_al.run.staged_al.
+    build_committee_al_handler` -- is the parent's.
+
+    ``supercell_trafo`` is required: the NeuralIL backend defaults to
+    (1, 1, 1), which silently truncates the neighbour list whenever the model
+    cutoff exceeds half the cell width. Pass the NS config's
+    ``backend.supercell_trafo``.
+    """
+
+    def __init__(self, models=None, *, supercell_trafo, **kwargs):
+        if models is not None and not isinstance(models, (list, tuple)):
+            models = [models]
+        super().__init__(
+            models,
+            backend="neuralil",
+            single_file_ensemble=True,
+            supercell_trafo=supercell_trafo,
+            **kwargs,
+        )

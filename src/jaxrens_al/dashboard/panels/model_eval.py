@@ -240,6 +240,7 @@ def score_atoms(
     batch_size: int | None = None,
     max_neighbors_list=None,
     max_neighbors_offset: int = 4,
+    supercell_trafo=None,
 ):
     """Score configs with a trained model through the jaxrens backend.
 
@@ -277,15 +278,20 @@ def score_atoms(
     so expanding then mapping them back is ambiguous; ``min_image_cutoff`` with
     ``want_forces`` is rejected.
 
+    ``supercell_trafo`` (``(a, b, c)``): the periodic-image expansion the
+    backend's neighbour list uses, as in the NS config's
+    ``backend.supercell_trafo``. ``None`` keeps the backend default --
+    (2, 2, 2) for MACE but **(1, 1, 1) for NeuralIL**, which is too small
+    for a model cutoff larger than half the cell width (a 16-atom Si cell is
+    ~6.8 Å wide).
+
     The single home for the backend-load + walker-eval loop shared by the EOS
     and model-parity reader panels (local re-score) and the ``model_eval``
     cluster processor. jaxrens is imported lazily, so importing this module
     stays cheap on the dashboard path.
     """
     import numpy as np
-    from ase.data import chemical_symbols
     from jaxrens.backends.base import eval_energy_and_forces
-    from jaxrens.backends.loader import load_backend
     from jaxrens.io.formats import ase_atoms_to_walker
 
     if min_image_cutoff is not None and want_forces:
@@ -294,17 +300,8 @@ def score_atoms(
             "(per-atom forces cannot be mapped back from a supercell)."
         )
 
-    if backend_type == "mace":
-        backend = load_backend("mace", model_path=model_file)
-    else:
-        backend = load_backend(backend_type, pickle_file=model_file)
-
-    symbol_map = getattr(backend, "symbol_map", None)
-    if symbol_map is None:
-        symbol_map = {
-            chemical_symbols[int(z)]: i
-            for i, z in enumerate(backend.atomic_numbers)
-        }
+    backend = _load_backend(model_file, backend_type, supercell_trafo)
+    symbol_map = _symbol_map(backend)
 
     walkers, scales = [], []
     for atoms in atoms_list:
@@ -349,6 +346,104 @@ def score_atoms(
             res = backend(w.positions, w.types, w.cell, max_neighbors)
             _check_overflow(res, i, max_neighbors)
             energies.append(float(res[0]) / scale)
+    return energies, forces
+
+
+def _load_backend(model_file, backend_type, supercell_trafo=None):
+    """Load a trained model (mace-jax bundle dir or neuralil ``.pkl``)."""
+    from jaxrens.backends.loader import load_backend
+
+    extra = {}
+    if supercell_trafo is not None:
+        extra["supercell_trafo"] = tuple(int(x) for x in supercell_trafo)
+    if backend_type == "mace":
+        return load_backend("mace", model_path=model_file, **extra)
+    return load_backend(backend_type, pickle_file=model_file, **extra)
+
+
+def _symbol_map(backend) -> dict:
+    """Chemical symbol -> the backend's species index."""
+    from ase.data import chemical_symbols
+
+    symbol_map = getattr(backend, "symbol_map", None)
+    if symbol_map is None:
+        symbol_map = {
+            chemical_symbols[int(z)]: i
+            for i, z in enumerate(backend.atomic_numbers)
+        }
+    return symbol_map
+
+
+def score_members(
+    model_file,
+    backend_type,
+    atoms_list,
+    *,
+    max_neighbors: int = 50,
+    max_neighbors_list=None,
+    max_neighbors_offset: int = 4,
+    supercell_trafo=None,
+):
+    """Per-member energies + forces of ONE ensemble checkpoint, per config.
+
+    For a committee stored in a single file (a NeuralIL ``PlainEnsemble``
+    ``.pkl``): the backend's ``members`` method keeps the ensemble axis that
+    :func:`score_atoms` reduces away. Returns ``(energies, forces)`` -- one
+    ``(M,)`` array and one ``(M, n_atoms, 3)`` array per config, in
+    ``atoms_list`` order. ``M == 1`` for a non-ensemble checkpoint (zero
+    spread).
+
+    ``max_neighbors_list`` sizes each config's neighbour buffer from its
+    geometry (``max_neighbors_for``) and grows it on overflow, as in
+    :func:`score_atoms`; unset pins it at ``max_neighbors`` and raises on
+    overflow. ``supercell_trafo`` as in :func:`score_atoms` -- set it for
+    NeuralIL. Configs are scored one at a time, one compilation per
+    (atom count, bucket).
+    """
+    import jax
+    import numpy as np
+    from jaxrens.io.formats import ase_atoms_to_walker
+
+    backend = _load_backend(model_file, backend_type, supercell_trafo)
+    if not hasattr(backend, "members"):
+        raise ValueError(
+            f"score_members: the {backend_type!r} backend has no members() "
+            "method -- it cannot score a single-file committee."
+        )
+    symbol_map = _symbol_map(backend)
+    ladder = (
+        tuple(sorted(int(b) for b in max_neighbors_list))
+        if max_neighbors_list
+        else None
+    )
+    sizer = getattr(backend, "max_neighbors_for", None)
+
+    @functools.lru_cache(maxsize=None)
+    def _members(bucket: int):
+        return jax.jit(lambda p, t, c: backend.members(p, t, c, bucket))
+
+    energies, forces = [], []
+    for i, atoms in enumerate(atoms_list):
+        w = ase_atoms_to_walker(atoms, symbol_map)
+        bucket = int(max_neighbors)
+        if ladder and sizer is not None:
+            bucket = _pick_bucket(
+                int(sizer(w.positions, w.cell)), ladder, max_neighbors_offset
+            )
+        while True:
+            res = _members(bucket)(w.positions, w.types, w.cell)
+            if not bool(res.overflow):
+                break
+            if not ladder:
+                _check_overflow(res, i, bucket)
+            bucket = _pick_bucket(
+                int(res.max_neighbor_count),
+                ladder,
+                max_neighbors_offset,
+                above=bucket,
+            )
+        energies.append(np.asarray(res.energy_members, dtype=float))
+        forces.append(np.asarray(res.forces_members, dtype=float))
     return energies, forces
 
 
