@@ -346,7 +346,8 @@ def test_model_eval_processor_forwards_the_bucket_ladder(tmp_path):
 
     # Unset -> the static-buffer defaults (no ladder, no batching).
     plain = ModelEvalProcessor(pkl, backend="neuralil").build_args("/remote")
-    assert plain["batch_size"] is None and plain["max_neighbors_list"] == []
+    # to_dict() drops None-valued fields, so an unset batch_size is absent.
+    assert "batch_size" not in plain and plain["max_neighbors_list"] == []
 
 
 def test_model_eval_args_reject_unsorted_ladder():
@@ -530,6 +531,7 @@ def test_run_model_eval_annotates_atoms(tmp_path):
     pytest.importorskip("jaxrens")
     import numpy as np
     from ase import Atoms
+    from jaxrens.backends.base import BackendResult
 
     from jaxrens_al.run.processors import model_eval
 
@@ -543,7 +545,9 @@ def test_run_model_eval_annotates_atoms(tmp_path):
             symbol_map = {"Cu": 0}
 
             def __call__(self, pos, types, cell, mn):
-                return (np.float64(-3.5),)
+                # A real backend returns a BackendResult; score_atoms reads
+                # its .overflow to reject a truncated neighbour list.
+                return BackendResult(energy=np.float64(-3.5))
 
         return _B()
 
@@ -579,6 +583,7 @@ def test_score_atoms_min_image_cutoff_scales_energy_per_input_cell():
     pytest.importorskip("jaxrens")
     import numpy as np
     from ase import Atoms
+    from jaxrens.backends.base import BackendResult
 
     from jaxrens_al.dashboard.panels.model_eval import score_atoms
     from jaxrens_al.supercell import min_image_supercell
@@ -611,7 +616,7 @@ def test_score_atoms_min_image_cutoff_scales_energy_per_input_cell():
 
             def __call__(self, pos, types, cell, mn):
                 seen["n"] = len(types)  # backend sees the supercell
-                return (np.float64(-80.0),)
+                return BackendResult(energy=np.float64(-80.0))
 
         return _B()
 
