@@ -193,12 +193,17 @@ def _resolve_remote_needs(entries, args, datapath):
     has_ref = any(
         hasattr(e, "reference_needs") and e.reference_needs() for e in entries
     )
-    if not (has_proc or has_eval or has_phase or has_ref):
+    has_grid = any(
+        hasattr(e, "phase_grid_needs") and e.phase_grid_needs()
+        for e in entries
+    )
+    if not (has_proc or has_eval or has_phase or has_ref or has_grid):
         return
 
     from jaxrens_al.run.processing_resolver import (
         execution_context,
         resolve_model_evaluations,
+        resolve_phase_grid,
         resolve_phase_labeling,
         resolve_processing,
     )
@@ -240,6 +245,14 @@ def _resolve_remote_needs(entries, args, datapath):
             **{**knobs, "shard_size": relax_shard_size(args)},
             batch_size=args.relax_batch_size,
             **execution_context(args.cluster, datapath / "phase_label"),
+        )
+    if has_grid:
+        logger.info(
+            f"Relaxing + labelling the NS (T, P) phase grids with torch-sim "
+            f"(cluster={args.cluster!r}); may be slow."
+        )
+        resolve_phase_grid(
+            entries, **execution_context(args.cluster, datapath / "phase_grid")
         )
     if has_ref:
         # Evaluator-free reference builds (e.g. the MP fetch for the atomic-envs

@@ -13,6 +13,10 @@ the new `## [X.Y.Z] — YYYY-MM-DD`, add a fresh empty `[Unreleased]`, then tag.
 ## [Unreleased]
 
 ### Added
+- **`phase_grid` dashboard panel.** Picks the most likely NS sample per (T, P) grid cell, relaxes it with
+  torch-sim (positions, then cell at the replica pressure) and labels it with its spglib space group; shows
+  the phase map next to the relaxed volumes. Backed by `resolve_phase_grid` (wired into the AL and section
+  CLIs) and `run_layout.torch_model_for` (trained bundle -> torch `Model.model`).
 - **Reference databases for any compound, not just elements.**
   `reference_db.fetch_mp_structures` generalises the Materials Project fetch:
   the system spec is an element (`"Si"`), a formula (`"SiO2"`), a chemical

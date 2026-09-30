@@ -211,6 +211,64 @@ def spacegroup_table(labelled, symprecs=(0.01, 0.1, 0.3)):
     return rows
 
 
+def phase_grid_job(
+    picks,
+    n_samples,
+    *,
+    model,
+    cluster_config,
+    remote_fs,
+    remote_savepath,
+    local_savepath=None,
+    backend="mace",
+    device="cuda",
+    fmax=0.02,
+    steps=1000,
+    stages=("positions", "cell"),
+    symprec=0.1,
+    tag="phasegrid",
+    jobname="AL_PHASE_GRID",
+    loop_time=30.0,
+):
+    """The ``[torchsim_relax, spacegroup]`` job over a picks file (not started).
+
+    One shard holds every pick (a grid is small; the relaxation batches per
+    pressure on the device). The labelled output lands at
+    ``front_tag(picks, tag)``. Call ``.run()`` to submit and wait, or split it
+    into ``allocate_data()`` / ``submit(only_start=True)`` to queue several.
+    """
+    from remote_handler.processing import RemoteTrajectoryProcessor
+
+    from jaxrens_al.run.processors.spacegroup import SpaceGroupProcessor
+    from jaxrens_al.run.processors.torchsim_relax import TorchSimRelaxProcessor
+
+    return RemoteTrajectoryProcessor(
+        traj_files=[str(picks)],
+        cluster_config=cluster_config,
+        remote_fs=remote_fs,
+        n_processors=1,
+        shard_size=max(int(n_samples), 1),
+        savepath=str(remote_savepath),
+        num_parallel=1,
+        processors=[
+            TorchSimRelaxProcessor(
+                model,
+                backend=backend,
+                device=device,
+                fmax=fmax,
+                steps=steps,
+                stages=stages,
+            ),
+            SpaceGroupProcessor(symprec=symprec),
+        ],
+        tag=tag,
+        local_savepath=local_savepath,
+        jobname=jobname,
+        loop_time=loop_time,
+        every=1,
+    )
+
+
 def run_phase_grid(
     output_dir,
     model,
@@ -246,10 +304,6 @@ def run_phase_grid(
 
     import ase.io
 
-    from jaxrens_al.run.processing_resolver import execution_context
-    from jaxrens_al.run.processors.spacegroup import SpaceGroupProcessor
-    from jaxrens_al.run.processors.torchsim_relax import TorchSimRelaxProcessor
-
     workdir = Path(workdir)
     workdir.mkdir(parents=True, exist_ok=True)
     picks = workdir / "grid_samples.extxyz"
@@ -272,34 +326,23 @@ def run_phase_grid(
         and labelled_file.stat().st_mtime > picks.stat().st_mtime
     ):
         from remote_handler.core.atoms_shard import front_tag
-        from remote_handler.processing import RemoteTrajectoryProcessor
 
-        ctx = execution_context(cluster, workdir / "jobs")
+        from jaxrens_al.run.processing_resolver import execution_context
+
         tag = "phasegrid"
-        RemoteTrajectoryProcessor(
-            traj_files=[str(picks)],
-            cluster_config=ctx["cluster_config"],
-            remote_fs=ctx["remote_fs"],
-            n_processors=1,
-            shard_size=len(samples),
-            savepath=ctx["remote_savepath"],
-            num_parallel=1,
-            processors=[
-                TorchSimRelaxProcessor(
-                    model,
-                    backend=backend,
-                    device=device,
-                    fmax=fmax,
-                    steps=steps,
-                    stages=stages,
-                ),
-                SpaceGroupProcessor(symprec=symprec),
-            ],
+        phase_grid_job(
+            picks,
+            len(samples),
+            model=model,
+            backend=backend,
+            device=device,
+            fmax=fmax,
+            steps=steps,
+            stages=stages,
+            symprec=symprec,
             tag=tag,
-            local_savepath=ctx["local_savepath"],
-            jobname="AL_PHASE_GRID",
             loop_time=10,
-            every=1,
+            **execution_context(cluster, workdir / "jobs"),
         ).run()
         Path(front_tag(str(picks), tag)).replace(labelled_file)
 
@@ -326,6 +369,7 @@ __all__ = [
     "REPLICA_KEY",
     "SPACEGROUP_KEY",
     "most_likely_frames",
+    "phase_grid_job",
     "run_phase_grid",
     "select_grid_samples",
     "spacegroup_table",

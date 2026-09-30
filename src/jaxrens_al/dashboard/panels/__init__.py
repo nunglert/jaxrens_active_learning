@@ -21,6 +21,7 @@ from jaxrens_al.dashboard.panels.adaptation import (
 from jaxrens_al.dashboard.panels.environments import AtomicEnvsPanel
 from jaxrens_al.dashboard.panels.eos import EquationOfStatePanel
 from jaxrens_al.dashboard.panels.phase import PhaseDiagramPanel
+from jaxrens_al.dashboard.panels.phase_grid import PhaseGridPanel
 from jaxrens_al.dashboard.panels.progress import DatasetGrowthPanel
 from jaxrens_al.dashboard.panels.quests import (
     QuestsPCAPanel,
@@ -58,6 +59,7 @@ __all__ = [
     "NSRDFExpectationHeatmap",
     "NSSampledEnergyPanel",
     "PhaseDiagramPanel",
+    "PhaseGridPanel",
     "QuestsPCAPanel",
     "RESwapAcceptancePanel",
     "ResampledGridPanel",

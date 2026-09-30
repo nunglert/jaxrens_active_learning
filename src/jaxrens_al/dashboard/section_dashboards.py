@@ -62,12 +62,18 @@ def _resolve_section_needs(entries, args, datapath) -> None:
     phase = [
         p for p in entries if hasattr(p, "phase_needs") and p.phase_needs()
     ]
-    if not (proc or eval_ or phase):
+    grid = [
+        p
+        for p in entries
+        if hasattr(p, "phase_grid_needs") and p.phase_grid_needs()
+    ]
+    if not (proc or eval_ or phase or grid):
         return
 
     from jaxrens_al.run.processing_resolver import (
         execution_context,
         resolve_model_evaluations,
+        resolve_phase_grid,
         resolve_phase_labeling,
         resolve_processing,
     )
@@ -101,6 +107,10 @@ def _resolve_section_needs(entries, args, datapath) -> None:
             **{**knobs, "shard_size": relax_shard_size(args)},
             batch_size=args.relax_batch_size,
             **execution_context(args.cluster, datapath / "phase_label"),
+        )
+    if grid:
+        resolve_phase_grid(
+            entries, **execution_context(args.cluster, datapath / "phase_grid")
         )
 
 

@@ -531,6 +531,106 @@ def resolve_phase_labeling(
     return delivered
 
 
+def _ns_outputs_mtime(result_dir, prefix) -> float:
+    """Newest mtime of an NS run's per-replica files (0 if none)."""
+    files = list(Path(result_dir).glob(f"{prefix}.run*"))
+    return max((f.stat().st_mtime for f in files), default=0.0)
+
+
+def resolve_phase_grid(
+    panels,
+    *,
+    cluster_config,
+    remote_fs,
+    remote_savepath,
+    local_savepath,
+    loop_time: float = 30.0,
+    reuse: bool = True,
+    **_knobs,
+):
+    """Select, torch-sim-relax and label each phase-grid panel's samples.
+
+    Collects every panel's :meth:`phase_grid_needs`
+    (:class:`~jaxrens_al.dashboard.panels.phase_grid.PhaseGridNeed`). Per
+    distinct need it picks the most likely stored dead point for every grid
+    temperature and replica host-side
+    (:func:`jaxrens_al.run.phase_grid.select_grid_samples`), writes them to
+    ``<local_savepath>/<tag>/grid_samples.extxyz`` and runs one
+    ``[torchsim_relax, spacegroup]`` job over them. Every job is submitted
+    before any is awaited, so several iterations' grids queue concurrently.
+    With ``reuse`` a labelled file newer than the NS run's files is kept (no
+    selection, no job). The array-job knobs of the other resolvers are
+    accepted and ignored: a grid is one small shard. Delivers
+    ``{need -> labelled_file}`` via ``receive_phase_grid``.
+    """
+    consumers, needs = collect_needs(panels, "phase_grid_needs")
+    if not needs:
+        return {}
+
+    import ase.io
+    from remote_handler.core.atoms_shard import front_tag
+
+    from jaxrens_al.run.phase_grid import phase_grid_job, select_grid_samples
+
+    delivered: dict = {}
+    pending = []
+    for need in dict.fromkeys(needs):  # dedup, keep order
+        tag = stable_tag("pgrid", need)
+        workdir = Path(local_savepath) / tag
+        picks = workdir / "grid_samples.extxyz"
+        labelled = Path(front_tag(str(picks), tag))
+        delivered[need] = labelled
+        if (
+            reuse
+            and labelled.exists()
+            and labelled.stat().st_mtime
+            >= _ns_outputs_mtime(need.result_dir, need.prefix)
+        ):
+            logger.info("resolve_phase_grid: reusing %s", labelled)
+            continue
+        workdir.mkdir(parents=True, exist_ok=True)
+        samples = select_grid_samples(
+            need.result_dir,
+            need.temperatures,
+            prefix=need.prefix,
+            config=need.config,
+            replicas=None if need.replicas is None else list(need.replicas),
+            k_B=need.k_B,
+        )
+        ase.io.write(picks, samples)
+        logger.info(
+            "resolve_phase_grid: %d samples from %s, relaxing with %s",
+            len(samples),
+            need.result_dir,
+            Path(need.model).name,
+        )
+        job = phase_grid_job(
+            picks,
+            len(samples),
+            model=need.model,
+            backend=need.backend,
+            device=need.device,
+            fmax=need.fmax,
+            steps=need.steps,
+            stages=need.stages,
+            symprec=need.symprec,
+            tag=tag,
+            loop_time=loop_time,
+            cluster_config=cluster_config,
+            remote_fs=remote_fs,
+            # one remote dir per grid, so concurrent jobs never share one
+            remote_savepath=f"{remote_savepath}/{tag}",
+            local_savepath=str(workdir / "jobs"),
+        )
+        pending.append((need, job))
+
+    _submit_pending(pending)
+    _collect_pending(pending)
+
+    deliver(consumers, "receive_phase_grid", delivered)
+    return delivered
+
+
 def _build_steinhardt(param_dicts: list):
     """One ``SteinhardtProcessor`` per ``(r_cut, r_cut_min)``, l values unioned.
 
@@ -594,6 +694,7 @@ __all__ = [
     "resolve_processing",
     "resolve_model_evaluations",
     "resolve_phase_labeling",
+    "resolve_phase_grid",
     "register_processor_kind",
     "execution_context",
     "local_execution_context",
