@@ -27,6 +27,10 @@ from jaxrens_al.run.processors.spacegroup import (
     SpaceGroupArgs,
     SpaceGroupProcessor,
 )
+from jaxrens_al.run.processors.torchsim_relax import (
+    TorchSimRelaxArgs,
+    TorchSimRelaxProcessor,
+)
 
 __all__ = [
     "CommitteeEvalArgs",
@@ -37,4 +41,6 @@ __all__ = [
     "RelaxProcessor",
     "SpaceGroupArgs",
     "SpaceGroupProcessor",
+    "TorchSimRelaxArgs",
+    "TorchSimRelaxProcessor",
 ]

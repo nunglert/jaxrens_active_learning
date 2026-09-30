@@ -33,6 +33,11 @@ readme = "README.md"
 run = [
     "remote_handler[dev,mace_freeze,quests,neuralil,steinhardt] @ git+ssh://git@gitlab.tuwien.ac.at/e165-03-1_theoretische_materialchemie/madsen-s-research-group/remote_handler.git@dev-NU",
     "jaxrens[mace,neuralil,nequix,jaxmd] @ git+ssh://git@github.com/nunglert/jaxrens.git@main",
+    # phase-grid relaxations (run/phase_grid.py, processors/torchsim_relax.py).
+    # torch-sim 0.6 delegates its MACE wrapper to mace.calculators.mace_torchsim
+    # (mace-torch >= 0.3.16); 0.5 carries its own, compatible with this env's mace.
+    "torch-sim-atomistic>=0.5,<0.6",
+    "spglib",
 ]
 refdb = [
     "mp_api",
