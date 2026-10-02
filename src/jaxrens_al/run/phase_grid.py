@@ -172,6 +172,49 @@ def select_grid_samples(
     return samples
 
 
+def unique_picks(samples):
+    """The distinct ``(replica, iter)`` picks, in first-seen order.
+
+    Neighbouring grid temperatures often select the same dead point, so a fine
+    temperature grid would relax identical structures several times; relax
+    these instead and :func:`expand_to_grid` the results back.
+    """
+    seen = {}
+    for at in samples:
+        seen.setdefault((int(at.info[REPLICA_KEY]), int(at.info["iter"])), at)
+    return list(seen.values())
+
+
+def expand_to_grid(relaxed, samples):
+    """One relaxed frame per grid sample, from the relaxed unique picks.
+
+    Each ``samples`` row gets a copy of its pick's relaxed frame, with the
+    per-row ``grid_T`` / ``grid_weight_share`` restored.
+    """
+    by_key = {
+        (int(at.info[REPLICA_KEY]), int(at.info["iter"])): at for at in relaxed
+    }
+    out = []
+    for s in samples:
+        key = (int(s.info[REPLICA_KEY]), int(s.info["iter"]))
+        if key not in by_key:
+            raise RuntimeError(
+                f"phase grid: no relaxed frame for replica {key[0]}, iter "
+                f"{key[1]} -- the relaxation job dropped it"
+            )
+        at = by_key[key].copy()
+        for k in (GRID_T_KEY, GRID_SHARE_KEY):
+            at.info[k] = s.info[k]
+        out.append(at)
+    return out
+
+
+def ns_outputs_mtime(output_dir, prefix) -> float:
+    """Newest mtime of an NS run's per-replica files (0 if none)."""
+    files = list(Path(output_dir).glob(f"{prefix}.run*"))
+    return max((f.stat().st_mtime for f in files), default=0.0)
+
+
 def _infer_prefix(output_dir):
     names = sorted(Path(output_dir).glob("*.run00.energies"))
     if not names:
@@ -291,12 +334,13 @@ def run_phase_grid(
 ):
     """Select, relax and space-group-label a (T, P) grid of NS samples.
 
-    Writes ``<workdir>/grid_samples.extxyz`` (the picks),
-    ``<workdir>/phase_grid.extxyz`` (relaxed + labelled) and
+    Writes ``<workdir>/grid_samples.extxyz`` (the picks; the distinct ones,
+    relaxed once each, in ``grid_unique.extxyz``),
+    ``<workdir>/phase_grid.extxyz`` (relaxed + labelled, one per pick) and
     ``<workdir>/phase_grid.csv`` (one row per sample, space groups at
     ``table_symprecs``). ``cluster`` is ``"local"`` (this machine, no
     scheduler) or a ``ClusterConfig`` JSON name/path, as for the dashboard.
-    With ``reuse`` an existing labelled file newer than the picks is kept.
+    With ``reuse`` an existing labelled file newer than the NS run is kept.
 
     Returns the table rows (see :func:`spacegroup_table`).
     """
@@ -307,32 +351,41 @@ def run_phase_grid(
     workdir = Path(workdir)
     workdir.mkdir(parents=True, exist_ok=True)
     picks = workdir / "grid_samples.extxyz"
+    unique_file = workdir / "grid_unique.extxyz"
     labelled_file = workdir / "phase_grid.extxyz"
-
-    samples = select_grid_samples(
-        output_dir,
-        temperatures,
-        prefix=prefix,
-        config=config,
-        pressures=pressures,
-        replicas=replicas,
-    )
-    ase.io.write(picks, samples)
-    logger.info("wrote %d grid samples to %s", len(samples), picks)
+    prefix = prefix or _infer_prefix(output_dir)
 
     if not (
         reuse
         and labelled_file.exists()
-        and labelled_file.stat().st_mtime > picks.stat().st_mtime
+        and labelled_file.stat().st_mtime
+        >= ns_outputs_mtime(output_dir, prefix)
     ):
         from remote_handler.core.atoms_shard import front_tag
 
         from jaxrens_al.run.processing_resolver import execution_context
 
+        samples = select_grid_samples(
+            output_dir,
+            temperatures,
+            prefix=prefix,
+            config=config,
+            pressures=pressures,
+            replicas=replicas,
+        )
+        unique = unique_picks(samples)
+        ase.io.write(picks, samples)
+        ase.io.write(unique_file, unique)
+        logger.info(
+            "wrote %d grid samples (%d distinct) to %s",
+            len(samples),
+            len(unique),
+            picks,
+        )
         tag = "phasegrid"
         phase_grid_job(
-            picks,
-            len(samples),
+            unique_file,
+            len(unique),
             model=model,
             backend=backend,
             device=device,
@@ -344,7 +397,8 @@ def run_phase_grid(
             loop_time=10,
             **execution_context(cluster, workdir / "jobs"),
         ).run()
-        Path(front_tag(str(picks), tag)).replace(labelled_file)
+        relaxed = ase.io.read(front_tag(str(unique_file), tag), index=":")
+        ase.io.write(labelled_file, expand_to_grid(relaxed, samples))
 
     labelled = ase.io.read(labelled_file, index=":")
     rows = spacegroup_table(labelled, table_symprecs)
@@ -368,9 +422,12 @@ __all__ = [
     "GRID_T_KEY",
     "REPLICA_KEY",
     "SPACEGROUP_KEY",
+    "expand_to_grid",
     "most_likely_frames",
+    "ns_outputs_mtime",
     "phase_grid_job",
     "run_phase_grid",
     "select_grid_samples",
     "spacegroup_table",
+    "unique_picks",
 ]

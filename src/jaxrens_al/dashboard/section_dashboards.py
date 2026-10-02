@@ -167,6 +167,14 @@ def build_ns_parser(prog: str | None = None) -> argparse.ArgumentParser:
     return parser
 
 
+def _use_file_backend() -> None:
+    """Render with Agg: the sections only write PDFs, and an interactive
+    backend on an inherited DISPLAY (a stale ssh X11 forward) hangs."""
+    import matplotlib
+
+    matplotlib.use("Agg")
+
+
 def run_ns(argv: list[str] | None = None, prog: str | None = None) -> int:
     _configure_logging()
     parser = build_ns_parser(prog)
@@ -209,6 +217,7 @@ def run_ns(argv: list[str] | None = None, prog: str | None = None) -> int:
         )
         return 1
 
+    _use_file_backend()
     import numpy as np
     from alviz import Dashboard
 
@@ -319,6 +328,7 @@ def run_dft(argv: list[str] | None = None, prog: str | None = None) -> int:
         logger.error(str(exc))
         return 1
 
+    _use_file_backend()
     from alviz import Dashboard
 
     from jaxrens_al.dashboard.panel_specs import parse_panel_config
@@ -446,6 +456,7 @@ def run_training(
         logger.error(str(exc))
         return 1
 
+    _use_file_backend()
     from alviz import Dashboard
 
     from jaxrens_al.dashboard.panel_specs import parse_panel_config

@@ -539,6 +539,11 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     # Import here so --help / arg errors don't pay the alviz import cost.
+    # The dashboard only writes PDFs: force the file backend, so an inherited
+    # DISPLAY (e.g. a stale ssh X11 forward) can't hang figure creation.
+    import matplotlib
+
+    matplotlib.use("Agg")
     import matplotlib.pyplot as plt
     import numpy as np
     from alviz import Dashboard, merge_pdfs

@@ -223,7 +223,19 @@ def test_resolve_phase_grid_runs_once_and_reuses(tmp_path, monkeypatch):
 
     def fake_select(result_dir, temperatures, **kw):
         calls["select"] += 1
-        return [Atoms("Cu", cell=[3, 3, 3], pbc=True) for _ in temperatures]
+        out = []
+        for k, T in enumerate(temperatures):
+            at = Atoms("Cu", cell=[3, 3, 3], pbc=True)
+            # the two hottest cells pick the same dead point
+            at.info.update(
+                grid_T=float(T),
+                grid_P=0.0,
+                replica=0,
+                iter=min(k, 1),
+                grid_weight_share=0.1 * (k + 1),
+            )
+            out.append(at)
+        return out
 
     class FakeJob:
         def __init__(self, picks, n, *, tag, **kw):
@@ -245,6 +257,9 @@ def test_resolve_phase_grid_runs_once_and_reuses(tmp_path, monkeypatch):
             from remote_handler.core.atoms_shard import front_tag
 
             frames = ase.io.read(self.picks, index=":")
+            calls["relaxed"] = len(frames)
+            for at in frames:
+                at.info.update(spacegroup=225, spacegroup_symbol="Fm-3m")
             ase.io.write(front_tag(str(self.picks), self.tag), frames)
 
     monkeypatch.setattr(pg, "select_grid_samples", fake_select)
@@ -254,7 +269,7 @@ def test_resolve_phase_grid_runs_once_and_reuses(tmp_path, monkeypatch):
         PhaseGridPanel(
             out,
             model_file="m.model",
-            temperatures=[300, 600],
+            temperatures=[300, 600, 900],
             datapath=tmp_path,
         )
         for _ in range(2)  # identical needs -> one job
@@ -271,6 +286,28 @@ def test_resolve_phase_grid_runs_once_and_reuses(tmp_path, monkeypatch):
     assert job.kw["remote_savepath"] == f"/remote/{job.tag}"
     (labelled,) = delivered.values()
     assert labelled.exists() and all(p._labelled == labelled for p in panels)
+    assert calls["relaxed"] == 2  # iters {0, 1}: the duplicate relaxed once
+    grid = ase.io.read(labelled, index=":")
+    assert [a.info["grid_T"] for a in grid] == [300.0, 600.0, 900.0]
+    assert [a.info["iter"] for a in grid] == [0, 1, 1]
+    assert grid[2].info["grid_weight_share"] == pytest.approx(0.3)
+    assert all(a.info["spacegroup"] == 225 for a in grid)
+    assert len(panels[0].compute_data({})["rows"]) == 3
 
     resolve_phase_grid(panels, **ctx)  # labelled newer than the NS files
     assert calls["select"] == 1 and len(calls["jobs"]) == 1
+
+
+def test_builder_initial_model_only_for_unrecorded_seed(tmp_path):
+    calchome, out, bundle, torch_model = _calchome(tmp_path)
+    spec = PhaseGridSpec(
+        initial_model="/x/foundation.model", grid_temperatures=[300]
+    )
+    # iteration 0: no sampling model recorded -> the seed model
+    ctx0 = _ctx(calchome, out, tmp_path)
+    need = _build_phase_grid(spec, ctx0, ctx0.common).phase_grid_needs()[0]
+    assert need.model == "/x/foundation.model"
+    # later iterations keep their own sampling model
+    ctx1 = _ctx(calchome, out, tmp_path, sampling_model_file=bundle)
+    need = _build_phase_grid(spec, ctx1, ctx1.common).phase_grid_needs()[0]
+    assert Path(need.model) == torch_model

@@ -384,13 +384,16 @@ class PhaseGridSpec(PanelSpec):
     the torch original of the iteration's model is used -- ``model_source``
     picks the one that drove this iteration's sampler (``sampling``, default:
     the phases the NS run actually sampled) or this iteration's freshly trained
-    one (``trained``). ``config`` defaults to the ``ns_config.yaml`` beside
+    one (``trained``). ``initial_model`` is the torch model for an iteration
+    whose sampling model is not recorded -- iteration 0, seeded by an
+    out-of-band foundation model. ``config`` defaults to the ``ns_config.yaml`` beside
     the NS output dir. ``replica_stride`` thins the pressure ladder.
     """
 
     type: str = "phase_grid"
     model: str | None = None
     model_source: str = "sampling"
+    initial_model: str | None = None
     config: str | None = None
     grid_temperatures: list | None = None
     n_grid_T: int = 7
@@ -436,6 +439,9 @@ def _model_for(spec, ctx):
             f"phase_grid: model_source must be 'sampling' or 'trained', got "
             f"{spec.model_source!r}"
         )
+    if spec.model_source == "sampling" and ctx.sampling_model_file is None:
+        # iteration 0: the seed model is not in AL_progress.json
+        return Path(spec.initial_model) if spec.initial_model else None
     recorded = (
         ctx.sampling_model_file
         if spec.model_source == "sampling"
@@ -461,8 +467,14 @@ def _build_phase_grid(spec, ctx, c):
         what
         for what, val in (
             (
-                "a torch model (set 'model', or no torch Model.model beside the "
-                f"{spec.model_source} bundle)",
+                (
+                    "torch model: this iteration's sampling model is not recorded "
+                    "(iteration 0) -- set 'initial_model' (or 'model')"
+                    if spec.model_source == "sampling"
+                    and ctx.sampling_model_file is None
+                    else f"torch model: no Model.model beside the "
+                    f"{spec.model_source} bundle -- set 'model'"
+                ),
                 model,
             ),
             ("grid temperatures", temperatures),

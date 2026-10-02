@@ -531,12 +531,6 @@ def resolve_phase_labeling(
     return delivered
 
 
-def _ns_outputs_mtime(result_dir, prefix) -> float:
-    """Newest mtime of an NS run's per-replica files (0 if none)."""
-    files = list(Path(result_dir).glob(f"{prefix}.run*"))
-    return max((f.stat().st_mtime for f in files), default=0.0)
-
-
 def resolve_phase_grid(
     panels,
     *,
@@ -558,8 +552,10 @@ def resolve_phase_grid(
     ``<local_savepath>/<tag>/grid_samples.extxyz`` and runs one
     ``[torchsim_relax, spacegroup]`` job over them. Every job is submitted
     before any is awaited, so several iterations' grids queue concurrently.
-    With ``reuse`` a labelled file newer than the NS run's files is kept (no
-    selection, no job). The array-job knobs of the other resolvers are
+    Only the distinct ``(replica, iter)`` picks are relaxed; the results are
+    expanded back to one labelled frame per grid cell in
+    ``<tag>/phase_grid.extxyz``. With ``reuse`` a labelled file newer than the
+    NS run's files is kept (no selection, no job). The array-job knobs of the other resolvers are
     accepted and ignored: a grid is one small shard. Delivers
     ``{need -> labelled_file}`` via ``receive_phase_grid``.
     """
@@ -570,21 +566,28 @@ def resolve_phase_grid(
     import ase.io
     from remote_handler.core.atoms_shard import front_tag
 
-    from jaxrens_al.run.phase_grid import phase_grid_job, select_grid_samples
+    from jaxrens_al.run.phase_grid import (
+        expand_to_grid,
+        ns_outputs_mtime,
+        phase_grid_job,
+        select_grid_samples,
+        unique_picks,
+    )
 
     delivered: dict = {}
     pending = []
+    expand = []  # (samples, relaxed unique file, labelled file) per job
     for need in dict.fromkeys(needs):  # dedup, keep order
         tag = stable_tag("pgrid", need)
         workdir = Path(local_savepath) / tag
-        picks = workdir / "grid_samples.extxyz"
-        labelled = Path(front_tag(str(picks), tag))
+        unique_file = workdir / "grid_unique.extxyz"
+        labelled = workdir / "phase_grid.extxyz"
         delivered[need] = labelled
         if (
             reuse
             and labelled.exists()
             and labelled.stat().st_mtime
-            >= _ns_outputs_mtime(need.result_dir, need.prefix)
+            >= ns_outputs_mtime(need.result_dir, need.prefix)
         ):
             logger.info("resolve_phase_grid: reusing %s", labelled)
             continue
@@ -597,16 +600,20 @@ def resolve_phase_grid(
             replicas=None if need.replicas is None else list(need.replicas),
             k_B=need.k_B,
         )
-        ase.io.write(picks, samples)
+        unique = unique_picks(samples)
+        ase.io.write(workdir / "grid_samples.extxyz", samples)
+        ase.io.write(unique_file, unique)
         logger.info(
-            "resolve_phase_grid: %d samples from %s, relaxing with %s",
+            "resolve_phase_grid: %d samples (%d distinct) from %s, relaxing "
+            "with %s",
             len(samples),
+            len(unique),
             need.result_dir,
             Path(need.model).name,
         )
         job = phase_grid_job(
-            picks,
-            len(samples),
+            unique_file,
+            len(unique),
             model=need.model,
             backend=need.backend,
             device=need.device,
@@ -623,9 +630,15 @@ def resolve_phase_grid(
             local_savepath=str(workdir / "jobs"),
         )
         pending.append((need, job))
+        expand.append(
+            (samples, Path(front_tag(str(unique_file), tag)), labelled)
+        )
 
     _submit_pending(pending)
     _collect_pending(pending)
+    for samples, relaxed_file, labelled in expand:
+        relaxed = ase.io.read(str(relaxed_file), index=":")
+        ase.io.write(labelled, expand_to_grid(relaxed, samples))
 
     deliver(consumers, "receive_phase_grid", delivered)
     return delivered
