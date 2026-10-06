@@ -61,6 +61,10 @@ class ModelEvalArgs(ScriptInput):
     batch_size: Optional[int] = None
     max_neighbors_list: list = field(default_factory=list)
     max_neighbors_offset: int = 4
+    # Periodic-image expansion for the backend's neighbour search ([a, b, c];
+    # empty -> the backend default). Small cells need it: jaxrens requires
+    # min(cell_diag * sc) >= 2 * r_cut -- match the NS run's supercell_trafo.
+    supercell_trafo: list = field(default_factory=list)
 
     def validate(self, root: Optional[Path] = None) -> None:
         if not self.model_remote:
@@ -92,6 +96,14 @@ class ModelEvalArgs(ScriptInput):
                 "model_eval: 'max_neighbors_list' must be positive ints "
                 "in ascending order"
             )
+        sc = list(self.supercell_trafo)
+        if sc and (
+            len(sc) != 3 or not all(isinstance(x, int) and x > 0 for x in sc)
+        ):
+            raise ScriptInputError(
+                "model_eval: 'supercell_trafo' must be 3 positive ints or "
+                "empty"
+            )
 
 
 # --- cluster-side compute --------------------------------------------------
@@ -114,6 +126,7 @@ def run(atoms_list, args, calcpath=None):
     batch_size = args.get("batch_size")
     ladder = list(args.get("max_neighbors_list") or [])
     offset = int(args.get("max_neighbors_offset", 4))
+    supercell_trafo = list(args.get("supercell_trafo") or [])
 
     energies, forces = score_atoms(
         model_path,
@@ -125,6 +138,7 @@ def run(atoms_list, args, calcpath=None):
         batch_size=batch_size,
         max_neighbors_list=ladder or None,
         max_neighbors_offset=offset,
+        supercell_trafo=supercell_trafo or None,
     )
     for i, atoms in enumerate(atoms_list):
         atoms.info[energy_key] = energies[i]
@@ -172,6 +186,9 @@ class ModelEvalProcessor(Processor):
             the geometry instead of pinning it at ``max_neighbors``, growing it
             on overflow, with the ladder bounding the compile count.
         max_neighbors_offset: Headroom above the observed neighbour count.
+        supercell_trafo: ``(a, b, c)`` periodic-image expansion for the
+            backend (``None`` = backend default). Set it to the NS run's
+            ``backend.supercell_trafo`` when scoring that run's cells.
     """
 
     name = "model_eval"
@@ -189,6 +206,7 @@ class ModelEvalProcessor(Processor):
         batch_size: int | None = None,
         max_neighbors_list=None,
         max_neighbors_offset: int = 4,
+        supercell_trafo=None,
     ):
         self.model = Path(model)
         self.backend = backend
@@ -206,6 +224,9 @@ class ModelEvalProcessor(Processor):
             else []
         )
         self.max_neighbors_offset = int(max_neighbors_offset)
+        self.supercell_trafo = (
+            [int(x) for x in supercell_trafo] if supercell_trafo else []
+        )
         self._is_archive = self.model.is_dir()
         self._staged: Optional[Path] = None
 
@@ -239,6 +260,7 @@ class ModelEvalProcessor(Processor):
             batch_size=self.batch_size,
             max_neighbors_list=self.max_neighbors_list,
             max_neighbors_offset=self.max_neighbors_offset,
+            supercell_trafo=self.supercell_trafo,
         ).to_dict()
 
 

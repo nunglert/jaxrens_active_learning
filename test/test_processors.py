@@ -344,6 +344,22 @@ def test_model_eval_processor_forwards_the_bucket_ladder(tmp_path):
     assert args["max_neighbors_offset"] == 2
     ModelEvalArgs.from_dict(args).validate()
 
+
+def test_model_eval_processor_forwards_supercell_trafo(tmp_path):
+    from jaxrens_al.run.processors import ModelEvalArgs, ModelEvalProcessor
+
+    pkl = tmp_path / "model.pkl"
+    pkl.write_bytes(b"\x00")
+    default = ModelEvalProcessor(pkl, backend="neuralil").build_args("/r")
+    assert default["supercell_trafo"] == []  # -> backend default
+    args = ModelEvalProcessor(
+        pkl, backend="neuralil", supercell_trafo=(3, 3, 3)
+    ).build_args("/r")
+    assert args["supercell_trafo"] == [3, 3, 3]
+    ModelEvalArgs.from_dict(args).validate()
+    with pytest.raises(ScriptInputError):
+        ModelEvalArgs.from_dict({**args, "supercell_trafo": [3, 3]}).validate()
+
     # Unset -> the static-buffer defaults (no ladder, no batching).
     plain = ModelEvalProcessor(pkl, backend="neuralil").build_args("/remote")
     # to_dict() drops None-valued fields, so an unset batch_size is absent.
