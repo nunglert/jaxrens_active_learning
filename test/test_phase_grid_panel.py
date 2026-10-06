@@ -15,7 +15,9 @@ from jaxrens_al.dashboard.panels.phase_grid import (  # noqa: E402
     PhaseGridSpec,
     _build_phase_grid,
     hm_tex,
+    parse_phase_colors,
     phase_labels,
+    phase_styles,
 )
 
 # (T, P, space group, symbol, V, converged)
@@ -82,6 +84,49 @@ def test_phase_labels_groups_rare_and_low_symmetry():
     assert order[-1] == "other / low symmetry" and len(order) == 3
     # P1 / P-1 are never a phase of their own; P6_3mc and Pc exceed max_phases
     assert labels.count("other / low symmetry") == 4
+
+
+def test_phase_labels_pinned_always_kept():
+    nums = [216, 216, 216, 225, 225, 186, 1, 7]
+    syms = ["F-43m"] * 3 + ["Fm-3m"] * 2 + ["P6_3mc", "P1", "Pc"]
+    # 186 is rarer than max_phases allows and P1 is low symmetry, but both
+    # are pinned -> own labels; Pc still collapses into "other".
+    labels, order = phase_labels(nums, syms, max_phases=1, pinned={186, 1})
+    assert [o.split(" (")[1] for o in order[:-1]] == ["216)", "186)", "1)"]
+    assert order[-1] == "other / low symmetry"
+    assert labels.count("other / low symmetry") == 3  # 225 x2 + Pc
+
+
+def test_parse_phase_colors():
+    pins = parse_phase_colors(
+        {
+            216: "#2a78d6",
+            "225": "red",
+            "P6_3mc": {"color": "k", "marker": "s"},
+        }
+    )
+    assert pins == {
+        216: (None, "#2a78d6"),
+        225: (None, "red"),
+        "P6_3mc": ("s", "k"),
+    }
+    assert parse_phase_colors(None) == {}
+    with pytest.raises(ValueError, match="no colour"):
+        parse_phase_colors({216: "notacolour"})
+    with pytest.raises(ValueError, match="color, marker"):
+        parse_phase_colors({216: {"colour": "red"}})
+
+
+def test_phase_styles_pins_fixed_and_free_skip_pinned_colours():
+    pins = parse_phase_colors({225: "#2a78d6"})
+    order = ["A (216)", "B (225)", "other / low symmetry"]
+    style = phase_styles(order, pins, {"B (225)": (225, None, "#2a78d6")})
+    assert style["B (225)"][1] == "#2a78d6"
+    # the first free phase does not reuse the pinned palette colour
+    assert style["A (216)"][1] != "#2a78d6"
+    # an unset pinned marker is a function of the space group alone
+    again = phase_styles(["B (225)"], pins, {"B (225)": (225, None, "x")})
+    assert again["B (225)"][0] == style["B (225)"][0]
 
 
 def test_need_is_hashable_and_canonical(tmp_path):
@@ -311,3 +356,43 @@ def test_builder_initial_model_only_for_unrecorded_seed(tmp_path):
     ctx1 = _ctx(calchome, out, tmp_path, sampling_model_file=bundle)
     need = _build_phase_grid(spec, ctx1, ctx1.common).phase_grid_needs()[0]
     assert Path(need.model) == torch_model
+
+
+def test_panel_renders_pinned_colours(tmp_path):
+    import matplotlib.pyplot as plt
+    from matplotlib.colors import to_hex
+
+    panel = _panel(
+        tmp_path,
+        max_phases=1,
+        phase_colors={
+            186: "#ff0000",
+            "Fm-3m": {"color": "k", "marker": "s"},
+        },
+    )
+    (need,) = panel.phase_grid_needs()
+    panel.receive_phase_grid(
+        {need: _write_labelled(tmp_path / "labelled.extxyz")}
+    )
+    panel.data = panel.compute_data({})
+    fig = plt.figure(figsize=(8, 4))
+    panel.subspec = fig.add_gridspec(1, 1)[0, 0]
+    panel.allocate_panels(fig)
+    panel.plot_data()
+    handles = panel.ax.get_legend().legend_handles
+    by_label = {h.get_label(): h for h in handles}
+    p63 = next(k for k in by_label if k.endswith("(186)"))
+    fm3m = next(k for k in by_label if k.endswith("(225)"))
+    assert to_hex(by_label[p63].get_markerfacecolor()) == "#ff0000"
+    assert to_hex(by_label[fm3m].get_markerfacecolor()) == "#000000"
+    assert by_label[fm3m].get_marker() == "s"
+    plt.close(fig)
+
+
+def test_spec_rejects_bad_phase_colour(tmp_path):
+    from types import SimpleNamespace
+
+    spec = PhaseGridSpec(phase_colors={216: "notacolour"})
+    ctx = SimpleNamespace(ns_dirs=[tmp_path], is_summary=False)
+    with pytest.raises(ValueError, match="no colour"):
+        _build_phase_grid(spec, ctx, {})

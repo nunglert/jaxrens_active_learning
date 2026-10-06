@@ -125,27 +125,95 @@ def hm_tex(symbol: str) -> str:
     return re.sub(r"_(\d)", r"$_{\1}$", out)
 
 
-def phase_labels(numbers, symbols, max_phases: int = 6):
+def phase_name(number, symbol) -> str:
+    """Legend label of one space group: ``F$\\bar{4}$3m (216)``."""
+    return f"{hm_tex(symbol)} ({int(number)})"
+
+
+def phase_labels(numbers, symbols, max_phases: int = 6, pinned=()):
     """Group space groups into at most ``max_phases`` named phases + "other".
 
     The most frequent non-trivial space groups keep their own label; P1/P-1
     (disordered, glassy or quenched-liquid basins), undetermined cells and
-    anything beyond ``max_phases`` collapse into one "other" class. Returns
-    ``(labels, order)``: a label per sample and the legend order (most
-    frequent first, "other" last).
+    anything beyond ``max_phases`` collapse into one "other" class. Space
+    groups whose number is in ``pinned`` always keep their own label (even
+    P1, and on top of ``max_phases``), so a fixed colour map shows them in
+    every run. Returns ``(labels, order)``: a label per sample and the legend
+    order (most frequent first, "other" last).
     """
-    names = [f"{hm_tex(s)} ({n})" for n, s in zip(numbers, symbols)]
-    counts = Counter(
-        name for name, n in zip(names, numbers) if int(n) not in _LOW_SYMMETRY
+    pinned = {int(n) for n in pinned}
+    names = [phase_name(n, s) for n, s in zip(numbers, symbols)]
+    counts = Counter(names)
+    free = Counter(
+        name
+        for name, n in zip(names, numbers)
+        if int(n) not in _LOW_SYMMETRY and int(n) not in pinned
     )
-    keep = [name for name, _ in counts.most_common(max_phases)]
+    keep = {name for name, _ in free.most_common(max_phases)}
+    keep |= {name for name, n in zip(names, numbers) if int(n) in pinned}
     labels = [
         name if name in keep else "other / low symmetry" for name in names
     ]
-    order = keep + (
-        ["other / low symmetry"] if len(set(labels)) > len(keep) else []
-    )
+    order = [name for name, _ in counts.most_common() if name in keep]
+    if len(set(labels)) > len(keep):
+        order.append("other / low symmetry")
     return labels, order
+
+
+def parse_phase_colors(phase_colors) -> dict:
+    """Normalise a ``phase_colors`` map to ``{key: (marker | None, color)}``.
+
+    Keys are space-group numbers (``216``, also as the string ``"216"``) or
+    spglib symbols (``"F-43m"``); values are a matplotlib colour or a
+    ``{color, marker}`` mapping. Raises ``ValueError`` on a bad entry so a
+    typo in ``dashboard.yaml`` fails before any cluster job.
+    """
+    from matplotlib.colors import is_color_like
+
+    out = {}
+    for key, val in (phase_colors or {}).items():
+        if isinstance(key, str) and key.strip().isdigit():
+            key = int(key)
+        if isinstance(val, dict):
+            unknown = set(val) - {"color", "marker"}
+            if unknown or "color" not in val:
+                raise ValueError(
+                    f"phase_colors[{key!r}]: expected a colour or "
+                    f"{{color, marker}}, got {val!r}"
+                )
+            marker, color = val.get("marker"), val["color"]
+        else:
+            marker, color = None, val
+        if not is_color_like(color):
+            raise ValueError(f"phase_colors[{key!r}]: {color!r} is no colour")
+        out[key] = (marker, color)
+    return out
+
+
+def phase_styles(order, pins: dict, name_pins: dict) -> dict:
+    """``{legend name -> (marker, color)}`` for the phases in ``order``.
+
+    Pinned phases (``name_pins``: legend name -> the space group's
+    ``(number, symbol)`` key into ``pins``) take their fixed colour; an unset
+    pinned marker is derived from the space-group number, so it too is the
+    same in every run. Unpinned phases cycle through the palette, skipping
+    the pinned colours, in legend order.
+    """
+    from matplotlib.colors import to_hex
+
+    taken = {to_hex(color) for _, color in pins.values()}
+    free = [c for c in _COLORS if c not in taken] or list(_COLORS)
+    style, k = {}, 0
+    for name in order:
+        if name in name_pins:
+            number, marker, color = name_pins[name]
+            style[name] = (marker or _MARKERS[number % len(_MARKERS)], color)
+        elif name.startswith("other"):
+            style[name] = ("X", _OTHER_COLOR)
+        else:
+            style[name] = (_MARKERS[k % len(_MARKERS)], free[k % len(free)])
+            k += 1
+    return style
 
 
 class PhaseGridPanel(PhaseGridConsumer, Entry):
@@ -163,6 +231,9 @@ class PhaseGridPanel(PhaseGridConsumer, Entry):
         symprec: spglib tolerance of the phase label.
         k_B: Boltzmann constant in the dead-point energy units.
         max_phases: Distinct phases in the legend (rest -> "other").
+        phase_colors: Fixed style per space group, ``{number or symbol:
+            color or {color, marker}}`` (see :func:`parse_phase_colors`) --
+            the same phase gets the same colour in every run.
         swap_axes: If True, pressure on x and temperature on y.
     """
 
@@ -186,6 +257,7 @@ class PhaseGridPanel(PhaseGridConsumer, Entry):
         symprec: float = 0.1,
         k_B: float = KB_EV,
         max_phases: int = 4,
+        phase_colors=None,
         swap_axes: bool = False,
         **kwargs,
     ):
@@ -206,6 +278,8 @@ class PhaseGridPanel(PhaseGridConsumer, Entry):
             k_B=float(k_B),
         )
         self._max_phases = int(max_phases)
+        # Render-only (not in the cached JSON): recolouring needs no rerun.
+        self._pins = parse_phase_colors(phase_colors)
         self._swap_axes = bool(swap_axes)
         self._labelled = None
 
@@ -279,20 +353,25 @@ class PhaseGridPanel(PhaseGridConsumer, Entry):
                 transform=self.ax.transAxes,
             )
             return
+        name_pins = {}
+        for r in rows:
+            key = next(
+                (k for k in (r["sg"], r["symbol"]) if k in self._pins), None
+            )
+            if key is not None:
+                marker, color = self._pins[key]
+                name_pins[phase_name(r["sg"], r["symbol"])] = (
+                    r["sg"],
+                    marker,
+                    color,
+                )
         labels, order = phase_labels(
             [r["sg"] for r in rows],
             [r["symbol"] for r in rows],
             self._max_phases,
+            pinned={number for number, _, _ in name_pins.values()},
         )
-        style = {}
-        for k, name in enumerate(order):
-            if name.startswith("other"):
-                style[name] = ("X", _OTHER_COLOR)
-            else:
-                style[name] = (
-                    _MARKERS[k % len(_MARKERS)],
-                    _COLORS[k % len(_COLORS)],
-                )
+        style = phase_styles(order, self._pins, name_pins)
 
         P = np.array([r["P"] for r in rows])
         T = np.array([r["T"] for r in rows])
@@ -388,6 +467,10 @@ class PhaseGridSpec(PanelSpec):
     whose sampling model is not recorded -- iteration 0, seeded by an
     out-of-band foundation model. ``config`` defaults to the ``ns_config.yaml`` beside
     the NS output dir. ``replica_stride`` thins the pressure ladder.
+    ``phase_colors`` pins a style per space group so runs stay comparable,
+    keyed by number or spglib symbol, valued by a colour or ``{color,
+    marker}``, e.g. ``{216: "#2a78d6", F-43m: ..., 186: {color: "#eb6834",
+    marker: s}}``; pinned phases always get their own legend entry.
     """
 
     type: str = "phase_grid"
@@ -405,6 +488,7 @@ class PhaseGridSpec(PanelSpec):
     stages: list = ["positions", "cell"]
     symprec: float = 0.1
     max_phases: int = 4
+    phase_colors: dict | None = None
     swap_axes: bool | None = None
     k_B: float | None = None
     temperatures: list | None = None
@@ -459,6 +543,7 @@ def _count_replicas(result_dir, prefix):
 def _build_phase_grid(spec, ctx, c):
     if not ctx.ns_dirs or ctx.is_summary:
         return None
+    parse_phase_colors(spec.phase_colors)  # fail on a typo before any job
     result_dir = Path(ctx.ns_dirs[0])
     model = _model_for(spec, ctx)
     temperatures = _grid_temperatures(spec)
@@ -513,6 +598,7 @@ def _build_phase_grid(spec, ctx, c):
         symprec=spec.symprec,
         k_B=spec.k_B if spec.k_B is not None else KB_EV,
         max_phases=spec.max_phases,
+        phase_colors=spec.phase_colors,
         swap_axes=bool(spec.swap_axes),
         **c,
     )
@@ -527,5 +613,8 @@ __all__ = [
     "PhaseGridPanel",
     "PhaseGridSpec",
     "hm_tex",
+    "parse_phase_colors",
     "phase_labels",
+    "phase_name",
+    "phase_styles",
 ]
