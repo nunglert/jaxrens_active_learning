@@ -60,7 +60,6 @@ from pathlib import Path
 
 import numpy as np
 from remote_handler.core.cluster_handler import ClusterConfig
-from remote_handler.core.file_handler import RemoteFileSystem
 from remote_handler.workflows import evaluators
 
 from jaxrens_al.run.reference_db import (
@@ -124,11 +123,11 @@ def make_evaluator(dft_cluster) -> "evaluators.VASPEvaluator":
 
     The file system follows from the cluster: VASP runs on
     ``dft_cluster.remote_machine``, so evaluation stages through a
-    ``RemoteFileSystem`` bound to that same alias (mirrors
-    ``processing_resolver.execution_context``).
+    ``RemoteFileSystem`` bound to that same alias, under its connection
+    policy (mirrors ``processing_resolver.execution_context``).
     """
     return evaluators.VASPEvaluator(
-        remote_fs=RemoteFileSystem(dft_cluster.remote_machine),
+        remote_fs=dft_cluster.remote_fs(),
         cluster_config=dft_cluster,
         num_parallel=25,
         incar_kwargs=DFT_INCAR,

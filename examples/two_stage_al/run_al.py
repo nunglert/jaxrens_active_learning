@@ -43,7 +43,6 @@ import sys
 from pathlib import Path
 
 from remote_handler.core.cluster_handler import ClusterConfig
-from remote_handler.core.file_handler import RemoteFileSystem
 from remote_handler.workflows import (
     StagedActiveLearningHandler,
     active_learning_base,
@@ -339,10 +338,12 @@ def main(calchome: str = "calchome"):
     os.environ["REMOTE_HANDLER_SLURM_TEMPLATES"] = str(template_dir())
 
     # --- file systems + clusters -----------------------------------------
-    lugus_fs = RemoteFileSystem(remote_alias="lugus")
-    musica_fs = RemoteFileSystem(remote_alias="musica")
     dft_cluster = ClusterConfig.from_name("lugus")  # CPU: VASP single-points
     gpu_cluster = ClusterConfig.from_name("musica")  # GPU: NS + training
+    # cluster.remote_fs() carries the cluster's connection policy, so the
+    # connect and every SFTP op honour resilient_connection.
+    lugus_fs = dft_cluster.remote_fs()
+    musica_fs = gpu_cluster.remote_fs()
 
     # --- PHASE 1: MACE foundation bootstrap ------------------------------
     phase1 = calchome / "phase1_mace"

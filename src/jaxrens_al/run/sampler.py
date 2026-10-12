@@ -86,6 +86,20 @@ def _set_dotted(config: dict, dotted_key: str, value) -> None:
     node[parts[-1]] = value
 
 
+def _adopt_connection_policy(remote_fs, cluster_config) -> None:
+    """Give ``remote_fs`` the cluster's connection policy, upgrade-only.
+
+    The sampler drives SSH on ``remote_fs`` itself (the chain's
+    ``sbatch``/``scancel``), on the reattach path before any task -- which
+    would adopt the policy -- exists in this process. A policy that is
+    already enabled is the caller's choice and is kept.
+    """
+    current = getattr(remote_fs, "connection_policy", None)
+    if current is None or current.enabled:
+        return
+    remote_fs.connection_policy = cluster_config.connection_policy
+
+
 class JaxrensNSSampler(DetachableTaskMixin, Sampler):
     """Native jaxrens nested-sampling Sampler (``remote_handler.Sampler``).
 
@@ -181,6 +195,7 @@ class JaxrensNSSampler(DetachableTaskMixin, Sampler):
         super().__init__()
         self.remote_fs = remote_fs
         self.cluster_config = cluster_config
+        _adopt_connection_policy(remote_fs, cluster_config)
         self.config_file = Path(config_file)
         self.n_gpu_parallel = n_gpu_parallel
         self.backend_type = backend_type

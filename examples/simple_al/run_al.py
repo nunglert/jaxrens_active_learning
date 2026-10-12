@@ -26,7 +26,7 @@ import sys
 from pathlib import Path
 
 from remote_handler.core.cluster_handler import ClusterConfig
-from remote_handler.core.file_handler import LocalFileSystem, RemoteFileSystem
+from remote_handler.core.file_handler import LocalFileSystem
 from remote_handler.workflows import (
     StagedActiveLearningHandler,
     active_learning_base,
@@ -75,7 +75,6 @@ def main(calchome: str = "calchome"):
 
     # --- file systems -----------------------------------------------------
     local_fs = LocalFileSystem()
-    remote_fs = RemoteFileSystem(remote_alias="datalab")
 
     # GPU cluster that runs jaxrens NS + NeuralIL training.
     gpu_cluster = ClusterConfig.from_dict(
@@ -88,6 +87,8 @@ def main(calchome: str = "calchome"):
             "template": "datalab.sh.j2",
         }
     )
+    # Under the cluster's connection policy (resilient_connection).
+    remote_fs = gpu_cluster.remote_fs()
     # CPU cluster that runs VASP single-points.
     dft_cluster = ClusterConfig.from_dict(
         {

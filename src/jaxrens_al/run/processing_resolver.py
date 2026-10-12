@@ -95,7 +95,6 @@ def execution_context(cluster, workdir) -> dict:
     if cluster in (None, "local"):
         return local_execution_context(workdir)
 
-    from remote_handler.core import file_handler
     from remote_handler.core.cluster_handler import ClusterConfig
 
     cfg = (
@@ -105,7 +104,10 @@ def execution_context(cluster, workdir) -> dict:
     )
     return {
         "cluster_config": cfg,
-        "remote_fs": file_handler.RemoteFileSystem(cfg.remote_machine),
+        # Under the cluster's connection policy, so an expired cert pauses
+        # (connect + every SFTP op) instead of killing the caller -- e.g.
+        # the committee selector, which opens one of these per iteration.
+        "remote_fs": cfg.remote_fs(),
         "remote_savepath": str(cfg.savepath),
         "local_savepath": str(workdir),
     }

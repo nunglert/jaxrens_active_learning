@@ -222,6 +222,46 @@ def test_execution_context_selects_local_or_config(tmp_path):
         execution_context("/does/not/exist.json", tmp_path / "wd")
 
 
+def test_execution_context_remote_fs_carries_connection_policy(
+    tmp_path, monkeypatch
+):
+    """A cluster context's filesystem is built under the cluster's policy.
+
+    Without it the committee selector's per-iteration filesystem had no
+    resilience, so an expired cert mid-run killed the loop.
+    """
+    from remote_handler.core import file_handler
+    from remote_handler.core.cluster_handler import ClusterConfig
+
+    from jaxrens_al.run.processing_resolver import execution_context
+
+    built = []
+
+    class _FakeRemoteFS:
+        def __init__(self, remote_alias, connection_policy=None, **kw):
+            self.remote_alias = remote_alias
+            self.connection_policy = connection_policy
+            built.append(self)
+
+    # Patched where ClusterConfig.remote_fs imports it from (no connect).
+    monkeypatch.setattr(file_handler, "RemoteFileSystem", _FakeRemoteFS)
+    cfg = ClusterConfig(
+        remote_machine="musica",
+        partition="default",
+        conda_env="test",
+        conda_source="/opt/conda",
+        savepath="/tmp/remote_handler",
+        template="mock.sh.j2",
+        resilient_connection=True,
+    )
+
+    ctx = execution_context(cfg, tmp_path / "wd")
+
+    assert ctx["remote_fs"] is built[0]
+    assert ctx["remote_fs"].remote_alias == "musica"
+    assert ctx["remote_fs"].connection_policy.enabled
+
+
 def test_steps_merge_steinhardt_needs_by_cutoff():
     """Several Steinhardt panels (same r_cut, different l) -> ONE processor.
 
