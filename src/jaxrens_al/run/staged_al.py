@@ -28,6 +28,9 @@ model that would never be sampled from; this matches ``from_actors``' default).
 
 from __future__ import annotations
 
+import inspect
+import logging
+
 from remote_handler.workflows.selectors import (
     ConfigSelector,
     PipelineSelector,
@@ -40,6 +43,27 @@ from remote_handler.workflows.staged_active_learning import (
     Stage,
     StagedActiveLearningHandler,
 )
+
+logger = logging.getLogger(__name__)
+
+
+def _hook_kwargs(on_stage_complete) -> dict:
+    """``on_stage_complete`` for the handler, if it supports hooks.
+
+    An older ``remote_handler`` has no such argument: the hooks are then
+    dropped with a warning rather than crashing the loop at startup.
+    """
+    if not on_stage_complete:
+        return {}
+    params = inspect.signature(StagedActiveLearningHandler).parameters
+    if "on_stage_complete" not in params:
+        logger.warning(
+            "This remote_handler's StagedActiveLearningHandler takes no "
+            "on_stage_complete hooks; ignoring %r (update remote_handler).",
+            on_stage_complete,
+        )
+        return {}
+    return {"on_stage_complete": list(on_stage_complete)}
 
 
 def _staged_al_handler(
@@ -67,6 +91,7 @@ def _staged_al_handler(
     selector_output_extension: str = "extxyz",
     evaluator_output_extension: str = "extxyz",
     trainer_output_extension: str = "pkl",
+    on_stage_complete: list | None = None,
 ) -> StagedActiveLearningHandler:
     """Assemble the canonical 4-stage AL loop from actors + selector wiring.
 
@@ -93,6 +118,8 @@ def _staged_al_handler(
             iterations' outputs (default: only the evaluator combines, so the
             trainer always trains on the full labelled set).
         *_output_extension: Collected-output file extension per stage.
+        on_stage_complete: Hooks called after every recorded stage step
+            (e.g. :class:`jaxrens_al.run.dashboard_hook.DashboardHook`).
     """
     selector_actor = (
         SelectorActor(selector)
@@ -138,6 +165,7 @@ def _staged_al_handler(
         num_iterations=num_iterations,
         entry_stage=entry_stage,
         exit_stage=exit_stage,
+        **_hook_kwargs(on_stage_complete),
     )
 
 

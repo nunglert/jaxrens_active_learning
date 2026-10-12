@@ -31,6 +31,10 @@ _CONFIG_BASENAMES = (
     "dashboard.json",
 )
 
+# Config block read by the AL loop's DashboardHook (jaxrens_al.run.
+# dashboard_hook), not by any dashboard CLI -- which skips it.
+AUTO_DASHBOARD_KEY = "auto_dashboard"
+
 
 def find_config(calchome):
     """The dashboard config auto-discovered in ``calchome``, or None.
@@ -124,7 +128,9 @@ def apply_config(
     ``global:`` block that is merged into the flat keys). These are not argparse
     options; the raw (unparsed) mapping is stashed on the returned args as
     ``panel_config_raw`` for the caller to turn into panel specs (via the
-    project's panel registry -- kept out of this argparse-only module).
+    project's panel registry -- kept out of this argparse-only module). An
+    ``auto_dashboard:`` block configures the AL loop's ``DashboardHook`` and
+    is ignored here.
     """
     if run_dir is None:
         run_dir = getattr(args, positional)
@@ -142,6 +148,7 @@ def apply_config(
     cfg = load_config(path)
     cfg.pop(positional, None)
     cfg.pop("config", None)
+    cfg.pop(AUTO_DASHBOARD_KEY, None)
 
     # Structured panel keys live outside the flat argparse namespace.
     panel_raw = {k: cfg.pop(k, None) for k in ("add", "disable", "panels")}
