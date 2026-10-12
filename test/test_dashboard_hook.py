@@ -12,6 +12,7 @@ from remote_handler.core.cluster_handler import ClusterConfig  # noqa: E402
 import jaxrens_al.run.dashboard_hook as dashboard_hook  # noqa: E402
 from jaxrens_al.run.dashboard_hook import (  # noqa: E402
     OUTPUT_SUBDIR,
+    AutoDashboardSettings,
     DashboardHook,
 )
 
@@ -83,7 +84,8 @@ def test_submits_one_render_from_the_config_block(calchome, fake_cluster):
     text = script.read_text()
     assert f"--job-name={DashboardHook.jobname(calchome)}" in text
     assert "#SBATCH --partition=normal" in text
-    assert "#SBATCH --ntasks=8" in text
+    n_cores = AutoDashboardSettings().n_cores  # the block sets none
+    assert f"#SBATCH --ntasks={n_cores}" in text
     assert "#SBATCH --dependency=singleton" in text
     assert "#SBATCH --output=dashboard_slurm_%j.out" in text
     out_pdf = calchome / OUTPUT_SUBDIR / "dashboard_it1_sampler.pdf"
