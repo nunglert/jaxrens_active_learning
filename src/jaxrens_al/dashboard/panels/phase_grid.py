@@ -18,11 +18,14 @@ from the liquid show the basin a quench falls into, not a stable phase.
 
 Producer/reader split like the other cluster-backed panels: this pure reader
 declares a :class:`PhaseGridNeed` (plain data) and receives the labelled file
-via :meth:`PhaseGridConsumer.receive_phase_grid`. The relaxation runs torch
-MACE, so the need names a torch ``.model`` file -- by default the torch
+via :meth:`PhaseGridConsumer.receive_phase_grid`. A MACE run is relaxed with
+torch-sim, so the need names a torch ``.model`` file -- by default the torch
 original of the model that drove this iteration's sampler
-(:func:`~jaxrens_al.dashboard.run_layout.torch_model_for`); set ``model`` on
-the spec for anything else (e.g. a foundation model).
+(:func:`~jaxrens_al.dashboard.run_layout.torch_model_for`). A NeuralIL run's
+``.pkl`` is relaxed through its jaxrens backend instead
+(``jax_cell_relax``), with the ``supercell_trafo`` and neighbour ladder of the
+NS run's ``backend`` block. Set ``model`` on the spec for anything else (e.g.
+a foundation model).
 """
 
 from __future__ import annotations
@@ -30,7 +33,7 @@ from __future__ import annotations
 import logging
 import re
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from pathlib import Path
 
 import numpy as np
@@ -69,11 +72,15 @@ class PhaseGridNeed:
         prefix: jaxrens ``out_file_prefix``.
         temperatures: Grid temperatures, in the units ``k_B`` implies.
         replicas: Replica indices to use (None = all).
-        model: torch MLIP file the samples are relaxed with.
-        backend, device: torch-sim model backend and device.
+        model: Model file the samples are relaxed with -- a torch
+            ``.model`` (torch-sim) or a NeuralIL ``.pkl`` / mace-jax bundle
+            (jaxrens backend).
+        backend, device: Model backend and (torch-sim) device.
         fmax, steps, stages: relaxation criteria and stage order.
         symprec: spglib tolerance of the stored space-group label.
         k_B: Boltzmann constant in the dead-point energy units.
+        supercell_trafo, max_neighbors_list, max_neighbors_offset: jaxrens
+            backend settings (the NS run's); unused by torch-sim.
     """
 
     result_dir: str
@@ -89,6 +96,24 @@ class PhaseGridNeed:
     stages: tuple = ("positions", "cell")
     symprec: float = 0.1
     k_B: float = KB_EV
+    supercell_trafo: tuple | None = None
+    max_neighbors_list: tuple | None = None
+    max_neighbors_offset: int = 4
+
+    def __repr__(self) -> str:
+        """The dataclass repr, minus the jax-relax fields at their default.
+
+        The resolver keys a grid's output dir by ``repr(need)``; leaving the
+        fields a torch-sim grid never sets out keeps those grids' existing
+        tags (and their on-disk results) valid.
+        """
+        parts = [
+            f"{f.name}={getattr(self, f.name)!r}"
+            for f in fields(self)
+            if f.name not in _JAX_RELAX_FIELDS
+            or getattr(self, f.name) != f.default
+        ]
+        return f"{type(self).__name__}({', '.join(parts)})"
 
     @classmethod
     def make(
@@ -106,6 +131,13 @@ class PhaseGridNeed:
                 for k, v in kw.items()
             },
         )
+
+
+_JAX_RELAX_FIELDS = (
+    "supercell_trafo",
+    "max_neighbors_list",
+    "max_neighbors_offset",
+)
 
 
 class PhaseGridConsumer:
@@ -227,7 +259,9 @@ class PhaseGridPanel(PhaseGridConsumer, Entry):
         config: NS config yaml with the replica pressure ladder.
         prefix: jaxrens ``out_file_prefix``.
         replicas: Replica subset (None = all).
-        backend, device, fmax, steps, stages: torch-sim relaxation settings.
+        backend, device, fmax, steps, stages: relaxation settings.
+        supercell_trafo, max_neighbors_list, max_neighbors_offset: jaxrens
+            backend settings for a NeuralIL / mace-jax model.
         symprec: spglib tolerance of the phase label.
         k_B: Boltzmann constant in the dead-point energy units.
         max_phases: Distinct phases in the legend (rest -> "other").
@@ -256,6 +290,9 @@ class PhaseGridPanel(PhaseGridConsumer, Entry):
         stages=("positions", "cell"),
         symprec: float = 0.1,
         k_B: float = KB_EV,
+        supercell_trafo=None,
+        max_neighbors_list=None,
+        max_neighbors_offset: int = 4,
         max_phases: int = 4,
         phase_colors=None,
         swap_axes: bool = False,
@@ -276,6 +313,17 @@ class PhaseGridPanel(PhaseGridConsumer, Entry):
             stages=tuple(stages),
             symprec=float(symprec),
             k_B=float(k_B),
+            supercell_trafo=(
+                None
+                if supercell_trafo is None
+                else tuple(int(x) for x in supercell_trafo)
+            ),
+            max_neighbors_list=(
+                None
+                if max_neighbors_list is None
+                else tuple(int(x) for x in max_neighbors_list)
+            ),
+            max_neighbors_offset=int(max_neighbors_offset),
         )
         self._max_phases = int(max_phases)
         # Render-only (not in the cached JSON): recolouring needs no rerun.
@@ -459,14 +507,20 @@ class PhaseGridSpec(PanelSpec):
 
     ``grid_temperatures`` sets the grid explicitly; otherwise ``n_grid_T``
     temperatures are spread evenly (both ends included) over the run-global range
-    (``temperatures``, inherited). ``model`` is a torch ``.model`` file; unset,
-    the torch original of the iteration's model is used -- ``model_source``
-    picks the one that drove this iteration's sampler (``sampling``, default:
-    the phases the NS run actually sampled) or this iteration's freshly trained
-    one (``trained``). ``initial_model`` is the torch model for an iteration
-    whose sampling model is not recorded -- iteration 0, seeded by an
-    out-of-band foundation model. ``config`` defaults to the ``ns_config.yaml`` beside
-    the NS output dir. ``replica_stride`` thins the pressure ladder.
+    (``temperatures``, inherited). ``model`` is a torch ``.model`` file (or a
+    NeuralIL ``.pkl``); unset, the iteration's model is used -- for MACE its
+    torch original, for NeuralIL the recorded ``.pkl`` itself --
+    ``model_source`` picks the one that drove this iteration's sampler
+    (``sampling``, default: the phases the NS run actually sampled) or this
+    iteration's freshly trained one (``trained``). ``initial_model`` is the
+    model for an iteration whose sampling model is not recorded -- iteration
+    0, seeded by an out-of-band foundation model. ``config`` defaults to the
+    ``ns_config.yaml`` beside the NS output dir. ``replica_stride`` thins the pressure ladder.
+    ``backend`` defaults to ``neuralil`` for a ``.pkl`` model, else ``mace``.
+    A model torch-sim cannot run (NeuralIL, a mace-jax bundle) is relaxed
+    through its jaxrens backend with the NS config's
+    ``backend.supercell_trafo`` / ``max_neighbors_list`` /
+    ``max_neighbors_offset``, which the same-named spec fields override.
     ``phase_colors`` pins a style per space group so runs stay comparable,
     keyed by number or spglib symbol, valued by a colour or ``{color,
     marker}``, e.g. ``{216: "#2a78d6", F-43m: ..., 186: {color: "#eb6834",
@@ -487,6 +541,9 @@ class PhaseGridSpec(PanelSpec):
     steps: int = 1000
     stages: list = ["positions", "cell"]
     symprec: float = 0.1
+    supercell_trafo: list | None = None
+    max_neighbors_list: list | None = None
+    max_neighbors_offset: int | None = None
     max_phases: int = 4
     phase_colors: dict | None = None
     swap_axes: bool | None = None
@@ -514,6 +571,8 @@ def _grid_temperatures(spec):
 
 
 def _model_for(spec, ctx):
+    """The model file to relax with: an explicit one, a recorded NeuralIL
+    ``.pkl`` as-is, or the torch original of a recorded MACE bundle."""
     if spec.model:
         return Path(spec.model)
     from jaxrens_al.dashboard.run_layout import torch_model_for
@@ -531,7 +590,41 @@ def _model_for(spec, ctx):
         if spec.model_source == "sampling"
         else ctx.model_file
     )
+    if recorded is not None and Path(recorded).suffix == ".pkl":
+        return Path(recorded)  # NeuralIL: relaxed by its jaxrens backend
     return torch_model_for(ctx.calchome, recorded)
+
+
+def _is_torch_model(model, backend) -> bool:
+    """Mirrors ``run.phase_grid.relaxer_for`` (kept off the run side)."""
+    return backend == "mace" and Path(model).suffix == ".model"
+
+
+def _backend_for(spec, model) -> str:
+    if "backend" in spec.model_fields_set:
+        return spec.backend
+    return "neuralil" if Path(model).suffix == ".pkl" else spec.backend
+
+
+def _jax_backend_settings(spec, config) -> dict:
+    """``supercell_trafo`` + neighbour ladder: the spec's, else the NS
+    config's ``backend`` block (the settings the run sampled with)."""
+    block = {}
+    if config is not None:
+        import yaml
+
+        with open(config) as fh:
+            block = (yaml.safe_load(fh) or {}).get("backend") or {}
+    offset = spec.max_neighbors_offset
+    if offset is None:
+        offset = block.get("max_neighbors_offset", 4)
+    return dict(
+        supercell_trafo=spec.supercell_trafo or block.get("supercell_trafo"),
+        max_neighbors_list=(
+            spec.max_neighbors_list or block.get("max_neighbors_list")
+        ),
+        max_neighbors_offset=int(offset),
+    )
 
 
 def _count_replicas(result_dir, prefix):
@@ -553,7 +646,7 @@ def _build_phase_grid(spec, ctx, c):
         for what, val in (
             (
                 (
-                    "torch model: this iteration's sampling model is not recorded "
+                    "model: this iteration's sampling model is not recorded "
                     "(iteration 0) -- set 'initial_model' (or 'model')"
                     if spec.model_source == "sampling"
                     and ctx.sampling_model_file is None
@@ -574,6 +667,12 @@ def _build_phase_grid(spec, ctx, c):
             "; no ".join(missing),
         )
         return None
+    backend = _backend_for(spec, model)
+    jax_settings = (
+        {}
+        if _is_torch_model(model, backend)
+        else _jax_backend_settings(spec, config)
+    )
     replicas = None
     if spec.replica_stride > 1:
         replicas = list(
@@ -590,13 +689,14 @@ def _build_phase_grid(spec, ctx, c):
         config=config,
         prefix=ctx.ns_prefix,
         replicas=replicas,
-        backend=spec.backend,
+        backend=backend,
         device=spec.device,
         fmax=spec.fmax,
         steps=spec.steps,
         stages=spec.stages,
         symprec=spec.symprec,
         k_B=spec.k_B if spec.k_B is not None else KB_EV,
+        **jax_settings,
         max_phases=spec.max_phases,
         phase_colors=spec.phase_colors,
         swap_axes=bool(spec.swap_axes),

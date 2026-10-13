@@ -552,7 +552,9 @@ def resolve_phase_grid(
     temperature and replica host-side
     (:func:`jaxrens_al.run.phase_grid.select_grid_samples`), writes them to
     ``<local_savepath>/<tag>/grid_samples.extxyz`` and runs one
-    ``[torchsim_relax, spacegroup]`` job over them. Every job is submitted
+    ``[torchsim_relax | jax_cell_relax, spacegroup]`` job over them (the
+    relaxer follows the model, see ``run.phase_grid.relaxer_for``). Every
+    job is submitted
     before any is awaited, so several iterations' grids queue concurrently.
     Only the distinct ``(replica, iter)`` picks are relaxed; the results are
     expanded back to one labelled frame per grid cell in
@@ -623,6 +625,9 @@ def resolve_phase_grid(
             steps=need.steps,
             stages=need.stages,
             symprec=need.symprec,
+            supercell_trafo=need.supercell_trafo,
+            max_neighbors_list=need.max_neighbors_list,
+            max_neighbors_offset=need.max_neighbors_offset,
             tag=tag,
             loop_time=loop_time,
             cluster_config=cluster_config,

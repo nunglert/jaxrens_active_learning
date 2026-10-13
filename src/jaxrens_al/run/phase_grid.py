@@ -8,9 +8,11 @@ trajectory frame with the largest thermal weight
 
 (``H`` the dead-point enthalpy the sampler records) -- relaxes each pick with
 torch-sim in stages (positions at fixed cell, then cell under the replica's
-pressure; :mod:`jaxrens_al.run.processors.torchsim_relax`) and labels the
-relaxed basin with its spglib space group (:mod:`~jaxrens_al.run.processors.
-spacegroup`). The result is one labelled structure per (T, P) cell, i.e. which
+pressure; :mod:`jaxrens_al.run.processors.torchsim_relax`, or
+:mod:`~jaxrens_al.run.processors.jax_cell_relax` for a model torch-sim cannot
+drive, e.g. NeuralIL -- see :func:`relaxer_for`) and labels the relaxed basin
+with its spglib space group (:mod:`~jaxrens_al.run.processors.spacegroup`).
+The result is one labelled structure per (T, P) cell, i.e. which
 crystal (or disordered basin) each region of the NS phase diagram belongs to.
 
 Unlike the ``phase_diagram`` dashboard panel, which relaxes *every* dead point
@@ -254,6 +256,17 @@ def spacegroup_table(labelled, symprecs=(0.01, 0.1, 0.3)):
     return rows
 
 
+def relaxer_for(model, backend) -> str:
+    """``"torchsim"`` for a torch MACE ``.model`` (and the ``lj`` stand-in
+    without one), else ``"jax"`` -- a NeuralIL ``.pkl`` or a mace-jax bundle
+    goes through its jaxrens backend."""
+    if model is None:
+        return "torchsim"
+    if backend == "mace" and Path(model).suffix == ".model":
+        return "torchsim"
+    return "jax"
+
+
 def phase_grid_job(
     picks,
     n_samples,
@@ -269,21 +282,56 @@ def phase_grid_job(
     steps=1000,
     stages=("positions", "cell"),
     symprec=0.1,
+    supercell_trafo=None,
+    max_neighbors_list=None,
+    max_neighbors_offset=4,
     tag="phasegrid",
     jobname="AL_PHASE_GRID",
     loop_time=30.0,
 ):
-    """The ``[torchsim_relax, spacegroup]`` job over a picks file (not started).
+    """The ``[<relax>, spacegroup]`` job over a picks file (not started).
 
-    One shard holds every pick (a grid is small; the relaxation batches per
-    pressure on the device). The labelled output lands at
-    ``front_tag(picks, tag)``. Call ``.run()`` to submit and wait, or split it
-    into ``allocate_data()`` / ``submit(only_start=True)`` to queue several.
+    ``<relax>`` is ``torchsim_relax`` for a torch ``.model`` and
+    ``jax_cell_relax`` otherwise (:func:`relaxer_for`); only the latter uses
+    ``supercell_trafo`` / ``max_neighbors_list`` / ``max_neighbors_offset``
+    (the backend settings the NS run sampled with), and only the former
+    ``device``. One shard holds every pick (a grid is small). The labelled
+    output lands at ``front_tag(picks, tag)``. Call ``.run()`` to submit and
+    wait, or split it into ``allocate_data()`` / ``submit(only_start=True)``
+    to queue several.
     """
     from remote_handler.processing import RemoteTrajectoryProcessor
 
     from jaxrens_al.run.processors.spacegroup import SpaceGroupProcessor
-    from jaxrens_al.run.processors.torchsim_relax import TorchSimRelaxProcessor
+
+    if relaxer_for(model, backend) == "torchsim":
+        from jaxrens_al.run.processors.torchsim_relax import (
+            TorchSimRelaxProcessor,
+        )
+
+        relax = TorchSimRelaxProcessor(
+            model,
+            backend=backend,
+            device=device,
+            fmax=fmax,
+            steps=steps,
+            stages=stages,
+        )
+    else:
+        from jaxrens_al.run.processors.jax_cell_relax import (
+            JaxCellRelaxProcessor,
+        )
+
+        relax = JaxCellRelaxProcessor(
+            model,
+            backend=backend,
+            fmax=fmax,
+            steps=steps,
+            stages=stages,
+            supercell_trafo=supercell_trafo,
+            max_neighbors_list=max_neighbors_list or (),
+            max_neighbors_offset=max_neighbors_offset,
+        )
 
     return RemoteTrajectoryProcessor(
         traj_files=[str(picks)],
@@ -293,17 +341,7 @@ def phase_grid_job(
         shard_size=max(int(n_samples), 1),
         savepath=str(remote_savepath),
         num_parallel=1,
-        processors=[
-            TorchSimRelaxProcessor(
-                model,
-                backend=backend,
-                device=device,
-                fmax=fmax,
-                steps=steps,
-                stages=stages,
-            ),
-            SpaceGroupProcessor(symprec=symprec),
-        ],
+        processors=[relax, SpaceGroupProcessor(symprec=symprec)],
         tag=tag,
         local_savepath=local_savepath,
         jobname=jobname,
@@ -329,6 +367,9 @@ def run_phase_grid(
     steps=1000,
     stages=("positions", "cell"),
     symprec=0.1,
+    supercell_trafo=None,
+    max_neighbors_list=None,
+    max_neighbors_offset=4,
     table_symprecs=(0.01, 0.1, 0.3),
     reuse=True,
 ):
@@ -341,6 +382,9 @@ def run_phase_grid(
     ``table_symprecs``). ``cluster`` is ``"local"`` (this machine, no
     scheduler) or a ``ClusterConfig`` JSON name/path, as for the dashboard.
     With ``reuse`` an existing labelled file newer than the NS run is kept.
+    A NeuralIL ``.pkl`` (``backend="neuralil"``) or mace-jax bundle is
+    relaxed through its jaxrens backend (:func:`relaxer_for`); pass the NS
+    run's ``supercell_trafo`` and neighbour ladder for it.
 
     Returns the table rows (see :func:`spacegroup_table`).
     """
@@ -393,6 +437,9 @@ def run_phase_grid(
             steps=steps,
             stages=stages,
             symprec=symprec,
+            supercell_trafo=supercell_trafo,
+            max_neighbors_list=max_neighbors_list,
+            max_neighbors_offset=max_neighbors_offset,
             tag=tag,
             loop_time=10,
             **execution_context(cluster, workdir / "jobs"),
@@ -426,6 +473,7 @@ __all__ = [
     "most_likely_frames",
     "ns_outputs_mtime",
     "phase_grid_job",
+    "relaxer_for",
     "run_phase_grid",
     "select_grid_samples",
     "spacegroup_table",

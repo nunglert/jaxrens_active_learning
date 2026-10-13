@@ -396,3 +396,72 @@ def test_spec_rejects_bad_phase_colour(tmp_path):
     ctx = SimpleNamespace(ns_dirs=[tmp_path], is_summary=False)
     with pytest.raises(ValueError, match="no colour"):
         _build_phase_grid(spec, ctx, {})
+
+
+# --- NeuralIL (jax_cell_relax) -----------------------------------------------
+def test_need_repr_omits_unset_jax_relax_fields(tmp_path):
+    """A torch-sim grid's tag (sha1 of the repr) must not change."""
+    need = _panel(tmp_path).phase_grid_needs()[0]
+    assert "supercell_trafo" not in repr(need)
+    assert "max_neighbors" not in repr(need)
+    jax_need = _panel(
+        tmp_path, supercell_trafo=[2, 2, 2], max_neighbors_list=[20, 40]
+    ).phase_grid_needs()[0]
+    assert "supercell_trafo=(2, 2, 2)" in repr(jax_need)
+    assert "max_neighbors_list=(20, 40)" in repr(jax_need)
+    assert jax_need != need
+
+
+def _neuralil_calchome(tmp_path, backend_block):
+    calchome, out, _, _ = _calchome(tmp_path)
+    (out.parent / "ns_config.yaml").write_text(
+        f"ensemble: {{}}\nbackend: {backend_block}\n"
+    )
+    pkl = calchome / "trainer_output" / "trainer_it0_0.pkl"
+    pkl.write_text("neuralil")
+    return calchome, out, pkl
+
+
+def test_builder_uses_a_neuralil_pkl_with_the_ns_backend_settings(tmp_path):
+    calchome, out, pkl = _neuralil_calchome(
+        tmp_path,
+        "{type: neuralil, supercell_trafo: [2, 2, 2], "
+        "max_neighbors_list: [20, 30, 40], max_neighbors_offset: 3}",
+    )
+    ctx = _ctx(calchome, out, tmp_path, sampling_model_file=pkl)
+    spec = PhaseGridSpec(grid_temperatures=[300, 800])
+    (need,) = _build_phase_grid(spec, ctx, ctx.common).phase_grid_needs()
+    assert Path(need.model) == pkl
+    assert need.backend == "neuralil"
+    assert need.supercell_trafo == (2, 2, 2)
+    assert need.max_neighbors_list == (20, 30, 40)
+    assert need.max_neighbors_offset == 3
+
+
+def test_builder_spec_overrides_the_ns_backend_settings(tmp_path):
+    calchome, out, pkl = _neuralil_calchome(
+        tmp_path, "{supercell_trafo: [2, 2, 2], max_neighbors_list: [20]}"
+    )
+    ctx = _ctx(calchome, out, tmp_path, sampling_model_file=pkl)
+    spec = PhaseGridSpec(
+        grid_temperatures=[300],
+        supercell_trafo=[3, 3, 3],
+        max_neighbors_list=[50, 60],
+        max_neighbors_offset=6,
+    )
+    (need,) = _build_phase_grid(spec, ctx, ctx.common).phase_grid_needs()
+    assert need.supercell_trafo == (3, 3, 3)
+    assert need.max_neighbors_list == (50, 60)
+    assert need.max_neighbors_offset == 6
+
+
+def test_builder_torch_model_gets_no_jax_settings(tmp_path):
+    calchome, out, bundle, torch_model = _calchome(tmp_path)
+    (out.parent / "ns_config.yaml").write_text(
+        "ensemble: {}\nbackend: {supercell_trafo: [3, 3, 3]}\n"
+    )
+    ctx = _ctx(calchome, out, tmp_path, sampling_model_file=bundle)
+    spec = PhaseGridSpec(grid_temperatures=[300])
+    (need,) = _build_phase_grid(spec, ctx, ctx.common).phase_grid_needs()
+    assert Path(need.model) == torch_model and need.backend == "mace"
+    assert need.supercell_trafo is None and need.max_neighbors_list is None
