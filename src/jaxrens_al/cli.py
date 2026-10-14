@@ -26,6 +26,7 @@ from jaxrens_al.cli_args import (
     add_thermo_args,
     apply_config,
     dump_config,
+    recompute_selection,
 )
 
 logger = logging.getLogger(__name__)
@@ -317,7 +318,9 @@ def _build_parser() -> argparse.ArgumentParser:
         "key: log-file.",
     )
     add_output_args(
-        parser, force_help="Replot even if the output PDF already exists."
+        parser,
+        force_help="Replot even if the output PDF already exists (cached "
+        "panel data is reused -- see --recompute).",
     )
     parser.add_argument(
         "--width",
@@ -363,15 +366,6 @@ def _build_parser() -> argparse.ArgumentParser:
         "panel: a remote annotation/evaluation job then covers just these "
         "iterations' trajectories. The combined PDF defaults to "
         "<calchome>/dashboard_it<I>.pdf so it does not clobber the full one.",
-    )
-    parser.add_argument(
-        "--recompute",
-        nargs="+",
-        default=None,
-        metavar="PANEL",
-        help="Recompute these panels (by name) even if a cached JSON exists, "
-        "e.g. --recompute model_parity eos. Unlike --force (which recomputes "
-        "everything), this targets just the named panels.",
     )
     parser.add_argument(
         "--eos-backend",
@@ -597,6 +591,9 @@ def main(argv: list[str] | None = None) -> int:
         logger.info(f"NS out_file_prefix: {ns_prefix!r} (auto-detected).")
 
     T = np.linspace(args.tmin, args.tmax, args.n_T)
+    # --force only overrides the existing-PDF skip above; --recompute alone
+    # invalidates panel caches (all of them, or the named ones).
+    recompute_all, recompute_names = recompute_selection(args)
 
     # A config's structured panel keys (add / disable / panels), parsed into
     # specs against the panel registry; layered onto every iteration page. A
@@ -617,7 +614,7 @@ def main(argv: list[str] | None = None) -> int:
             width_per_panel=args.width,
             height_per_panel=args.height,
             compute=compute,
-            force_recompute=args.force,
+            force_recompute=recompute_all,
             only=args.only,
             exclude=args.exclude,
             eos_backend=args.eos_backend,
@@ -681,7 +678,7 @@ def main(argv: list[str] | None = None) -> int:
                     swap_axes=args.swap_pt,
                     panel_config=panel_config,
                     datapath=dp,
-                    force_recompute=args.force,
+                    force_recompute=recompute_all,
                 ),
             )
 
@@ -697,7 +694,7 @@ def main(argv: list[str] | None = None) -> int:
                     remote_model_eval=args.remote_model_eval,
                     panel_config=panel_config,
                     datapath=dp,
-                    force_recompute=args.force,
+                    force_recompute=recompute_all,
                 ),
             )
 
@@ -711,7 +708,7 @@ def main(argv: list[str] | None = None) -> int:
                     eval_files,
                     panel_config=panel_config,
                     datapath=dp,
-                    force_recompute=args.force,
+                    force_recompute=recompute_all,
                 ),
             )
 
@@ -769,7 +766,7 @@ def main(argv: list[str] | None = None) -> int:
 
         page_files = []
         for page, board, suptitle in pages:
-            board.render(suptitle=suptitle, recompute=args.recompute)
+            board.render(suptitle=suptitle, recompute=recompute_names)
             board.savefig(page)
             plt.close(board._fig)
             page_files.append(page)

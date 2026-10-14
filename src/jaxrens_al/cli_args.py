@@ -19,7 +19,15 @@ import argparse
 import json
 from pathlib import Path
 
-_FORCE_HELP = "Recompute panel data even if a JSON cache exists."
+_FORCE_HELP = (
+    "Accepted for config compatibility; this dashboard always overwrites its "
+    "PDF. Cached panel data is reused either way -- see --recompute."
+)
+_RECOMPUTE_HELP = (
+    "Recompute panels even if a cached JSON exists: bare --recompute (config: "
+    "'recompute: all' or 'true') for every panel, or name them, e.g. "
+    "--recompute model_parity eos. --force never recomputes."
+)
 
 # Config files auto-discovered in a run's calchome dir, in priority order. Each
 # maps long-option names (``swap-pt``/``swap_pt``) to values; CLI flags still
@@ -271,7 +279,12 @@ def dump_config(parser, *, title: str | None = None) -> str:
 
 
 def add_output_args(parser, *, force_help: str = _FORCE_HELP) -> None:
-    """``-o/--output``, ``--datapath``, ``--force`` (shared by all four)."""
+    """``-o/--output``, ``--datapath``, ``--force``, ``--recompute``.
+
+    Shared by all four dashboards, with one meaning each: ``--force`` only
+    concerns the output PDF (overwrite it), ``--recompute`` alone invalidates
+    panel caches (see :func:`recompute_selection`).
+    """
     parser.add_argument(
         "-o",
         "--output",
@@ -284,6 +297,35 @@ def add_output_args(parser, *, force_help: str = _FORCE_HELP) -> None:
         help="Where panels cache computed JSON (default: beside the output).",
     )
     parser.add_argument("--force", action="store_true", help=force_help)
+    parser.add_argument(
+        "--recompute",
+        nargs="*",
+        default=None,
+        metavar="PANEL",
+        help=_RECOMPUTE_HELP,
+    )
+
+
+def recompute_selection(args) -> tuple[bool, list | None]:
+    """``(all_panels, names)`` from ``args.recompute``.
+
+    ``None`` (unset) -> nothing; bare ``--recompute`` (``[]``) or a config
+    value of ``all`` / ``true`` -> every panel; a list of names (or one name
+    from a config) -> just those. ``false`` / ``none`` in a config -> nothing.
+    """
+    value = getattr(args, "recompute", None)
+    if value is None or value is False:
+        return False, None
+    if value is True:
+        return True, None
+    if isinstance(value, str):
+        value = [value]
+    names = [str(v) for v in value]
+    if not names or any(n.lower() == "all" for n in names):
+        return True, None
+    if all(n.lower() in ("none", "false") for n in names):
+        return False, None
+    return False, names
 
 
 def add_ref_key_args(parser) -> None:

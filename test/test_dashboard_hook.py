@@ -94,8 +94,8 @@ def test_submits_one_render_from_the_config_block(calchome, fake_cluster):
         f"python -m jaxrens_al dashboard {calchome} --iterations 1 "
         f"-o {out_pdf}"
     ) in text
-    # Not the last step: no whole-run summary, and never --force per page
-    # (that would recompute every cached panel).
+    # Not the last step: no whole-run summary, and no --force per page
+    # (each stage writes its own PDF name, so there is nothing to overwrite).
     assert "--force" not in text
     assert "--config" not in text
     assert text.count("jaxrens_al dashboard") == 1

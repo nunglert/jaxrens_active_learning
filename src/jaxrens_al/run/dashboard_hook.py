@@ -29,8 +29,8 @@ script is harmless until the block is added.
 
 Each submission writes ``<calchome>/auto_dashboard/dashboard_it<i>_
 <stage>.pdf``, so a later stage of the same iteration renders anew while
-every panel cache from the earlier render is reused (no ``--force``, which
-would recompute everything). All jobs of one calchome share a job name and
+every panel cache from the earlier render is reused; the whole-run summary
+overwrites its PDF with ``--force`` (which never recomputes caches). All jobs of one calchome share a job name and
 ``--dependency=singleton``, so they run one after another and never write
 the same caches concurrently. The job is submitted with a local ``sbatch``:
 the loop must run where that cluster's scheduler is and share the
