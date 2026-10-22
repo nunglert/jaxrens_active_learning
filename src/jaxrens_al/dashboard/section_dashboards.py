@@ -33,6 +33,7 @@ from jaxrens_al.cli_args import (
     add_ref_key_args,
     add_thermo_args,
     apply_config,
+    recompute_selection,
 )
 
 logger = logging.getLogger(__name__)
@@ -62,12 +63,18 @@ def _resolve_section_needs(entries, args, datapath) -> None:
     phase = [
         p for p in entries if hasattr(p, "phase_needs") and p.phase_needs()
     ]
-    if not (proc or eval_ or phase):
+    grid = [
+        p
+        for p in entries
+        if hasattr(p, "phase_grid_needs") and p.phase_grid_needs()
+    ]
+    if not (proc or eval_ or phase or grid):
         return
 
     from jaxrens_al.run.processing_resolver import (
         execution_context,
         resolve_model_evaluations,
+        resolve_phase_grid,
         resolve_phase_labeling,
         resolve_processing,
     )
@@ -101,6 +108,10 @@ def _resolve_section_needs(entries, args, datapath) -> None:
             **{**knobs, "shard_size": relax_shard_size(args)},
             batch_size=args.relax_batch_size,
             **execution_context(args.cluster, datapath / "phase_label"),
+        )
+    if grid:
+        resolve_phase_grid(
+            entries, **execution_context(args.cluster, datapath / "phase_grid")
         )
 
 
@@ -157,6 +168,14 @@ def build_ns_parser(prog: str | None = None) -> argparse.ArgumentParser:
     return parser
 
 
+def _use_file_backend() -> None:
+    """Render with Agg: the sections only write PDFs, and an interactive
+    backend on an inherited DISPLAY (a stale ssh X11 forward) hangs."""
+    import matplotlib
+
+    matplotlib.use("Agg")
+
+
 def run_ns(argv: list[str] | None = None, prog: str | None = None) -> int:
     _configure_logging()
     parser = build_ns_parser(prog)
@@ -199,6 +218,7 @@ def run_ns(argv: list[str] | None = None, prog: str | None = None) -> int:
         )
         return 1
 
+    _use_file_backend()
     import numpy as np
     from alviz import Dashboard
 
@@ -219,7 +239,10 @@ def run_ns(argv: list[str] | None = None, prog: str | None = None) -> int:
         else out_dir.parent / "ns_dashboard_data"
     )
     datapath.mkdir(parents=True, exist_ok=True)
-    common = dict(datapath=datapath, force_recompute=args.force)
+    # --recompute alone invalidates panel caches (all, or the named ones);
+    # --force does not: a section dashboard always overwrites its PDF.
+    recompute_all, recompute_names = recompute_selection(args)
+    common = dict(datapath=datapath, force_recompute=recompute_all)
 
     T = np.linspace(args.tmin, args.tmax, args.n_T)
     entries = ns_section(
@@ -242,7 +265,8 @@ def run_ns(argv: list[str] | None = None, prog: str | None = None) -> int:
     )
     board.render(
         suptitle=f"NS run: {out_dir.name} "
-        f"({len(energies)} replicas, prefix {args.prefix!r})"
+        f"({len(energies)} replicas, prefix {args.prefix!r})",
+        recompute=recompute_names,
     )
     board.savefig(output)
     print(f"Wrote {output} ({len(entries)} panel(s)).")
@@ -309,6 +333,7 @@ def run_dft(argv: list[str] | None = None, prog: str | None = None) -> int:
         logger.error(str(exc))
         return 1
 
+    _use_file_backend()
     from alviz import Dashboard
 
     from jaxrens_al.dashboard.panel_specs import parse_panel_config
@@ -325,7 +350,10 @@ def run_dft(argv: list[str] | None = None, prog: str | None = None) -> int:
         else output.parent / "dft_dashboard_data"
     )
     datapath.mkdir(parents=True, exist_ok=True)
-    common = dict(datapath=datapath, force_recompute=args.force)
+    # --recompute alone invalidates panel caches (all, or the named ones);
+    # --force does not: a section dashboard always overwrites its PDF.
+    recompute_all, recompute_names = recompute_selection(args)
+    common = dict(datapath=datapath, force_recompute=recompute_all)
 
     entries = dft_section(
         files,
@@ -342,7 +370,9 @@ def run_dft(argv: list[str] | None = None, prog: str | None = None) -> int:
         entries, ncols=2, width_per_panel=5.0, height_per_panel=4.0
     )
     n_label = " + ".join(f.name for f in files)
-    board.render(suptitle=f"DFT-labelled configs: {n_label}")
+    board.render(
+        suptitle=f"DFT-labelled configs: {n_label}", recompute=recompute_names
+    )
     board.savefig(output)
     print(f"Wrote {output} ({len(entries)} panel(s)).")
     return 0
@@ -436,6 +466,7 @@ def run_training(
         logger.error(str(exc))
         return 1
 
+    _use_file_backend()
     from alviz import Dashboard
 
     from jaxrens_al.dashboard.panel_specs import parse_panel_config
@@ -452,7 +483,10 @@ def run_training(
         else results / "training_dashboard_data"
     )
     datapath.mkdir(parents=True, exist_ok=True)
-    common = dict(datapath=datapath, force_recompute=args.force)
+    # --recompute alone invalidates panel caches (all, or the named ones);
+    # --force does not: a section dashboard always overwrites its PDF.
+    recompute_all, recompute_names = recompute_selection(args)
+    common = dict(datapath=datapath, force_recompute=recompute_all)
 
     entries = training_section(
         results,
@@ -484,7 +518,9 @@ def run_training(
     board = Dashboard.from_entries(
         entries, ncols=2, width_per_panel=5.0, height_per_panel=4.0
     )
-    board.render(suptitle=f"{kind} training: {results}")
+    board.render(
+        suptitle=f"{kind} training: {results}", recompute=recompute_names
+    )
     board.savefig(output)
     print(f"Wrote {output} ({kind}, {len(entries)} panel(s)).")
     return 0

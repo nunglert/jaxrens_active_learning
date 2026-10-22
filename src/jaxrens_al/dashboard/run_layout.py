@@ -289,6 +289,34 @@ def training_results_dir(it_dir):
     return None
 
 
+def torch_model_for(calchome, model):
+    """The torch MACE ``Model.model`` behind a recorded trained model, or None.
+
+    The MACE trainer trains in torch and converts to a mace-jax bundle; the
+    recorded ``trainer_output/trainer_it<k>_<j>.bundle`` is the jax side, and
+    the torch original stays in iteration ``k``'s trainer tree at
+    ``<k>/train/results/calcdirs/<j>/models/Model.model``. Torch-based tools
+    (torch-sim relaxations) need that file. A path that already is a ``.model``
+    file is returned unchanged.
+    """
+    import re
+
+    if model is None:
+        return None
+    model = Path(model)
+    if model.suffix == ".model" and model.is_file():
+        return model
+    match = re.search(r"trainer_it(\d+)_(\d+)\.bundle$", model.name)
+    if match is None:
+        return None
+    k, j = match.groups()
+    base = training_results_dir(iteration_dir(calchome, int(k)))
+    if base is None:
+        return None
+    candidate = base / "calcdirs" / j / "models" / "Model.model"
+    return candidate if candidate.is_file() else None
+
+
 def ns_prefix_from_dir(results_dir, default=None):
     """Infer the jaxrens ``out_file_prefix`` from an NS output directory.
 

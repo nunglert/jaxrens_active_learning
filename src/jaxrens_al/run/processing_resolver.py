@@ -95,7 +95,6 @@ def execution_context(cluster, workdir) -> dict:
     if cluster in (None, "local"):
         return local_execution_context(workdir)
 
-    from remote_handler.core import file_handler
     from remote_handler.core.cluster_handler import ClusterConfig
 
     cfg = (
@@ -105,7 +104,10 @@ def execution_context(cluster, workdir) -> dict:
     )
     return {
         "cluster_config": cfg,
-        "remote_fs": file_handler.RemoteFileSystem(cfg.remote_machine),
+        # Under the cluster's connection policy, so an expired cert pauses
+        # (connect + every SFTP op) instead of killing the caller -- e.g.
+        # the committee selector, which opens one of these per iteration.
+        "remote_fs": cfg.remote_fs(),
         "remote_savepath": str(cfg.savepath),
         "local_savepath": str(workdir),
     }
@@ -337,41 +339,25 @@ def resolve_model_evaluations(
 
     group_files: dict = {}  # key -> (mapping, inputs)
     pending = []  # (key, RemoteTrajectoryProcessor) awaiting collection
-    for (
-        model,
-        backend,
-        want_forces,
-        max_nb,
-        cutoff,
-        batch_size,
-        max_nb_list,
-        max_nb_offset,
-    ), input_set in groups.items():
-        key = (
+    for key, input_set in groups.items():
+        (
             model,
             backend,
             want_forces,
             max_nb,
             cutoff,
             batch_size,
-            max_nb_list,
-            max_nb_offset,
-        )
+            ladder,
+            offset,
+        ) = key
         inputs = sorted(input_set)
         energy_key, forces_key = model_eval_keys(model)
-        tag = stable_tag(
-            "meval",
-            (
-                model,
-                backend,
-                want_forces,
-                max_nb,
-                cutoff,
-                batch_size,
-                max_nb_list,
-                max_nb_offset,
-            ),
-        )
+        # The bucketing knobs join the tag only when set, so a static-buffer
+        # need keeps its pre-existing tag (and on-disk annotations are reused).
+        tag_key = (model, backend, want_forces, max_nb, cutoff)
+        if batch_size is not None or ladder:
+            tag_key += (batch_size, ladder, offset)
+        tag = stable_tag("meval", tag_key)
         mapping = {f: Path(front_tag(f, tag)) for f in inputs}
         group_files[key] = (mapping, inputs)
         todo = [
@@ -408,8 +394,8 @@ def resolve_model_evaluations(
                         max_neighbors=max_nb,
                         min_image_cutoff=cutoff,
                         batch_size=batch_size,
-                        max_neighbors_list=list(max_nb_list),
-                        max_neighbors_offset=max_nb_offset,
+                        max_neighbors_list=list(ladder),
+                        max_neighbors_offset=offset,
                     )
                 ],
                 tag=tag,
@@ -547,6 +533,124 @@ def resolve_phase_labeling(
     return delivered
 
 
+def resolve_phase_grid(
+    panels,
+    *,
+    cluster_config,
+    remote_fs,
+    remote_savepath,
+    local_savepath,
+    loop_time: float = 30.0,
+    reuse: bool = True,
+    **_knobs,
+):
+    """Select, torch-sim-relax and label each phase-grid panel's samples.
+
+    Collects every panel's :meth:`phase_grid_needs`
+    (:class:`~jaxrens_al.dashboard.panels.phase_grid.PhaseGridNeed`). Per
+    distinct need it picks the most likely stored dead point for every grid
+    temperature and replica host-side
+    (:func:`jaxrens_al.run.phase_grid.select_grid_samples`), writes them to
+    ``<local_savepath>/<tag>/grid_samples.extxyz`` and runs one
+    ``[torchsim_relax | jax_cell_relax, spacegroup]`` job over them (the
+    relaxer follows the model, see ``run.phase_grid.relaxer_for``). Every
+    job is submitted
+    before any is awaited, so several iterations' grids queue concurrently.
+    Only the distinct ``(replica, iter)`` picks are relaxed; the results are
+    expanded back to one labelled frame per grid cell in
+    ``<tag>/phase_grid.extxyz``. With ``reuse`` a labelled file newer than the
+    NS run's files is kept (no selection, no job). The array-job knobs of the other resolvers are
+    accepted and ignored: a grid is one small shard. Delivers
+    ``{need -> labelled_file}`` via ``receive_phase_grid``.
+    """
+    consumers, needs = collect_needs(panels, "phase_grid_needs")
+    if not needs:
+        return {}
+
+    import ase.io
+    from remote_handler.core.atoms_shard import front_tag
+
+    from jaxrens_al.run.phase_grid import (
+        expand_to_grid,
+        ns_outputs_mtime,
+        phase_grid_job,
+        select_grid_samples,
+        unique_picks,
+    )
+
+    delivered: dict = {}
+    pending = []
+    expand = []  # (samples, relaxed unique file, labelled file) per job
+    for need in dict.fromkeys(needs):  # dedup, keep order
+        tag = stable_tag("pgrid", need)
+        workdir = Path(local_savepath) / tag
+        unique_file = workdir / "grid_unique.extxyz"
+        labelled = workdir / "phase_grid.extxyz"
+        delivered[need] = labelled
+        if (
+            reuse
+            and labelled.exists()
+            and labelled.stat().st_mtime
+            >= ns_outputs_mtime(need.result_dir, need.prefix)
+        ):
+            logger.info("resolve_phase_grid: reusing %s", labelled)
+            continue
+        workdir.mkdir(parents=True, exist_ok=True)
+        samples = select_grid_samples(
+            need.result_dir,
+            need.temperatures,
+            prefix=need.prefix,
+            config=need.config,
+            replicas=None if need.replicas is None else list(need.replicas),
+            k_B=need.k_B,
+        )
+        unique = unique_picks(samples)
+        ase.io.write(workdir / "grid_samples.extxyz", samples)
+        ase.io.write(unique_file, unique)
+        logger.info(
+            "resolve_phase_grid: %d samples (%d distinct) from %s, relaxing "
+            "with %s",
+            len(samples),
+            len(unique),
+            need.result_dir,
+            Path(need.model).name,
+        )
+        job = phase_grid_job(
+            unique_file,
+            len(unique),
+            model=need.model,
+            backend=need.backend,
+            device=need.device,
+            fmax=need.fmax,
+            steps=need.steps,
+            stages=need.stages,
+            symprec=need.symprec,
+            supercell_trafo=need.supercell_trafo,
+            max_neighbors_list=need.max_neighbors_list,
+            max_neighbors_offset=need.max_neighbors_offset,
+            tag=tag,
+            loop_time=loop_time,
+            cluster_config=cluster_config,
+            remote_fs=remote_fs,
+            # one remote dir per grid, so concurrent jobs never share one
+            remote_savepath=f"{remote_savepath}/{tag}",
+            local_savepath=str(workdir / "jobs"),
+        )
+        pending.append((need, job))
+        expand.append(
+            (samples, Path(front_tag(str(unique_file), tag)), labelled)
+        )
+
+    _submit_pending(pending)
+    _collect_pending(pending)
+    for samples, relaxed_file, labelled in expand:
+        relaxed = ase.io.read(str(relaxed_file), index=":")
+        ase.io.write(labelled, expand_to_grid(relaxed, samples))
+
+    deliver(consumers, "receive_phase_grid", delivered)
+    return delivered
+
+
 def _build_steinhardt(param_dicts: list):
     """One ``SteinhardtProcessor`` per ``(r_cut, r_cut_min)``, l values unioned.
 
@@ -610,6 +714,7 @@ __all__ = [
     "resolve_processing",
     "resolve_model_evaluations",
     "resolve_phase_labeling",
+    "resolve_phase_grid",
     "register_processor_kind",
     "execution_context",
     "local_execution_context",

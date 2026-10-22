@@ -32,6 +32,7 @@ class _FakeCommitteeHandler:
                 "tag": tag,
                 "n_traj": len(traj_files),
                 "n_models": len(self.proc.models),
+                "proc": self.proc,
             }
         )
 
@@ -380,3 +381,107 @@ def test_selector_force_metric_switches_the_ranker(tmp_path):
         CommitteeUncertaintySelector(
             models=models, n_configs=5, force_metric="nonsense"
         )
+
+
+# ---------------------------------------------------------------------------
+# NeuralIL: the whole committee in ONE ensemble .pkl
+# ---------------------------------------------------------------------------
+def test_neuralil_selector_scores_a_single_ensemble_file(
+    monkeypatch, tmp_path
+):
+    """One ensemble .pkl is a full committee: one job, per-member scoring."""
+    import ase.io
+
+    from jaxrens_al.run.committee_selector import (
+        NeuralILCommitteeUncertaintySelector,
+    )
+
+    pool = tmp_path / "pool.extxyz"
+    _pool(pool, 4)
+    _FakeCommitteeHandler.calls.clear()
+    monkeypatch.setattr(
+        "remote_handler.processing.RemoteTrajectoryProcessor",
+        _FakeCommitteeHandler,
+    )
+
+    sel = NeuralILCommitteeUncertaintySelector(
+        committee_input="committee",
+        n_configs=2,
+        cluster="local",
+        supercell_trafo=(2, 2, 2),
+    )
+    calcdir = tmp_path / "iter1"
+    calcdir.mkdir()
+    # NeuralilILTrainer's output: a single .pkl holding the whole ensemble.
+    sel.update(calcdir, pool, committee=[tmp_path / "trainer_it0.pkl"])
+
+    (call,) = _FakeCommitteeHandler.calls  # scored, not cold-started
+    proc = call["proc"]
+    assert call["n_models"] == 1
+    assert proc.single_file_ensemble is True
+    assert proc.backend == "neuralil"
+    assert proc.supercell_trafo == [2, 2, 2]
+    assert len(ase.io.read(str(sel.get_selected_configs()), index=":")) == 2
+
+
+def test_neuralil_selector_cold_starts_without_an_ensemble(
+    monkeypatch, tmp_path
+):
+    import ase.io
+
+    from jaxrens_al.run.committee_selector import (
+        NeuralILCommitteeUncertaintySelector,
+    )
+
+    pool = tmp_path / "pool.extxyz"
+    _pool(pool, 6)
+    _FakeCommitteeHandler.calls.clear()
+    monkeypatch.setattr(
+        "remote_handler.processing.RemoteTrajectoryProcessor",
+        _FakeCommitteeHandler,
+    )
+    sel = NeuralILCommitteeUncertaintySelector(
+        committee_input="committee",
+        n_configs=3,
+        cluster="local",
+        supercell_trafo=(2, 2, 2),
+    )
+    calcdir = tmp_path / "iter0"
+    calcdir.mkdir()
+    sel.update(calcdir, pool)  # no trained ensemble yet -> stride
+
+    assert _FakeCommitteeHandler.calls == []
+    assert len(ase.io.read(str(sel.get_selected_configs()), index=":")) == 3
+
+
+def test_neuralil_selector_requires_supercell_trafo():
+    from jaxrens_al.run.committee_selector import (
+        NeuralILCommitteeUncertaintySelector,
+    )
+
+    with pytest.raises(TypeError, match="supercell_trafo"):
+        NeuralILCommitteeUncertaintySelector(committee_input="committee")
+
+
+def test_single_file_ensemble_keeps_multi_file_tags_unchanged(
+    monkeypatch, tmp_path
+):
+    """The new knobs join the cache tag only when set."""
+    from jaxrens_al.run.committee_selector import CommitteeUncertaintySelector
+
+    pool = tmp_path / "pool.extxyz"
+    _pool(pool, 3)
+    _FakeCommitteeHandler.calls.clear()
+    monkeypatch.setattr(
+        "remote_handler.processing.RemoteTrajectoryProcessor",
+        _FakeCommitteeHandler,
+    )
+    models = [tmp_path / "m0", tmp_path / "m1"]
+    for i, extra in enumerate([{}, {"supercell_trafo": (2, 2, 2)}]):
+        calcdir = tmp_path / f"it{i}"
+        calcdir.mkdir()
+        CommitteeUncertaintySelector(
+            models=models, n_configs=2, cluster="local", **extra
+        ).update(calcdir, pool)
+    plain, with_sc = (c["tag"] for c in _FakeCommitteeHandler.calls)
+    assert plain != with_sc

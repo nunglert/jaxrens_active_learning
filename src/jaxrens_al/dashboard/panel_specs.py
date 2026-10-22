@@ -73,7 +73,9 @@ _DEFAULT_ORDER = [
     "adaptation_acceptance",
     "ns_energy_trace",
     "re_swap_rates",
-    "eos",
+    # ``eos`` is NOT a default: it needs per-run inputs (reference scans or an
+    # element, and the model's cutoff) that only an explicit
+    # ``add: [{type: eos, ...}]`` entry supplies -- see panels/eos.py.
     "neuralil_parity",
     "model_parity",
     "neuralil_training_curve",

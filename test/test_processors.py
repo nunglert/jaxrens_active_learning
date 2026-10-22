@@ -222,6 +222,46 @@ def test_execution_context_selects_local_or_config(tmp_path):
         execution_context("/does/not/exist.json", tmp_path / "wd")
 
 
+def test_execution_context_remote_fs_carries_connection_policy(
+    tmp_path, monkeypatch
+):
+    """A cluster context's filesystem is built under the cluster's policy.
+
+    Without it the committee selector's per-iteration filesystem had no
+    resilience, so an expired cert mid-run killed the loop.
+    """
+    from remote_handler.core import file_handler
+    from remote_handler.core.cluster_handler import ClusterConfig
+
+    from jaxrens_al.run.processing_resolver import execution_context
+
+    built = []
+
+    class _FakeRemoteFS:
+        def __init__(self, remote_alias, connection_policy=None, **kw):
+            self.remote_alias = remote_alias
+            self.connection_policy = connection_policy
+            built.append(self)
+
+    # Patched where ClusterConfig.remote_fs imports it from (no connect).
+    monkeypatch.setattr(file_handler, "RemoteFileSystem", _FakeRemoteFS)
+    cfg = ClusterConfig(
+        remote_machine="musica",
+        partition="default",
+        conda_env="test",
+        conda_source="/opt/conda",
+        savepath="/tmp/remote_handler",
+        template="mock.sh.j2",
+        resilient_connection=True,
+    )
+
+    ctx = execution_context(cfg, tmp_path / "wd")
+
+    assert ctx["remote_fs"] is built[0]
+    assert ctx["remote_fs"].remote_alias == "musica"
+    assert ctx["remote_fs"].connection_policy.enabled
+
+
 def test_steps_merge_steinhardt_needs_by_cutoff():
     """Several Steinhardt panels (same r_cut, different l) -> ONE processor.
 
@@ -326,6 +366,56 @@ def test_model_eval_processor_is_a_processor_spec(tmp_path):
     ModelEvalArgs.from_dict(args).validate()
 
 
+def test_model_eval_processor_forwards_the_bucket_ladder(tmp_path):
+    from jaxrens_al.run.processors import ModelEvalArgs, ModelEvalProcessor
+
+    pkl = tmp_path / "model.pkl"
+    pkl.write_bytes(b"\x00")
+    proc = ModelEvalProcessor(
+        pkl,
+        backend="neuralil",
+        batch_size=8,
+        max_neighbors_list=[60, 20, 40],
+        max_neighbors_offset=2,
+    )
+    args = proc.build_args("/remote")
+    assert args["batch_size"] == 8
+    assert args["max_neighbors_list"] == [20, 40, 60]  # sorted
+    assert args["max_neighbors_offset"] == 2
+    ModelEvalArgs.from_dict(args).validate()
+
+
+def test_model_eval_processor_forwards_supercell_trafo(tmp_path):
+    from jaxrens_al.run.processors import ModelEvalArgs, ModelEvalProcessor
+
+    pkl = tmp_path / "model.pkl"
+    pkl.write_bytes(b"\x00")
+    default = ModelEvalProcessor(pkl, backend="neuralil").build_args("/r")
+    assert default["supercell_trafo"] == []  # -> backend default
+    args = ModelEvalProcessor(
+        pkl, backend="neuralil", supercell_trafo=(3, 3, 3)
+    ).build_args("/r")
+    assert args["supercell_trafo"] == [3, 3, 3]
+    ModelEvalArgs.from_dict(args).validate()
+    with pytest.raises(ScriptInputError):
+        ModelEvalArgs.from_dict({**args, "supercell_trafo": [3, 3]}).validate()
+
+    # Unset -> the static-buffer defaults (no ladder, no batching).
+    plain = ModelEvalProcessor(pkl, backend="neuralil").build_args("/remote")
+    # to_dict() drops None-valued fields, so an unset batch_size is absent.
+    assert "batch_size" not in plain and plain["max_neighbors_list"] == []
+
+
+def test_model_eval_args_reject_unsorted_ladder():
+    from remote_handler.exceptions import ScriptInputError
+
+    from jaxrens_al.run.processors import ModelEvalArgs
+
+    args = ModelEvalArgs(model_remote="m", max_neighbors_list=[40, 20])
+    with pytest.raises(ScriptInputError, match="ascending"):
+        args.validate()
+
+
 def test_model_eval_processor_stages_plain_file(tmp_path):
     from jaxrens_al.run.processors import ModelEvalProcessor
 
@@ -363,7 +453,12 @@ class _FakeModelEvalHandler:
         self.proc = processors[0]
         self.executor = _FakeExecutor()
         _FakeModelEvalHandler.calls.append(
-            {"tag": tag, "n_traj": len(traj_files), "model": self.proc.model}
+            {
+                "tag": tag,
+                "n_traj": len(traj_files),
+                "model": self.proc.model,
+                "proc": self.proc,
+            }
         )
 
     def allocate_data(self):
@@ -441,11 +536,58 @@ def test_resolve_model_evaluations_one_job_per_model(monkeypatch, tmp_path):
     assert p1b.received == p1.received  # same model+input -> same annotation
 
 
+def test_resolve_model_evaluations_forwards_ladder_keeps_static_tag(
+    monkeypatch, tmp_path
+):
+    """A laddered need reaches the processor under its own tag, while a
+    static-buffer need keeps its pre-ladder tag (old annotations reused)."""
+    from jaxrens_al.dashboard.panels.model_eval import ModelEvalNeed
+    from jaxrens_al.run.processing_resolver import (
+        resolve_model_evaluations,
+        stable_tag,
+    )
+
+    ref = _refs(tmp_path, "eos_a.extxyz")
+    _FakeModelEvalHandler.calls.clear()
+    monkeypatch.setattr(
+        "remote_handler.processing.RemoteTrajectoryProcessor",
+        _FakeModelEvalHandler,
+    )
+
+    class _Panel:
+        def __init__(self, need):
+            self._need = need
+
+        def model_eval_needs(self):
+            return [self._need]
+
+        def receive_model_eval(self, mapping):
+            pass
+
+    static = ModelEvalNeed.make([ref], "bundleA", "mace")
+    laddered = ModelEvalNeed.make(
+        [ref], "bundleA", "mace", max_neighbors_list=[20, 40, 60]
+    )
+    ctx = dict(cluster_config=None, remote_fs=None, remote_savepath="/remote")
+    resolve_model_evaluations([_Panel(static), _Panel(laddered)], **ctx)
+
+    calls = {
+        tuple(c["proc"].max_neighbors_list): c
+        for c in _FakeModelEvalHandler.calls
+    }
+    assert set(calls) == {(), (20, 40, 60)}  # two distinct jobs
+    assert calls[()]["tag"] == stable_tag(
+        "meval", ("bundleA", "mace", False, 50, None)
+    )
+    assert calls[(20, 40, 60)]["tag"] != calls[()]["tag"]
+
+
 def test_run_model_eval_annotates_atoms(tmp_path):
     """The cluster-side ``run`` writes model energy via jaxrens (self-skips)."""
     pytest.importorskip("jaxrens")
     import numpy as np
     from ase import Atoms
+    from jaxrens.backends.base import BackendResult
 
     from jaxrens_al.run.processors import model_eval
 
@@ -459,7 +601,9 @@ def test_run_model_eval_annotates_atoms(tmp_path):
             symbol_map = {"Cu": 0}
 
             def __call__(self, pos, types, cell, mn):
-                return (np.float64(-3.5),)
+                # A real backend returns a BackendResult; score_atoms reads
+                # its .overflow to reject a truncated neighbour list.
+                return BackendResult(energy=np.float64(-3.5))
 
         return _B()
 
@@ -495,6 +639,7 @@ def test_score_atoms_min_image_cutoff_scales_energy_per_input_cell():
     pytest.importorskip("jaxrens")
     import numpy as np
     from ase import Atoms
+    from jaxrens.backends.base import BackendResult
 
     from jaxrens_al.dashboard.panels.model_eval import score_atoms
     from jaxrens_al.supercell import min_image_supercell
@@ -527,7 +672,7 @@ def test_score_atoms_min_image_cutoff_scales_energy_per_input_cell():
 
             def __call__(self, pos, types, cell, mn):
                 seen["n"] = len(types)  # backend sees the supercell
-                return (np.float64(-80.0),)
+                return BackendResult(energy=np.float64(-80.0))
 
         return _B()
 
@@ -673,6 +818,29 @@ def test_score_atoms_sizes_the_neighbour_bucket_from_the_ladder(monkeypatch):
     assert set(B.calls) == {40}
 
 
+def test_score_atoms_ladder_without_batch_size_still_buckets(monkeypatch):
+    """A ladder alone (no batch_size) is honoured, not silently ignored."""
+    pytest.importorskip("jaxrens")
+
+    import jaxrens.backends.loader as loader
+
+    from jaxrens_al.dashboard.panels.model_eval import score_atoms
+
+    B = _stub_backend(needed=28)
+    B.calls.clear()
+    monkeypatch.setattr(loader, "load_backend", lambda *a, **k: B())
+
+    score_atoms(
+        "m",
+        "mace",
+        _si_cells(3),
+        max_neighbors=50,
+        max_neighbors_list=[20, 30, 40, 50, 60],
+        max_neighbors_offset=4,
+    )
+    assert set(B.calls) == {40}
+
+
 def test_score_atoms_grows_the_bucket_on_overflow(monkeypatch):
     """An overflow report escalates to the next ladder entry and retries."""
     pytest.importorskip("jaxrens")
@@ -781,6 +949,148 @@ def test_committee_eval_args_reject_short_committee():
 
     with pytest.raises(ScriptInputError, match="at least two"):
         CommitteeEvalArgs(model_remotes=["only"]).validate()
+
+
+def test_committee_eval_processor_single_file_ensemble(tmp_path):
+    from jaxrens_al.run.processors import (
+        CommitteeEvalArgs,
+        CommitteeEvalProcessor,
+    )
+
+    pkl = tmp_path / "ensemble.pkl"
+    pkl.write_bytes(b"\x00")
+    proc = CommitteeEvalProcessor(
+        [pkl],
+        backend="neuralil",
+        single_file_ensemble=True,
+        supercell_trafo=(2, 2, 2),
+    )
+    assert proc.shared_files() == [str(pkl)]
+    args = proc.build_args("/remote")
+    assert args["model_remotes"] == ["/remote/ensemble.pkl"]
+    assert args["single_file_ensemble"] is True
+    assert args["supercell_trafo"] == [2, 2, 2]
+    CommitteeEvalArgs.from_dict(args).validate()
+
+    with pytest.raises(ValueError, match="exactly one"):
+        CommitteeEvalProcessor([pkl, pkl], single_file_ensemble=True)
+
+
+@pytest.mark.parametrize(
+    "kw, match",
+    [
+        (
+            {"model_remotes": ["a", "b"], "single_file_ensemble": True},
+            "exactly one",
+        ),
+        (
+            {"model_remotes": ["a", "b"], "supercell_trafo": [2, 2]},
+            "three positive ints",
+        ),
+    ],
+)
+def test_committee_eval_args_single_file_validation(kw, match):
+    from jaxrens_al.run.processors import CommitteeEvalArgs
+
+    with pytest.raises(ScriptInputError, match=match):
+        CommitteeEvalArgs(**kw).validate()
+
+
+def test_run_committee_eval_single_file_ensemble(monkeypatch):
+    """One ensemble checkpoint -> std/mean over its members, per config."""
+    import numpy as np
+    from ase import Atoms
+
+    from jaxrens_al.dashboard.panels import model_eval as me
+    from jaxrens_al.run.processors import committee_eval
+
+    atoms = [
+        Atoms("H2", positions=[[0, 0, 0], [0, 0, 0.7]], cell=[5] * 3, pbc=True)
+        for _ in range(2)
+    ]
+    seen = {}
+
+    def _members(path, backend, al, **kw):
+        seen.update(path=path, backend=backend, **kw)
+        # Per config: (M=2,) energies and (M, N=2, 3) forces.
+        energies = [np.array([1.0, 2.0]), np.array([3.0, 5.0])]
+        forces = [np.stack([np.zeros((2, 3)), np.ones((2, 3))])] * 2
+        return energies, forces
+
+    monkeypatch.setattr(me, "score_members", _members)
+    monkeypatch.setattr(
+        me,
+        "score_atoms",
+        lambda *a, **k: pytest.fail("single-file path must not score files"),
+    )
+    out = committee_eval.run(
+        atoms,
+        {
+            "backend": "neuralil",
+            "model_remotes": ["ens.pkl"],
+            "is_archive": False,
+            "energy_key": "energy_uncertainty",
+            "forces_key": "forces_uncertainty",
+            "single_file_ensemble": True,
+            "supercell_trafo": [2, 2, 2],
+        },
+    )
+    assert seen["path"] == "ens.pkl" and seen["backend"] == "neuralil"
+    assert seen["supercell_trafo"] == [2, 2, 2]
+    assert out[0].info["energy_uncertainty"] == pytest.approx(0.5)
+    assert out[1].info["energy_uncertainty"] == pytest.approx(1.0)
+    np.testing.assert_allclose(out[0].arrays["forces_uncertainty"], 0.5)
+    np.testing.assert_allclose(out[0].arrays["committee_forces"], 0.5)
+
+
+def test_score_members_keeps_the_ensemble_axis(monkeypatch):
+    """score_members returns (M,) energies / (M, N, 3) forces per config."""
+    pytest.importorskip("jaxrens")
+    from typing import NamedTuple
+
+    import jax.numpy as jnp
+    import jaxrens.backends.loader as loader
+    import numpy as np
+    from ase import Atoms
+
+    from jaxrens_al.dashboard.panels.model_eval import score_members
+
+    class _Res(NamedTuple):
+        energy: jnp.ndarray
+        forces: jnp.ndarray
+        max_neighbor_count: jnp.ndarray
+        overflow: jnp.ndarray
+        energy_members: jnp.ndarray
+        forces_members: jnp.ndarray
+
+    loaded = {}
+
+    class _Ensemble:
+        atomic_numbers = [14]
+        symbol_map = {"Si": 0}
+
+        def members(self, p, t, c, max_neighbors):
+            e = jnp.stack([p.sum(), 2.0 * p.sum()])  # M = 2
+            f = jnp.stack([jnp.zeros_like(p), jnp.ones_like(p)])
+            return _Res(
+                e.mean(), f.mean(0), jnp.asarray(3), jnp.asarray(False), e, f
+            )
+
+    def _load(kind, **kw):
+        loaded.update(kind=kind, **kw)
+        return _Ensemble()
+
+    monkeypatch.setattr(loader, "load_backend", _load)
+    frames = [
+        Atoms("Si2", positions=[[0, 0, 0], [1, 1, 1]], cell=[6] * 3, pbc=True)
+    ]
+    energies, forces = score_members(
+        "ens.pkl", "neuralil", frames, supercell_trafo=[2, 2, 2]
+    )
+    assert loaded["kind"] == "neuralil"
+    assert loaded["supercell_trafo"] == (2, 2, 2)
+    assert energies[0].shape == (2,) and forces[0].shape == (2, 2, 3)
+    np.testing.assert_allclose(energies[0], [3.0, 6.0])
 
 
 def test_driver_registered_committee_eval_with_schema():

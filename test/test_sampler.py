@@ -77,6 +77,53 @@ def test_jaxrens_sampler_is_a_sampler(
     assert sampler.n_gpu_parallel == 4
 
 
+def _policy_cluster(resilient):
+    return ClusterConfig(
+        remote_machine="mock",
+        partition="default",
+        conda_env="test",
+        conda_source="/opt/conda",
+        savepath="/tmp/remote_handler",
+        template="mock.sh.j2",
+        resilient_connection=resilient,
+    )
+
+
+def test_sampler_adopts_cluster_connection_policy(tmp_path):
+    """An unpolicied filesystem gets the cluster's policy at construction.
+
+    The chain's sbatch/scancel run on ``remote_fs`` directly, on the reattach
+    path before any task (which would adopt it) exists.
+    """
+    from remote_handler.core import resilience
+
+    fs = MagicMock()
+    fs.connection_policy = resilience.DISABLED
+    JaxrensNSSampler(
+        remote_fs=fs,
+        cluster_config=_policy_cluster(True),
+        config_file=_write_base_config(tmp_path / "ns.yaml"),
+        stub=True,
+    )
+    assert fs.connection_policy.enabled
+
+
+def test_sampler_keeps_an_explicit_enabled_policy(tmp_path):
+    """Upgrade-only: a caller's enabled policy is never replaced."""
+    from remote_handler.core import resilience
+
+    mine = resilience.ConnectionPolicy(enabled=True)
+    fs = MagicMock()
+    fs.connection_policy = mine
+    JaxrensNSSampler(
+        remote_fs=fs,
+        cluster_config=_policy_cluster(False),
+        config_file=_write_base_config(tmp_path / "ns.yaml"),
+        stub=True,
+    )
+    assert fs.connection_policy is mine
+
+
 def test_unknown_backend_type_rejected(
     mock_remote_fs, mock_cluster_config, tmp_path
 ):

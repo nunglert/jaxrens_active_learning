@@ -63,6 +63,23 @@ def test_summary_assembles_all_panels(make_calchome, tmp_path):
     }
 
 
+def _eos_spec(ref):
+    from jaxrens_al.dashboard.panel_specs import make_spec
+
+    return make_spec("eos", references=[str(ref)], target_cutoff=4.0)
+
+
+def test_iteration_without_eos_entry_has_no_eos_panel(
+    make_calchome, eos_reference, tmp_path
+):
+    calchome = make_calchome(tmp_path, n_iter=2, with_model=True)
+    eos_reference(tmp_path / "eos.extxyz")  # on disk, but not configured
+    dp = calchome / "dashboard" / "1"
+    dp.mkdir(parents=True)
+    board = build_iteration_dashboard(calchome, 1, datapath=dp, compute=False)
+    assert board is None or "eos" not in {e.name for e in board.entries}
+
+
 def test_iteration_assembles_all_panels(
     make_calchome, eos_reference, tmp_path
 ):
@@ -80,8 +97,13 @@ def test_iteration_assembles_all_panels(
     ref = eos_reference(tmp_path / "eos.extxyz")
     dp = calchome / "dashboard" / "1"
     dp.mkdir(parents=True)
+    # eos is not a default: it only renders from an explicit add: entry.
     board = build_iteration_dashboard(
-        calchome, 1, datapath=dp, compute=False, eos_reference=[ref]
+        calchome,
+        1,
+        datapath=dp,
+        compute=False,
+        panel_config={"add": [_eos_spec(ref)]},
     )
     names = {e.name for e in board.entries}
     # dataset_growth is cumulative (summary-only); everything else appears.
@@ -415,7 +437,10 @@ def test_render_layouts_for_inspection(
     it_datapath = tmp_path / "it1"
     it_datapath.mkdir()
     page = build_iteration_dashboard(
-        calchome, 1, datapath=it_datapath, eos_reference=[ref]
+        calchome,
+        1,
+        datapath=it_datapath,
+        panel_config={"add": [_eos_spec(ref)]},
     )
     iteration_pdf = artifact_dir / "iteration_1.pdf"
     page.savefig(iteration_pdf)

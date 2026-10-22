@@ -79,6 +79,41 @@ def test_default_specs_are_static_and_ordered():
     names = [s.type for s in default_specs()]
     assert names[0] == "dataset_growth"
     assert "steinhardt_expectation" not in names  # opt-in, never a default
+    assert "eos" not in names  # needs explicit references + cutoff
+
+
+def test_eos_spec_requires_target_cutoff():
+    from pydantic import ValidationError
+
+    from jaxrens_al.dashboard.panel_specs import parse_panel_config
+
+    with pytest.raises(ValidationError, match="target_cutoff"):
+        parse_panel_config({"add": [{"type": "eos", "element": "Si"}]})
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [{}, {"element": "Si", "references": ["a.extxyz"]}],
+    ids=["neither", "both"],
+)
+def test_eos_spec_needs_exactly_one_reference_source(extra):
+    from pydantic import ValidationError
+
+    from jaxrens_al.dashboard.panel_specs import parse_panel_config
+
+    entry = {"type": "eos", "target_cutoff": 6.0, **extra}
+    with pytest.raises(ValidationError, match="exactly one of"):
+        parse_panel_config({"add": [entry]})
+
+
+def test_eos_spec_accepts_a_single_reference_path():
+    from jaxrens_al.dashboard.panel_specs import parse_panel_config
+
+    cfg = parse_panel_config(
+        {"add": [{"type": "eos", "references": "refs/", "target_cutoff": 6}]}
+    )
+    (spec,) = cfg["add"]
+    assert spec.references == "refs/" and spec.target_cutoff == 6.0
 
 
 # ---------------------------------------------------------------------------

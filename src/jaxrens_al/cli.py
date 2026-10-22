@@ -26,6 +26,7 @@ from jaxrens_al.cli_args import (
     add_thermo_args,
     apply_config,
     dump_config,
+    recompute_selection,
 )
 
 logger = logging.getLogger(__name__)
@@ -193,12 +194,17 @@ def _resolve_remote_needs(entries, args, datapath):
     has_ref = any(
         hasattr(e, "reference_needs") and e.reference_needs() for e in entries
     )
-    if not (has_proc or has_eval or has_phase or has_ref):
+    has_grid = any(
+        hasattr(e, "phase_grid_needs") and e.phase_grid_needs()
+        for e in entries
+    )
+    if not (has_proc or has_eval or has_phase or has_ref or has_grid):
         return
 
     from jaxrens_al.run.processing_resolver import (
         execution_context,
         resolve_model_evaluations,
+        resolve_phase_grid,
         resolve_phase_labeling,
         resolve_processing,
     )
@@ -240,6 +246,14 @@ def _resolve_remote_needs(entries, args, datapath):
             **{**knobs, "shard_size": relax_shard_size(args)},
             batch_size=args.relax_batch_size,
             **execution_context(args.cluster, datapath / "phase_label"),
+        )
+    if has_grid:
+        logger.info(
+            f"Relaxing + labelling the NS (T, P) phase grids with torch-sim "
+            f"(cluster={args.cluster!r}); may be slow."
+        )
+        resolve_phase_grid(
+            entries, **execution_context(args.cluster, datapath / "phase_grid")
         )
     if has_ref:
         # Evaluator-free reference builds (e.g. the MP fetch for the atomic-envs
@@ -304,7 +318,9 @@ def _build_parser() -> argparse.ArgumentParser:
         "key: log-file.",
     )
     add_output_args(
-        parser, force_help="Replot even if the output PDF already exists."
+        parser,
+        force_help="Replot even if the output PDF already exists (cached "
+        "panel data is reused -- see --recompute).",
     )
     parser.add_argument(
         "--width",
@@ -352,24 +368,6 @@ def _build_parser() -> argparse.ArgumentParser:
         "<calchome>/dashboard_it<I>.pdf so it does not clobber the full one.",
     )
     parser.add_argument(
-        "--recompute",
-        nargs="+",
-        default=None,
-        metavar="PANEL",
-        help="Recompute these panels (by name) even if a cached JSON exists, "
-        "e.g. --recompute model_parity eos. Unlike --force (which recomputes "
-        "everything), this targets just the named panels.",
-    )
-    parser.add_argument(
-        "--eos-reference",
-        nargs="+",
-        default=None,
-        metavar="EXTXYZ",
-        help="Reference volume-scan file(s) for the equation-of-state panel, "
-        "one per phase (or a directory holding them -- expanded to its sorted "
-        "eos_*.extxyz); each iteration's model is evaluated on them.",
-    )
-    parser.add_argument(
         "--eos-backend",
         type=str,
         default=None,
@@ -377,17 +375,6 @@ def _build_parser() -> argparse.ArgumentParser:
         "model-parity panels. Default: auto-detected per iteration from the "
         "trainer artifacts (MACE logs / a .bundle model -> mace, else "
         "neuralil). Set only to override.",
-    )
-    parser.add_argument(
-        "--eos-cutoff",
-        type=float,
-        default=None,
-        metavar="ANGSTROM",
-        help="Cutoff (Å) the EOS panel replicates each reference frame to host "
-        "before scoring the model -- set to the model's r_cut / r_max. The DFT "
-        "reference stays on unit cells (build_eos_ref.py with target_cutoff="
-        "None); this supercell is built only for the force-field re-score. "
-        "Default: the EOS panel's own (4.0).",
     )
     parser.add_argument(
         "--remote-model-eval",
@@ -546,6 +533,11 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     # Import here so --help / arg errors don't pay the alviz import cost.
+    # The dashboard only writes PDFs: force the file backend, so an inherited
+    # DISPLAY (e.g. a stale ssh X11 forward) can't hang figure creation.
+    import matplotlib
+
+    matplotlib.use("Agg")
     import matplotlib.pyplot as plt
     import numpy as np
     from alviz import Dashboard, merge_pdfs
@@ -599,6 +591,9 @@ def main(argv: list[str] | None = None) -> int:
         logger.info(f"NS out_file_prefix: {ns_prefix!r} (auto-detected).")
 
     T = np.linspace(args.tmin, args.tmax, args.n_T)
+    # --force only overrides the existing-PDF skip above; --recompute alone
+    # invalidates panel caches (all of them, or the named ones).
+    recompute_all, recompute_names = recompute_selection(args)
 
     # A config's structured panel keys (add / disable / panels), parsed into
     # specs against the panel registry; layered onto every iteration page. A
@@ -619,12 +614,10 @@ def main(argv: list[str] | None = None) -> int:
             width_per_panel=args.width,
             height_per_panel=args.height,
             compute=compute,
-            force_recompute=args.force,
+            force_recompute=recompute_all,
             only=args.only,
             exclude=args.exclude,
-            eos_reference=args.eos_reference,
             eos_backend=args.eos_backend,
-            eos_cutoff=args.eos_cutoff,
             remote_model_eval=args.remote_model_eval,
             ns_prefix=ns_prefix,
             ns_swap_axes=args.swap_pt,
@@ -685,7 +678,7 @@ def main(argv: list[str] | None = None) -> int:
                     swap_axes=args.swap_pt,
                     panel_config=panel_config,
                     datapath=dp,
-                    force_recompute=args.force,
+                    force_recompute=recompute_all,
                 ),
             )
 
@@ -701,7 +694,7 @@ def main(argv: list[str] | None = None) -> int:
                     remote_model_eval=args.remote_model_eval,
                     panel_config=panel_config,
                     datapath=dp,
-                    force_recompute=args.force,
+                    force_recompute=recompute_all,
                 ),
             )
 
@@ -715,7 +708,7 @@ def main(argv: list[str] | None = None) -> int:
                     eval_files,
                     panel_config=panel_config,
                     datapath=dp,
-                    force_recompute=args.force,
+                    force_recompute=recompute_all,
                 ),
             )
 
@@ -773,7 +766,7 @@ def main(argv: list[str] | None = None) -> int:
 
         page_files = []
         for page, board, suptitle in pages:
-            board.render(suptitle=suptitle, recompute=args.recompute)
+            board.render(suptitle=suptitle, recompute=recompute_names)
             board.savefig(page)
             plt.close(board._fig)
             page_files.append(page)

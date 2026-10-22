@@ -13,8 +13,8 @@ so the executor is a configured **evaluator**, not a cluster context. The EOS
 reference is the first (and only) registered kind. Because it needs a DFT
 evaluator (cluster + INCAR), :func:`resolve_references` is called from a
 **run-side** dashboard driver that builds that evaluator -- not the light
-``jaxrens-al dashboard`` CLI, whose ``--eos-reference`` flag stays the
-no-evaluator fallback.
+``jaxrens-al dashboard`` CLI, where an ``eos`` entry with explicit
+``references:`` is the no-evaluator path.
 """
 
 from __future__ import annotations

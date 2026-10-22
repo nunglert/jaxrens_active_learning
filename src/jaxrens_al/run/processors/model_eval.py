@@ -56,9 +56,15 @@ class ModelEvalArgs(ScriptInput):
     # 0.0 -> off; >0 -> score each frame on the smallest supercell hosting this
     # cutoff (Å), scaling the energy back to the input cell's atom count.
     min_image_cutoff: float = 0.0
+    # Forwarded to score_atoms (vmapped batching + the neighbour-bucket
+    # ladder); an empty ladder keeps the buffer fixed at max_neighbors.
     batch_size: Optional[int] = None
     max_neighbors_list: list = field(default_factory=list)
     max_neighbors_offset: int = 4
+    # Periodic-image expansion for the backend's neighbour search ([a, b, c];
+    # empty -> the backend default). Small cells need it: jaxrens requires
+    # min(cell_diag * sc) >= 2 * r_cut -- match the NS run's supercell_trafo.
+    supercell_trafo: list = field(default_factory=list)
 
     def validate(self, root: Optional[Path] = None) -> None:
         if not self.model_remote:
@@ -90,6 +96,14 @@ class ModelEvalArgs(ScriptInput):
                 "model_eval: 'max_neighbors_list' must be positive ints "
                 "in ascending order"
             )
+        sc = list(self.supercell_trafo)
+        if sc and (
+            len(sc) != 3 or not all(isinstance(x, int) and x > 0 for x in sc)
+        ):
+            raise ScriptInputError(
+                "model_eval: 'supercell_trafo' must be 3 positive ints or "
+                "empty"
+            )
 
 
 # --- cluster-side compute --------------------------------------------------
@@ -112,6 +126,7 @@ def run(atoms_list, args, calcpath=None):
     batch_size = args.get("batch_size")
     ladder = list(args.get("max_neighbors_list") or [])
     offset = int(args.get("max_neighbors_offset", 4))
+    supercell_trafo = list(args.get("supercell_trafo") or [])
 
     energies, forces = score_atoms(
         model_path,
@@ -123,6 +138,7 @@ def run(atoms_list, args, calcpath=None):
         batch_size=batch_size,
         max_neighbors_list=ladder or None,
         max_neighbors_offset=offset,
+        supercell_trafo=supercell_trafo or None,
     )
     for i, atoms in enumerate(atoms_list):
         atoms.info[energy_key] = energies[i]
@@ -159,20 +175,20 @@ class ModelEvalProcessor(Processor):
         backend: jaxrens backend to load it with (``"mace"`` / ``"neuralil"``).
         energy_key / forces_key: ``info`` / ``arrays`` keys to write under.
         want_forces: Also compute per-atom forces (parity needs them).
-        max_neighbors: Static neighbour-buffer size for the backend call (the
-            starting bucket when ``max_neighbors_list`` is given).
+        max_neighbors: Static neighbour-buffer size for the backend call
+            (the starting bucket when ``max_neighbors_list`` is given).
         min_image_cutoff: When set (Å), score each frame on the smallest
             supercell hosting the cutoff, scaling the energy back to the input
             cell's atom count (for a unit-cell EOS reference); ``None`` scores
             as-is.
-        batch_size: Configs per vmapped backend call. Unset evaluates one at a
-            time, which leaves a GPU idle on small cells.
-        max_neighbors_list: Neighbour-bucket ladder. Set it and the buffer is
-            sized per batch from the geometry instead of pinned at
-            ``max_neighbors``; the ladder bounds how many XLA compilations the
-            job pays for. Only used together with ``batch_size``.
-        max_neighbors_offset: Headroom above the observed neighbour count when
-            picking a bucket.
+        batch_size: Configs per vmapped backend call (``None`` = one per call).
+        max_neighbors_list: Neighbour-bucket ladder -- sizes the buffer from
+            the geometry instead of pinning it at ``max_neighbors``, growing it
+            on overflow, with the ladder bounding the compile count.
+        max_neighbors_offset: Headroom above the observed neighbour count.
+        supercell_trafo: ``(a, b, c)`` periodic-image expansion for the
+            backend (``None`` = backend default). Set it to the NS run's
+            ``backend.supercell_trafo`` when scoring that run's cells.
     """
 
     name = "model_eval"
@@ -190,6 +206,7 @@ class ModelEvalProcessor(Processor):
         batch_size: int | None = None,
         max_neighbors_list=None,
         max_neighbors_offset: int = 4,
+        supercell_trafo=None,
     ):
         self.model = Path(model)
         self.backend = backend
@@ -207,6 +224,9 @@ class ModelEvalProcessor(Processor):
             else []
         )
         self.max_neighbors_offset = int(max_neighbors_offset)
+        self.supercell_trafo = (
+            [int(x) for x in supercell_trafo] if supercell_trafo else []
+        )
         self._is_archive = self.model.is_dir()
         self._staged: Optional[Path] = None
 
@@ -240,6 +260,7 @@ class ModelEvalProcessor(Processor):
             batch_size=self.batch_size,
             max_neighbors_list=self.max_neighbors_list,
             max_neighbors_offset=self.max_neighbors_offset,
+            supercell_trafo=self.supercell_trafo,
         ).to_dict()
 
 

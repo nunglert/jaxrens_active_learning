@@ -19,7 +19,15 @@ import argparse
 import json
 from pathlib import Path
 
-_FORCE_HELP = "Recompute panel data even if a JSON cache exists."
+_FORCE_HELP = (
+    "Accepted for config compatibility; this dashboard always overwrites its "
+    "PDF. Cached panel data is reused either way -- see --recompute."
+)
+_RECOMPUTE_HELP = (
+    "Recompute panels even if a cached JSON exists: bare --recompute (config: "
+    "'recompute: all' or 'true') for every panel, or name them, e.g. "
+    "--recompute model_parity eos. --force never recomputes."
+)
 
 # Config files auto-discovered in a run's calchome dir, in priority order. Each
 # maps long-option names (``swap-pt``/``swap_pt``) to values; CLI flags still
@@ -30,6 +38,10 @@ _CONFIG_BASENAMES = (
     "dashboard.toml",
     "dashboard.json",
 )
+
+# Config block read by the AL loop's DashboardHook (jaxrens_al.run.
+# dashboard_hook), not by any dashboard CLI -- which skips it.
+AUTO_DASHBOARD_KEY = "auto_dashboard"
 
 
 def find_config(calchome):
@@ -104,10 +116,12 @@ def apply_config(
     """Fold a config file's values in as defaults, return re-parsed ``args``.
 
     Resolves ``--config`` (else :func:`find_config` on the run dir), loads it,
-    drops unknown keys (with a warning) and the non-overridable positional /
-    ``config``, applies the rest via ``parser.set_defaults`` and re-parses --
-    so a config supplies defaults while any CLI flag still wins. No-op (returns
-    ``args`` unchanged) when no config is found.
+    drops the non-overridable positional / ``config``, applies the rest via
+    ``parser.set_defaults`` and re-parses -- so a config supplies defaults
+    while any CLI flag still wins. An unknown key raises ``ValueError`` (with
+    a did-you-mean hint) instead of being dropped: a misspelled setting would
+    otherwise silently fall back to its default. No-op (returns ``args``
+    unchanged) when no config is found.
 
     ``run_dir`` is the directory a ``dashboard.*`` config is auto-discovered in
     (default: the ``positional`` arg's value -- the AL CLI's calchome ``path``).
@@ -122,7 +136,9 @@ def apply_config(
     ``global:`` block that is merged into the flat keys). These are not argparse
     options; the raw (unparsed) mapping is stashed on the returned args as
     ``panel_config_raw`` for the caller to turn into panel specs (via the
-    project's panel registry -- kept out of this argparse-only module).
+    project's panel registry -- kept out of this argparse-only module). An
+    ``auto_dashboard:`` block configures the AL loop's ``DashboardHook`` and
+    is ignored here.
     """
     if run_dir is None:
         run_dir = getattr(args, positional)
@@ -140,31 +156,51 @@ def apply_config(
     cfg = load_config(path)
     cfg.pop(positional, None)
     cfg.pop("config", None)
+    cfg.pop(AUTO_DASHBOARD_KEY, None)
 
     # Structured panel keys live outside the flat argparse namespace.
     panel_raw = {k: cfg.pop(k, None) for k in ("add", "disable", "panels")}
     # A ``global:`` block is an alias for the flat keys (both forms work); an
     # explicit flat key wins over the block.
     block = cfg.pop("global", None)
-    if isinstance(block, dict):
-        for k, v in block.items():
-            cfg.setdefault(str(k).replace("-", "_"), v)
+    if block is not None and not isinstance(block, dict):
+        raise ValueError(
+            f"{path}: 'global' must be a mapping of settings, got "
+            f"{type(block).__name__}."
+        )
+    for k, v in (block or {}).items():
+        cfg.setdefault(str(k).replace("-", "_"), v)
 
-    valid = {a.dest for a in parser._actions}
+    valid = {a.dest for a in parser._actions} - {"help"}
     unknown = sorted(set(cfg) - valid)
     if unknown:
-        logger.warning(
-            "%s: ignoring unknown config key(s): %s",
-            path,
-            ", ".join(unknown),
-        )
-    cfg = {k: v for k, v in cfg.items() if k in valid}
+        raise ValueError(_unknown_keys_message(path, unknown, valid))
     parser.set_defaults(**cfg)
     logger.info("Applied dashboard config %s (%d setting(s)).", path, len(cfg))
     new_args = parser.parse_args(argv)
     if any(v is not None for v in panel_raw.values()):
         new_args.panel_config_raw = panel_raw
     return new_args
+
+
+def _unknown_keys_message(path, unknown, valid) -> str:
+    """Name each unknown config key, with the closest valid one if any."""
+    import difflib
+
+    def _show(key):  # long-option spelling, as the config files use it
+        return key.replace("_", "-")
+
+    lines = []
+    for key in unknown:
+        close = difflib.get_close_matches(key, sorted(valid), n=1)
+        hint = f" (did you mean '{_show(close[0])}'?)" if close else ""
+        lines.append(f"  {_show(key)}{hint}")
+    return (
+        f"{path}: unknown config key(s):\n" + "\n".join(lines) + "\n"
+        "Flat / `global:` keys must be options of this dashboard (see "
+        "`jaxrens-al dashboard init-config`); panel settings go on an "
+        "`add:` / `panels:` entry."
+    )
 
 
 def _config_value_repr(v) -> str:
@@ -243,7 +279,12 @@ def dump_config(parser, *, title: str | None = None) -> str:
 
 
 def add_output_args(parser, *, force_help: str = _FORCE_HELP) -> None:
-    """``-o/--output``, ``--datapath``, ``--force`` (shared by all four)."""
+    """``-o/--output``, ``--datapath``, ``--force``, ``--recompute``.
+
+    Shared by all four dashboards, with one meaning each: ``--force`` only
+    concerns the output PDF (overwrite it), ``--recompute`` alone invalidates
+    panel caches (see :func:`recompute_selection`).
+    """
     parser.add_argument(
         "-o",
         "--output",
@@ -256,6 +297,35 @@ def add_output_args(parser, *, force_help: str = _FORCE_HELP) -> None:
         help="Where panels cache computed JSON (default: beside the output).",
     )
     parser.add_argument("--force", action="store_true", help=force_help)
+    parser.add_argument(
+        "--recompute",
+        nargs="*",
+        default=None,
+        metavar="PANEL",
+        help=_RECOMPUTE_HELP,
+    )
+
+
+def recompute_selection(args) -> tuple[bool, list | None]:
+    """``(all_panels, names)`` from ``args.recompute``.
+
+    ``None`` (unset) -> nothing; bare ``--recompute`` (``[]``) or a config
+    value of ``all`` / ``true`` -> every panel; a list of names (or one name
+    from a config) -> just those. ``false`` / ``none`` in a config -> nothing.
+    """
+    value = getattr(args, "recompute", None)
+    if value is None or value is False:
+        return False, None
+    if value is True:
+        return True, None
+    if isinstance(value, str):
+        value = [value]
+    names = [str(v) for v in value]
+    if not names or any(n.lower() == "all" for n in names):
+        return True, None
+    if all(n.lower() in ("none", "false") for n in names):
+        return False, None
+    return False, names
 
 
 def add_ref_key_args(parser) -> None:

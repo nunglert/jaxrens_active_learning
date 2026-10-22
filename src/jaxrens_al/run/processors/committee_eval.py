@@ -60,6 +60,11 @@ class CommitteeEvalArgs(ScriptInput):
     selects the jaxrens backend. The per-config energy std lands in
     ``energy_key`` and the per-atom force std in ``forces_key``, each next to
     the committee mean (``mean_energy_key`` / ``mean_forces_key``).
+    ``single_file_ensemble``: the committee is ONE checkpoint holding every
+    member (a NeuralIL ``PlainEnsemble`` ``.pkl``), scored per member via the
+    backend's ``members`` method instead of one ``score_atoms`` pass per file.
+    ``supercell_trafo`` is the backend's periodic-image expansion (empty = the
+    backend default; set it for NeuralIL, whose default is (1, 1, 1)).
     ``batch_size`` / ``max_neighbors_list`` / ``max_neighbors_offset`` are
     forwarded to ``score_atoms`` (vmapped batching + the neighbour-bucket
     ladder); unset keeps the one-config-per-call path at a fixed
@@ -77,12 +82,28 @@ class CommitteeEvalArgs(ScriptInput):
     batch_size: Optional[int] = None
     max_neighbors_list: list = field(default_factory=list)
     max_neighbors_offset: int = 4
+    single_file_ensemble: bool = False
+    supercell_trafo: list = field(default_factory=list)
 
     def validate(self, root: Optional[Path] = None) -> None:
-        if len(self.model_remotes) < 2:
+        if self.single_file_ensemble:
+            if len(self.model_remotes) != 1:
+                raise ScriptInputError(
+                    "committee_eval: 'single_file_ensemble' needs exactly one "
+                    "model (the ensemble checkpoint)"
+                )
+        elif len(self.model_remotes) < 2:
             raise ScriptInputError(
                 "committee_eval: 'model_remotes' needs at least two models "
                 "(a committee)"
+            )
+        sc = list(self.supercell_trafo)
+        if sc and (
+            len(sc) != 3 or not all(isinstance(x, int) and x > 0 for x in sc)
+        ):
+            raise ScriptInputError(
+                "committee_eval: 'supercell_trafo' must be three positive "
+                "ints (or empty for the backend default)"
             )
         if not all(isinstance(m, str) and m for m in self.model_remotes):
             raise ScriptInputError(
@@ -132,7 +153,10 @@ def run(atoms_list, args, calcpath=None):
     """
     import numpy as np
 
-    from jaxrens_al.dashboard.panels.model_eval import score_atoms
+    from jaxrens_al.dashboard.panels.model_eval import (
+        score_atoms,
+        score_members,
+    )
 
     backend_type = args["backend"]
     model_paths = _materialise_models(args, calcpath)
@@ -144,33 +168,55 @@ def run(atoms_list, args, calcpath=None):
     batch_size = args.get("batch_size")
     ladder = list(args.get("max_neighbors_list") or [])
     offset = int(args.get("max_neighbors_offset", 4))
+    supercell_trafo = list(args.get("supercell_trafo") or []) or None
 
-    # One (energies, forces) pair per committee member. score_atoms loads each
-    # model once and loops the pool internally -- N loads, not N*len(pool).
-    per_model = [
-        score_atoms(
-            path,
+    if args.get("single_file_ensemble", False):
+        # One checkpoint holding every member: (M,) energies and (M, N, 3)
+        # forces per config straight from the backend's members().
+        member_energies, member_forces = score_members(
+            model_paths[0],
             backend_type,
             atoms_list,
-            want_forces=True,
             max_neighbors=max_neighbors,
-            batch_size=batch_size,
             max_neighbors_list=ladder or None,
             max_neighbors_offset=offset,
+            supercell_trafo=supercell_trafo,
         )
-        for path in model_paths
-    ]
-    energies = np.asarray([e for e, _ in per_model])  # (n_models, n_configs)
-    energy_std = energies.std(axis=0)
-    energy_mean = energies.mean(axis=0)
+    else:
+        # One (energies, forces) pair per committee member. score_atoms loads
+        # each model once and loops the pool internally -- N loads, not
+        # N*len(pool).
+        per_model = [
+            score_atoms(
+                path,
+                backend_type,
+                atoms_list,
+                want_forces=True,
+                max_neighbors=max_neighbors,
+                batch_size=batch_size,
+                max_neighbors_list=ladder or None,
+                max_neighbors_offset=offset,
+                supercell_trafo=supercell_trafo,
+            )
+            for path in model_paths
+        ]
+        member_energies = [
+            np.asarray([e[i] for e, _ in per_model])
+            for i in range(len(atoms_list))
+        ]
+        member_forces = [
+            np.stack([f[i] for _, f in per_model])
+            for i in range(len(atoms_list))
+        ]
 
     for i, atoms in enumerate(atoms_list):
-        # (n_models, n_atoms, 3) -> per-atom std across the committee.
-        member_forces = np.stack([forces[i] for _, forces in per_model])
-        atoms.info[energy_key] = float(energy_std[i])
-        atoms.info[mean_energy_key] = float(energy_mean[i])
-        atoms.new_array(forces_key, member_forces.std(axis=0))
-        atoms.new_array(mean_forces_key, member_forces.mean(axis=0))
+        # (n_members,) energies and (n_members, n_atoms, 3) forces -> the
+        # committee std (per-atom for forces) and mean.
+        e, f = np.asarray(member_energies[i]), np.asarray(member_forces[i])
+        atoms.info[energy_key] = float(e.std())
+        atoms.info[mean_energy_key] = float(e.mean())
+        atoms.new_array(forces_key, f.std(axis=0))
+        atoms.new_array(mean_forces_key, f.mean(axis=0))
     return atoms_list
 
 
@@ -203,7 +249,8 @@ class CommitteeEvalProcessor(Processor):
 
     Args:
         models: The committee members -- at least two mace-jax bundle
-            *directories* or neuralil ``.pkl`` files.
+            *directories* or neuralil ``.pkl`` files; or, with
+            ``single_file_ensemble``, exactly one ensemble checkpoint.
         backend: jaxrens backend to load them with (``"mace"`` / ``"neuralil"``).
         energy_key / forces_key: ``info`` / ``arrays`` keys the energy std and
             per-atom force std are written under (default: the shared
@@ -221,6 +268,11 @@ class CommitteeEvalProcessor(Processor):
             job pays for. Only used together with ``batch_size``.
         max_neighbors_offset: Headroom above the observed neighbour count when
             picking a bucket.
+        single_file_ensemble: ``models`` is one checkpoint holding the whole
+            committee (a NeuralIL ensemble ``.pkl``); its members are scored
+            via the backend's ``members`` method.
+        supercell_trafo: Backend periodic-image expansion ``(a, b, c)``;
+            ``None`` = backend default (NeuralIL's is (1, 1, 1) -- set it).
     """
 
     name = "committee_eval"
@@ -238,12 +290,23 @@ class CommitteeEvalProcessor(Processor):
         batch_size: int | None = None,
         max_neighbors_list=None,
         max_neighbors_offset: int = 4,
+        single_file_ensemble: bool = False,
+        supercell_trafo=None,
     ):
         self.models = [Path(m) for m in models]
-        if len(self.models) < 2:
+        self.single_file_ensemble = bool(single_file_ensemble)
+        if self.single_file_ensemble and len(self.models) != 1:
+            raise ValueError(
+                "CommitteeEvalProcessor(single_file_ensemble=True) needs "
+                "exactly one model (the ensemble checkpoint)."
+            )
+        if not self.single_file_ensemble and len(self.models) < 2:
             raise ValueError(
                 "CommitteeEvalProcessor needs at least two models."
             )
+        self.supercell_trafo = (
+            [int(x) for x in supercell_trafo] if supercell_trafo else []
+        )
         self.backend = backend
         self.energy_key = energy_key
         self.forces_key = forces_key
@@ -292,6 +355,8 @@ class CommitteeEvalProcessor(Processor):
             batch_size=self.batch_size,
             max_neighbors_list=self.max_neighbors_list,
             max_neighbors_offset=self.max_neighbors_offset,
+            single_file_ensemble=self.single_file_ensemble,
+            supercell_trafo=self.supercell_trafo,
         ).to_dict()
 
 

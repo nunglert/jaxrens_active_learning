@@ -138,24 +138,68 @@ def test_load_config_rejects_non_mapping(tmp_path):
         load_config(p)
 
 
-def test_apply_config_cli_overrides_and_drops_unknown(tmp_path, caplog):
+def test_apply_config_cli_overrides_config(tmp_path):
     import logging
 
     from jaxrens_al.cli import _build_parser
 
     (tmp_path / "AL_progress.json").write_text("[]")
-    (tmp_path / "dashboard.yaml").write_text(
-        "width: 6.0\nsections: true\nbogus: 1\n"
-    )
+    (tmp_path / "dashboard.yaml").write_text("width: 6.0\nsections: true\n")
     parser = _build_parser()
     argv = [str(tmp_path), "--width", "9.0"]  # CLI width beats config
     args = parser.parse_args(argv)
-    with caplog.at_level(logging.WARNING):
-        args = apply_config(parser, argv, args, logging.getLogger("t"))
+    args = apply_config(parser, argv, args, logging.getLogger("t"))
     assert args.width == 9.0  # CLI wins
     assert args.sections is True  # from config
-    assert "bogus" in caplog.text  # unknown key warned
-    assert not hasattr(args, "bogus")
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "width: 6.0\nbogus: 1\n",  # flat key
+        "global:\n  bogus: 1\n",  # inside the global block
+    ],
+)
+def test_apply_config_rejects_unknown_keys(tmp_path, body):
+    import logging
+
+    from jaxrens_al.cli import _build_parser
+
+    (tmp_path / "AL_progress.json").write_text("[]")
+    (tmp_path / "dashboard.yaml").write_text(body)
+    parser = _build_parser()
+    argv = [str(tmp_path)]
+    args = parser.parse_args(argv)
+    with pytest.raises(ValueError, match="bogus"):
+        apply_config(parser, argv, args, logging.getLogger("t"))
+
+
+def test_apply_config_unknown_key_suggests_close_match(tmp_path):
+    import logging
+
+    from jaxrens_al.cli import _build_parser
+
+    (tmp_path / "AL_progress.json").write_text("[]")
+    (tmp_path / "dashboard.yaml").write_text("swap-ptt: true\n")
+    parser = _build_parser()
+    argv = [str(tmp_path)]
+    args = parser.parse_args(argv)
+    with pytest.raises(ValueError, match="did you mean 'swap-pt'"):
+        apply_config(parser, argv, args, logging.getLogger("t"))
+
+
+def test_apply_config_rejects_non_mapping_global(tmp_path):
+    import logging
+
+    from jaxrens_al.cli import _build_parser
+
+    (tmp_path / "AL_progress.json").write_text("[]")
+    (tmp_path / "dashboard.yaml").write_text("global: [width]\n")
+    parser = _build_parser()
+    argv = [str(tmp_path)]
+    args = parser.parse_args(argv)
+    with pytest.raises(ValueError, match="'global' must be a mapping"):
+        apply_config(parser, argv, args, logging.getLogger("t"))
 
 
 def test_apply_config_noop_without_file(tmp_path):
@@ -260,3 +304,78 @@ def test_dump_config_round_trips_and_keys_are_valid_dests(tmp_path):
     assert "config" not in cfg
     # A None-default flag (--output) is listed commented for discovery.
     assert "# output:" in text
+
+
+def test_recompute_is_separate_from_force():
+    """--force never recomputes; --recompute selects all or named panels."""
+    import argparse
+
+    from jaxrens_al.cli_args import add_output_args, recompute_selection
+
+    parser = argparse.ArgumentParser()
+    add_output_args(parser)
+
+    def sel(argv):
+        return recompute_selection(parser.parse_args(argv))
+
+    assert sel([]) == (False, None)
+    assert sel(["--force"]) == (False, None)  # overwrite only
+    assert sel(["--recompute"]) == (True, None)  # bare -> every panel
+    assert sel(["--recompute", "eos", "model_parity"]) == (
+        False,
+        ["eos", "model_parity"],
+    )
+    assert sel(["--recompute", "all"]) == (True, None)
+
+
+@pytest.mark.parametrize(
+    "value, expected",
+    [
+        (True, (True, None)),
+        ("all", (True, None)),
+        (["eos"], (False, ["eos"])),
+        ("eos", (False, ["eos"])),
+        (False, (False, None)),
+        ("none", (False, None)),
+        (None, (False, None)),
+    ],
+)
+def test_recompute_config_values(value, expected):
+    """Config forms of recompute: true/all, a name or list, false/none."""
+    from types import SimpleNamespace
+
+    from jaxrens_al.cli_args import recompute_selection
+
+    assert recompute_selection(SimpleNamespace(recompute=value)) == expected
+
+
+def test_force_from_config_does_not_recompute(tmp_path):
+    """The run7 trap: 'force: true' in a dashboard.yaml must not invalidate
+    the panel caches; only 'recompute:' does."""
+    import argparse
+    import logging
+
+    from jaxrens_al.cli_args import (
+        add_config_arg,
+        add_output_args,
+        apply_config,
+        recompute_selection,
+    )
+
+    (tmp_path / "dashboard.yaml").write_text("force: true\n")
+    parser = argparse.ArgumentParser()
+    parser.add_argument("path")
+    add_output_args(parser)
+    add_config_arg(parser)
+    argv = [str(tmp_path)]
+    args = apply_config(
+        parser, argv, parser.parse_args(argv), logging.getLogger()
+    )
+    assert args.force is True
+    assert recompute_selection(args) == (False, None)
+
+    (tmp_path / "dashboard.yaml").write_text("recompute: all\n")
+    args = apply_config(
+        parser, argv, parser.parse_args(argv), logging.getLogger()
+    )
+    assert recompute_selection(args) == (True, None)

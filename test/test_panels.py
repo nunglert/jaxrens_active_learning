@@ -374,6 +374,38 @@ def test_eos_panel_remote_eval_declares_need_and_reads_annotation(
     assert len(ph["e_nnff"]) == 9 and len(ph["e_dft"]) == 9
 
 
+def test_eos_panel_forwards_the_neighbour_ladder_to_its_need(
+    eos_reference, tmp_path
+):
+    from jaxrens_al.dashboard.panels.eos import EquationOfStatePanel
+
+    ref = eos_reference(tmp_path / "eos_a.extxyz")
+    panel = EquationOfStatePanel(
+        references=[ref],
+        model_file="bundle_dir",
+        backend_type="mace",
+        remote_eval=True,
+        max_neighbors_list=[120, 20, 60],
+        max_neighbors_offset=6,
+        batch_size=4,
+        datapath=tmp_path,
+    )
+    (need,) = panel.model_eval_needs()
+    assert need.max_neighbors_list == (20, 60, 120)  # sorted, hashable
+    assert need.max_neighbors_offset == 6 and need.batch_size == 4
+    hash(need)  # still dedupable
+
+    # Default stays the static buffer.
+    (plain,) = EquationOfStatePanel(
+        references=[ref],
+        model_file="bundle_dir",
+        backend_type="mace",
+        remote_eval=True,
+        datapath=tmp_path,
+    ).model_eval_needs()
+    assert plain.max_neighbors_list == () and plain.batch_size is None
+
+
 def test_eos_panel_remote_eval_errors_without_annotation(
     eos_reference, tmp_path
 ):
@@ -423,6 +455,49 @@ def test_model_parity_remote_eval_reads_annotation(tmp_path, write_configs):
     data = panel.compute_data({})
     assert len(data.e_pred) == 3
     assert data.f_pred is not None and len(data.f_pred) == 3 * 3 * 3
+
+
+def test_parity_neighbor_buckets_reach_need_and_local_score(tmp_path):
+    from jaxrens_al.dashboard.panels.training import (
+        ModelParityPanel,
+        ModelParitySpec,
+        SamplingParitySpec,
+    )
+
+    panel = ModelParityPanel(
+        config_files=["db.extxyz"],
+        model_file="bundle_dir",
+        backend_type="mace",
+        remote_eval=True,
+        max_neighbors_list=[60, 20, 40],
+        batch_size=16,
+        datapath=tmp_path,
+    )
+    (need,) = panel.model_eval_needs()
+    assert need.max_neighbors_list == (20, 40, 60)  # sorted, hashable
+    assert need.batch_size == 16 and need.max_neighbors_offset == 4
+
+    seen = {}
+
+    def fake_score(model, backend, atoms, **kw):
+        seen.update(kw)
+        return [0.0], None
+
+    import jaxrens_al.dashboard.panels.model_eval as me
+
+    orig, me.score_atoms = me.score_atoms, fake_score
+    try:
+        panel._evaluate("bundle_dir", [None])
+    finally:
+        me.score_atoms = orig
+    assert (
+        seen["max_neighbors_list"] == [20, 40, 60] and seen["batch_size"] == 16
+    )
+
+    # the specs expose the same knobs, default off (static buffer unchanged)
+    for spec in (ModelParitySpec, SamplingParitySpec):
+        assert spec().max_neighbors_list is None
+        assert spec(max_neighbors_list=[20, 40]).max_neighbors_list == [20, 40]
 
 
 def test_eos_panel_element_mode_declares_and_receives_need(tmp_path):

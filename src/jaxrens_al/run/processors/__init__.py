@@ -18,6 +18,10 @@ from jaxrens_al.run.processors.committee_eval import (
     CommitteeEvalArgs,
     CommitteeEvalProcessor,
 )
+from jaxrens_al.run.processors.jax_cell_relax import (
+    JaxCellRelaxArgs,
+    JaxCellRelaxProcessor,
+)
 from jaxrens_al.run.processors.model_eval import (
     ModelEvalArgs,
     ModelEvalProcessor,
@@ -27,14 +31,22 @@ from jaxrens_al.run.processors.spacegroup import (
     SpaceGroupArgs,
     SpaceGroupProcessor,
 )
+from jaxrens_al.run.processors.torchsim_relax import (
+    TorchSimRelaxArgs,
+    TorchSimRelaxProcessor,
+)
 
 __all__ = [
     "CommitteeEvalArgs",
     "CommitteeEvalProcessor",
+    "JaxCellRelaxArgs",
+    "JaxCellRelaxProcessor",
     "ModelEvalArgs",
     "ModelEvalProcessor",
     "RelaxArgs",
     "RelaxProcessor",
     "SpaceGroupArgs",
     "SpaceGroupProcessor",
+    "TorchSimRelaxArgs",
+    "TorchSimRelaxProcessor",
 ]
