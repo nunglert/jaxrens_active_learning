@@ -317,6 +317,34 @@ def torch_model_for(calchome, model):
     return candidate if candidate.is_file() else None
 
 
+def neuralil_full_ensemble_for(model):
+    """The every-member ensemble file behind a recorded NeuralIL trainer output.
+
+    With ``save_reduced`` the trainer writes ``model_<k>.pkl`` (the best
+    ``save_reduced`` members) and ``full_model_<k>.pkl`` (all ``n_ensemble``
+    members) into iteration ``k``'s trainer ``results`` dir. The staged handler
+    records only the first, copied to ``<calchome>/trainer_output/
+    trainer_it<k>_<j>.pkl``, so the full file is found from that recorded path
+    through iteration ``k``'s trainer tree (as :func:`torch_model_for` does for
+    MACE). Returns None for any other path, or when the full file is not on
+    disk (e.g. a run trained without ``save_reduced``).
+    """
+    import re
+
+    if model is None:
+        return None
+    model = Path(model)
+    match = re.fullmatch(r"trainer_it(\d+)_\d+\.pkl", model.name)
+    if match is None:
+        return None
+    k = int(match.group(1))
+    base = training_results_dir(iteration_dir(model.parent.parent, k))
+    if base is None:
+        return None
+    candidate = base / f"full_model_{k}.pkl"
+    return candidate if candidate.is_file() else None
+
+
 def ns_prefix_from_dir(results_dir, default=None):
     """Infer the jaxrens ``out_file_prefix`` from an NS output directory.
 

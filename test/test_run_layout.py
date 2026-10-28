@@ -16,6 +16,7 @@ from jaxrens_al.dashboard.run_layout import (
     iteration_dir,
     iteration_dirs,
     load_progress,
+    neuralil_full_ensemble_for,
     ns_result_dir,
     ns_result_dirs,
     sampled_configs,
@@ -272,3 +273,47 @@ def test_detect_ns_prefix_default_when_absent(tmp_path):
     from jaxrens_al.dashboard.run_layout import detect_ns_prefix
 
     assert detect_ns_prefix(tmp_path / "0", default="ns") == "ns"
+
+
+def test_neuralil_full_ensemble_found_from_recorded_trainer_output(
+    make_calchome, tmp_path
+):
+    calchome = make_calchome(tmp_path, n_iter=3, with_neuralil_ensemble=True)
+    recorded = calchome / "trainer_output" / "trainer_it2_0.pkl"
+    full = neuralil_full_ensemble_for(recorded)
+    assert full == calchome / "2" / "training" / "results" / "full_model_2.pkl"
+    assert full.read_bytes() == b"full"
+    # accepts a plain string, as selector kwargs often are
+    assert neuralil_full_ensemble_for(str(recorded)) == full
+
+
+def test_neuralil_full_ensemble_none_without_the_full_file(
+    make_calchome, tmp_path
+):
+    """No fallback to the reduced file: the caller decides what to do."""
+    calchome = make_calchome(
+        tmp_path,
+        n_iter=2,
+        with_neuralil_ensemble=True,
+        with_full_ensemble=False,
+    )
+    recorded = calchome / "trainer_output" / "trainer_it1_0.pkl"
+    assert recorded.is_file()
+    assert neuralil_full_ensemble_for(recorded) is None
+
+
+def test_neuralil_full_ensemble_none_for_other_paths(make_calchome, tmp_path):
+    calchome = make_calchome(tmp_path, n_iter=2, with_neuralil_ensemble=True)
+    assert neuralil_full_ensemble_for(None) is None
+    assert neuralil_full_ensemble_for(calchome / "1" / "x.pkl") is None
+    assert (
+        neuralil_full_ensemble_for(calchome / "trainer_output" / "t1.bundle")
+        is None
+    )
+    # a recorded name whose iteration has no trainer tree on disk
+    assert (
+        neuralil_full_ensemble_for(
+            calchome / "trainer_output" / "trainer_it9_0.pkl"
+        )
+        is None
+    )

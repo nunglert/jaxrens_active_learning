@@ -172,6 +172,8 @@ def _make_calchome(
     with_re_stats=False,
     with_model=False,
     with_trainer_output=False,
+    with_neuralil_ensemble=False,
+    with_full_ensemble=True,
     staged=False,
 ):
     """Build a remote_handler-style run dir under ``tmp_path``.
@@ -204,6 +206,11 @@ def _make_calchome(
     ``with_model`` drops a stub
     ``neuralil_model.pkl`` under ``<i>/training/results`` so the EOS panel
     finds a model (compute needs jaxrens -- patch ``fake_eos_eval`` to render).
+    ``with_neuralil_ensemble`` writes what ``NeuralilILTrainer`` leaves for a
+    ``save_reduced`` run: ``<i>/training/results/model_<i>.pkl`` (the reduced
+    ensemble) and, unless ``with_full_ensemble=False``, ``full_model_<i>.pkl``
+    (every member), plus the staged handler's recorded copy of the reduced file
+    at ``trainer_output/trainer_it<i>_0.pkl``.
     ``staged`` serializes ``AL_progress.json`` in the ``StagedActiveLearning
     Handler`` schema (``{outputs: {stage: {iter: [rel]}}}``) instead of the
     classic per-iteration list; the on-disk artifacts are identical either way.
@@ -317,6 +324,17 @@ def _make_calchome(
             bundle = tout / f"t{it}.bundle"
             bundle.mkdir(exist_ok=True)
             entry["trainer_output"] = [f"trainer_output/t{it}.bundle"]
+
+        if with_neuralil_ensemble:
+            tdir = calchome / str(it) / "training" / "results"
+            tdir.mkdir(parents=True, exist_ok=True)
+            (tdir / f"model_{it}.pkl").write_bytes(b"reduced")
+            if with_full_ensemble:
+                (tdir / f"full_model_{it}.pkl").write_bytes(b"full")
+            tout = calchome / "trainer_output"
+            tout.mkdir(parents=True, exist_ok=True)
+            (tout / f"trainer_it{it}_0.pkl").write_bytes(b"reduced")
+            entry["trainer_output"] = [f"trainer_output/trainer_it{it}_0.pkl"]
 
         progress.append(entry)
 

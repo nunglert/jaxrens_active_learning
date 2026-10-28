@@ -574,11 +574,33 @@ class NeuralILCommitteeUncertaintySelector(CommitteeUncertaintySelector):
     (1, 1, 1), which silently truncates the neighbour list whenever the model
     cutoff exceeds half the cell width. Pass the NS config's
     ``backend.supercell_trafo``.
+
+    ``full_ensemble`` scores the uncertainty with EVERY trained member instead
+    of the reduced file the loop hands to the sampler: the trainer's
+    ``save_reduced`` keeps the best members by force error, which tends to
+    lower their disagreement. Only this selector changes -- the NS keeps the
+    reduced model. The full file is looked up through the recorded trainer
+    output (see :func:`jaxrens_al.dashboard.run_layout.
+    neuralil_full_ensemble_for`); a missing one raises instead of silently
+    falling back to the reduced ensemble. Needs a dynamic committee
+    (``committee_input``) fed by the trainer stage.
     """
 
-    def __init__(self, models=None, *, supercell_trafo, **kwargs):
+    def __init__(
+        self,
+        models=None,
+        *,
+        supercell_trafo,
+        full_ensemble=False,
+        **kwargs,
+    ):
         if models is not None and not isinstance(models, (list, tuple)):
             models = [models]
+        if full_ensemble and models is not None:
+            raise ValueError(
+                "full_ensemble needs a dynamic committee (committee_input) fed "
+                "by the trainer stage; a static 'models=' path is used as is."
+            )
         super().__init__(
             models,
             backend="neuralil",
@@ -586,3 +608,24 @@ class NeuralILCommitteeUncertaintySelector(CommitteeUncertaintySelector):
             supercell_trafo=supercell_trafo,
             **kwargs,
         )
+        self.full_ensemble = bool(full_ensemble)
+
+    def _resolve_committee(self, kwargs) -> list[str]:
+        committee = super()._resolve_committee(kwargs)
+        if not self.full_ensemble:
+            return committee
+        from jaxrens_al.dashboard.run_layout import neuralil_full_ensemble_for
+
+        full = []
+        for path in committee:
+            found = neuralil_full_ensemble_for(path)
+            if found is None:
+                raise FileNotFoundError(
+                    f"full_ensemble=True but no full ensemble file was found "
+                    f"for the trainer output {path} (expected "
+                    f"<calchome>/<k>/training/results/full_model_<k>.pkl, "
+                    f"written when the trainer runs with save_reduced). "
+                    f"Refusing to fall back to the reduced ensemble."
+                )
+            full.append(str(found))
+        return full

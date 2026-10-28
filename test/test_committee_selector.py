@@ -454,6 +454,131 @@ def test_neuralil_selector_cold_starts_without_an_ensemble(
     assert len(ase.io.read(str(sel.get_selected_configs()), index=":")) == 3
 
 
+def _neuralil_selector(**kw):
+    from jaxrens_al.run.committee_selector import (
+        NeuralILCommitteeUncertaintySelector,
+    )
+
+    return NeuralILCommitteeUncertaintySelector(
+        committee_input="committee",
+        n_configs=2,
+        cluster="local",
+        supercell_trafo=(2, 2, 2),
+        **kw,
+    )
+
+
+def _fake_handler(monkeypatch):
+    _FakeCommitteeHandler.calls.clear()
+    monkeypatch.setattr(
+        "remote_handler.processing.RemoteTrajectoryProcessor",
+        _FakeCommitteeHandler,
+    )
+
+
+def test_neuralil_selector_scores_the_reduced_file_by_default(
+    monkeypatch, make_calchome, tmp_path
+):
+    calchome = make_calchome(
+        tmp_path / "run", n_iter=2, with_neuralil_ensemble=True
+    )
+    pool = tmp_path / "pool.extxyz"
+    _pool(pool, 4)
+    _fake_handler(monkeypatch)
+    calcdir = tmp_path / "iter1"
+    calcdir.mkdir()
+    reduced = calchome / "trainer_output" / "trainer_it1_0.pkl"
+
+    _neuralil_selector().update(calcdir, pool, committee=[reduced])
+
+    (call,) = _FakeCommitteeHandler.calls
+    assert [str(m) for m in call["proc"].models] == [str(reduced)]
+
+
+def test_neuralil_selector_full_ensemble_scores_every_member(
+    monkeypatch, make_calchome, tmp_path
+):
+    """The selector is handed the reduced file; it scores the full one."""
+    calchome = make_calchome(
+        tmp_path / "run", n_iter=2, with_neuralil_ensemble=True
+    )
+    pool = tmp_path / "pool.extxyz"
+    _pool(pool, 4)
+    _fake_handler(monkeypatch)
+    calcdir = tmp_path / "iter1"
+    calcdir.mkdir()
+    reduced = calchome / "trainer_output" / "trainer_it1_0.pkl"
+
+    sel = _neuralil_selector(full_ensemble=True)
+    sel.update(calcdir, pool, committee=[reduced])
+
+    (call,) = _FakeCommitteeHandler.calls
+    (model,) = call["proc"].models
+    assert str(model) == str(
+        calchome / "1" / "training" / "results" / "full_model_1.pkl"
+    )
+    assert call["proc"].single_file_ensemble is True
+
+
+def test_neuralil_selector_full_ensemble_refuses_to_fall_back(
+    monkeypatch, make_calchome, tmp_path
+):
+    calchome = make_calchome(
+        tmp_path / "run",
+        n_iter=2,
+        with_neuralil_ensemble=True,
+        with_full_ensemble=False,
+    )
+    pool = tmp_path / "pool.extxyz"
+    _pool(pool, 4)
+    _fake_handler(monkeypatch)
+    calcdir = tmp_path / "iter1"
+    calcdir.mkdir()
+
+    sel = _neuralil_selector(full_ensemble=True)
+    with pytest.raises(FileNotFoundError, match="no full ensemble file"):
+        sel.update(
+            calcdir,
+            pool,
+            committee=[calchome / "trainer_output" / "trainer_it1_0.pkl"],
+        )
+    assert _FakeCommitteeHandler.calls == []
+
+
+def test_neuralil_selector_full_ensemble_still_cold_starts(
+    monkeypatch, tmp_path
+):
+    """Iteration 0 has no ensemble: nothing to look up, so a stride, no error."""
+    import ase.io
+
+    pool = tmp_path / "pool.extxyz"
+    _pool(pool, 6)
+    _fake_handler(monkeypatch)
+    calcdir = tmp_path / "iter0"
+    calcdir.mkdir()
+
+    sel = _neuralil_selector(full_ensemble=True)
+    sel.update(calcdir, pool)
+
+    assert _FakeCommitteeHandler.calls == []
+    assert len(ase.io.read(str(sel.get_selected_configs()), index=":")) == 2
+
+
+def test_neuralil_selector_full_ensemble_rejects_a_static_model(tmp_path):
+    from jaxrens_al.run.committee_selector import (
+        NeuralILCommitteeUncertaintySelector,
+    )
+
+    with pytest.raises(ValueError, match="dynamic committee"):
+        NeuralILCommitteeUncertaintySelector(
+            tmp_path / "m.pkl",
+            n_configs=2,
+            cluster="local",
+            supercell_trafo=(2, 2, 2),
+            full_ensemble=True,
+        )
+
+
 def test_neuralil_selector_requires_supercell_trafo():
     from jaxrens_al.run.committee_selector import (
         NeuralILCommitteeUncertaintySelector,
