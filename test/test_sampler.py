@@ -543,3 +543,201 @@ def test_chain_stops_early_when_sbatch_output_is_unparsable(
     assert "sbatch" in first_call_args
     second_call_args = fs.run_command.call_args_list[1].args[0]
     assert "scancel" in second_call_args
+
+
+# ---------------------------------------------------------------------------
+# Waiting on the chain as a whole (not just link 1's job id).
+# ---------------------------------------------------------------------------
+@pytest.fixture
+def squeue_remote_fs():
+    """A remote_fs faking sbatch/scancel plus a scripted ``squeue``.
+
+    ``fs.squeue`` is a list of ``(returncode, stdout, stderr)`` answers,
+    consumed one per squeue call (the last one repeats).
+    """
+    fs = MagicMock()
+    fs.slurm_config = {"savepath": "/remote/path"}
+    fs.run_command_calls = []
+    fs.squeue = [(0, "RUNNING None\n", "")]
+    next_id = {"n": 2000}
+
+    def _run_command(command):
+        fs.run_command_calls.append(command)
+        if command.startswith("squeue"):
+            answer = fs.squeue.pop(0) if len(fs.squeue) > 1 else fs.squeue[0]
+            return _FakeCommandResult(*answer)
+        if command.startswith("scancel"):
+            return _FakeCommandResult(0, "", "")
+        next_id["n"] += 1
+        return _FakeCommandResult(0, f"Submitted batch job {next_id['n']}\n")
+
+    fs.run_command.side_effect = _run_command
+    return fs
+
+
+def _script_finish_checks(monkeypatch, fake_ns_task, results):
+    """Make finish_check return ``results`` in turn (the last repeats)."""
+    results = list(results)
+
+    def _finish_check(self):
+        return results.pop(0) if len(results) > 1 else results[0]
+
+    monkeypatch.setattr(fake_ns_task, "finish_check", _finish_check)
+    monkeypatch.setattr("jaxrens_al.run.sampler.time.sleep", lambda s: None)
+
+
+def _chain_sampler(fs, cluster_config, tmp_path, **kw):
+    cfg = _write_base_config(tmp_path / "ns.yaml")
+    calcdir = tmp_path / "5"
+    calcdir.mkdir()
+    model_file = tmp_path / "model_0.pkl"
+    model_file.write_bytes(b"mock")
+    sampler = JaxrensNSSampler(
+        remote_fs=fs,
+        cluster_config=cluster_config,
+        config_file=cfg,
+        out_file_prefix="ns",
+        max_resubmits=3,
+        **kw,
+    )
+    sampler.update(calcdir, None if kw.get("collect_only") else model_file)
+    return sampler
+
+
+def test_chain_survives_link_one_timing_out(
+    monkeypatch,
+    mock_cluster_config,
+    tmp_path,
+    fake_ns_task,
+    squeue_remote_fs,
+):
+    """run32 it 5: link 1 hits its walltime and leaves the queue before
+    is_finished.info exists; link 2 resumes and finishes. The sampler must
+    keep waiting through that and collect, not raise when link 1 ends."""
+    squeue_remote_fs.squeue = [
+        (0, "RUNNING None\nPENDING Dependency\nPENDING Dependency\n", ""),
+        # link 1 TIMEOUT -> gone; link 2 queued, then running
+        (0, "PENDING Priority\nPENDING Dependency\n", ""),
+        (0, "RUNNING None\nPENDING Dependency\n", ""),
+    ]
+    _script_finish_checks(monkeypatch, fake_ns_task, [False] * 3 + [True])
+    sampler = _chain_sampler(squeue_remote_fs, mock_cluster_config, tmp_path)
+
+    sampled = sampler.get_sampled_configs()
+
+    assert sampled.exists()
+    assert len(fake_ns_task.collected) == 1
+    squeues = [c for c in squeue_remote_fs.run_command_calls if "squeue" in c]
+    assert len(squeues) == 3
+    assert any("scancel" in c for c in squeue_remote_fs.run_command_calls)
+    assert not sampler._chain_path().exists()
+
+
+def test_reattach_mid_chain_waits_on_the_chain(
+    monkeypatch,
+    mock_cluster_config,
+    tmp_path,
+    fake_ns_task,
+    squeue_remote_fs,
+):
+    """A driver restarted while link 2 runs finds the chain sidecar and
+    waits on the chain -- no resubmit, no failure on link 1 being gone."""
+    sampler = _chain_sampler(
+        squeue_remote_fs, mock_cluster_config, tmp_path, collect_only=True
+    )
+    sampler._chain_path().parent.mkdir(parents=True, exist_ok=True)
+    sampler._chain_path().write_text('["11", "12", "13"]')
+    squeue_remote_fs.squeue = [(0, "RUNNING None\nPENDING Dependency\n", "")]
+    _script_finish_checks(monkeypatch, fake_ns_task, [False, False, True])
+
+    sampler.get_sampled_configs()
+
+    assert not fake_ns_task.submitted
+    assert not any("sbatch" in c for c in squeue_remote_fs.run_command_calls)
+    assert len(fake_ns_task.collected) == 1
+    assert "scancel 11 12 13" in squeue_remote_fs.run_command_calls
+
+
+def test_reattach_to_finished_chain_collects_immediately(
+    monkeypatch,
+    mock_cluster_config,
+    tmp_path,
+    fake_ns_task,
+    squeue_remote_fs,
+):
+    """The run32 restart: the marker is already there, so collect without
+    asking squeue at all, and cancel the never-runnable link 3."""
+    sampler = _chain_sampler(
+        squeue_remote_fs, mock_cluster_config, tmp_path, collect_only=True
+    )
+    sampler._chain_path().parent.mkdir(parents=True, exist_ok=True)
+    sampler._chain_path().write_text('["11", "12", "13"]')
+    _script_finish_checks(monkeypatch, fake_ns_task, [True])
+
+    sampler.get_sampled_configs()
+
+    assert squeue_remote_fs.run_command_calls == ["scancel 11 12 13"]
+    assert len(fake_ns_task.collected) == 1
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        # link 2 exited 0 without the marker, so link 3 can never start
+        (0, "PENDING DependencyNeverSatisfied\n", ""),
+        # every link already purged from SLURM
+        (1, "", "slurm_load_jobs error: Invalid job id specified\n"),
+    ],
+    ids=["never-satisfiable", "all-purged"],
+)
+def test_dead_chain_without_marker_raises(
+    monkeypatch,
+    mock_cluster_config,
+    tmp_path,
+    fake_ns_task,
+    squeue_remote_fs,
+    answer,
+):
+    squeue_remote_fs.squeue = [answer]
+    _script_finish_checks(monkeypatch, fake_ns_task, [False])
+    sampler = _chain_sampler(squeue_remote_fs, mock_cluster_config, tmp_path)
+
+    with pytest.raises(TaskError, match="can still run"):
+        sampler.get_sampled_configs()
+    assert not fake_ns_task.collected
+
+
+def test_unreachable_squeue_keeps_waiting(
+    monkeypatch,
+    mock_cluster_config,
+    tmp_path,
+    fake_ns_task,
+    squeue_remote_fs,
+):
+    """An SSH outage (squeue exit 255) is not a dead chain."""
+    squeue_remote_fs.squeue = [(255, "", "ssh: connect timed out\n")]
+    _script_finish_checks(monkeypatch, fake_ns_task, [False] * 4 + [True])
+    sampler = _chain_sampler(squeue_remote_fs, mock_cluster_config, tmp_path)
+
+    sampler.get_sampled_configs()
+
+    assert len(fake_ns_task.collected) == 1
+
+
+def test_chain_wait_respects_max_wait(
+    monkeypatch,
+    mock_cluster_config,
+    tmp_path,
+    fake_ns_task,
+    squeue_remote_fs,
+):
+    _script_finish_checks(monkeypatch, fake_ns_task, [False])
+    sampler = _chain_sampler(
+        squeue_remote_fs,
+        mock_cluster_config,
+        tmp_path,
+        reattach_max_wait=0,
+    )
+
+    with pytest.raises(TaskError, match="exceeding max_wait"):
+        sampler.get_sampled_configs()

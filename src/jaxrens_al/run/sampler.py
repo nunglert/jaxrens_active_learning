@@ -44,6 +44,7 @@ import json
 import logging
 import os
 import re
+import time
 from pathlib import Path
 from typing import Optional, Union
 
@@ -54,7 +55,7 @@ from ase import Atoms
 from remote_handler.core.cluster_handler import ClusterConfig
 from remote_handler.core.file_handler import FileSystemHandlerBase
 from remote_handler.core.tasks import DetachableTaskMixin, SingleScriptTask
-from remote_handler.exceptions import FileSystemError, WorkflowError
+from remote_handler.exceptions import FileSystemError, TaskError, WorkflowError
 from remote_handler.workflows.active_learning_base import Sampler
 
 from jaxrens_al.run.templates import template_dir
@@ -161,10 +162,14 @@ class JaxrensNSSampler(DetachableTaskMixin, Sampler):
             body template (``body_jaxrens.sh.j2``) self-detects ``--resume``
             vs. ``--force`` from whether a checkpoint already exists, so
             every link runs the same script. Waiting for completion then
-            reuses ``wait_if_needed``'s file-based polling (job identity
-            doesn't matter -- only ``is_finished.info`` in the shared
-            directory), and any still-``PENDING`` standby links are
-            cancelled once it appears. ``1`` (default) is today's
+            polls ``is_finished.info`` in the shared directory and gives up
+            only once no chain link can still run (:meth:`_wait_for_chain`
+            -- *not* ``wait_if_needed``, which tracks the manifest's single
+            job id, i.e. link 1, and so fails as soon as link 1 hits its
+            walltime). A driver reattaching mid-chain finds the
+            ``<results>.chain.json`` sidecar and waits the same way. Any
+            still-``PENDING`` standby links are cancelled once the marker
+            appears. ``1`` (default) is today's
             behaviour: one job, no chain. Size ``reattach_max_wait`` to
             cover the whole chain (e.g. ``max_resubmits`` times the
             cluster's walltime) if you want a bound at all.
@@ -361,6 +366,7 @@ class JaxrensNSSampler(DetachableTaskMixin, Sampler):
                 "jaxrens NS job did not finish successfully (no "
                 f"is_finished.info in {self.results_dir})."
             )
+            chain_path = self._chain_path()
             if self.max_resubmits > 1 and not self.collect_only:
                 # Fresh submit with auto-resume chaining: fire job 1
                 # (only_start) and pre-queue the standby continuations
@@ -368,24 +374,16 @@ class JaxrensNSSampler(DetachableTaskMixin, Sampler):
                 # only ever tracks one job id, which is wrong once a later
                 # chain link may be the one that actually finishes.
                 self._submit_chain()
-                # Reuse wait_if_needed's file-based polling branch (job
-                # identity doesn't matter, only is_finished.info in this
-                # directory) by pretending to be a reattach for the
-                # duration of the wait -- submission above already did
-                # what submit_if_needed would have, so this doesn't
-                # double-submit anything.
-                prev_collect_only = self.collect_only
-                self.collect_only = True
-                try:
-                    self.wait_if_needed(
-                        self.ns_task,
-                        max_wait=self.reattach_max_wait,
-                        error_message=error_message,
-                    )
-                finally:
-                    self.collect_only = prev_collect_only
-            else:
+            elif not chain_path.exists():
                 self.submit_if_needed(self.ns_task)
+            if chain_path.exists():
+                # Fresh chain, or a reattach to one: wait on the chain as a
+                # whole. wait_if_needed would poll the manifest's job id
+                # (link 1) and fail once link 1 hits its walltime, while
+                # link 2 is about to resume the run.
+                with open(chain_path) as f:
+                    self._wait_for_chain(json.load(f), error_message)
+            else:
                 self.wait_if_needed(
                     self.ns_task,
                     max_wait=self.reattach_max_wait,
@@ -481,6 +479,64 @@ class JaxrensNSSampler(DetachableTaskMixin, Sampler):
                     result.stderr,
                 )
         chain_path.unlink()
+
+    def _chain_alive(self, job_ids: list[str]) -> Optional[bool]:
+        """Whether any chain link can still run (``None``: can't tell).
+
+        A standby link whose predecessor ``COMPLETED`` sits ``PENDING``
+        with reason ``DependencyNeverSatisfied`` forever -- that one counts
+        as dead. Jobs SLURM has already purged just don't show up;
+        ``squeue`` errors with "Invalid job id" only once *all* of them are
+        gone. Any other failure (SSH down, ...) is ``None``, so the caller
+        keeps waiting rather than declaring the chain dead.
+        """
+        result = self.remote_fs.run_command(
+            f"squeue -h -j {','.join(job_ids)} -o '%T %r'"
+        )
+        if result.returncode != 0:
+            if "invalid job id" in (result.stderr or "").lower():
+                return False
+            return None
+        return any(
+            not line.startswith("PENDING")
+            or "DependencyNeverSatisfied" not in line
+            for line in result.stdout.splitlines()
+            if line.strip()
+        )
+
+    def _wait_for_chain(self, job_ids: list[str], error_message: str) -> None:
+        """Poll ``is_finished.info`` until it appears or the chain is dead.
+
+        Raises ``TaskError`` once no link can still run and the marker is
+        missing, or after ``reattach_max_wait`` seconds.
+        """
+        interval = getattr(self.ns_task, "loop_time", 60)
+        start = time.monotonic()
+        while not self.ns_task.finish_check():
+            if self._chain_alive(job_ids) is False:
+                # The last link may have finished between the two checks.
+                if self.ns_task.finish_check():
+                    return
+                raise TaskError(
+                    f"{error_message} (no link of NS chain {job_ids} can "
+                    "still run)"
+                )
+            elapsed = time.monotonic() - start
+            max_wait = self.reattach_max_wait
+            if max_wait is not None and elapsed >= max_wait:
+                raise TaskError(
+                    f"{error_message} (NS chain {job_ids} still not "
+                    f"finished after {elapsed:.0f}s, exceeding "
+                    f"max_wait={max_wait}s)"
+                )
+            logger.info(
+                "NS chain %s not finished yet (waited %.0fs); polling again "
+                "in %.0fs.",
+                job_ids,
+                elapsed,
+                interval,
+            )
+            time.sleep(interval)
 
     def _read_trajectories(self) -> list[Atoms]:
         """Read jaxrens ``.traj.extxyz`` outputs, tagging each with run_id."""
