@@ -22,7 +22,7 @@ classifiers = [
     "Natural Language :: English"
 ]
 dependencies = [
-    "alviz @ git+ssh://git@gitlab.tuwien.ac.at/e165-03-1_theoretische_materialchemie/madsen-s-research-group/alviz.git@main",
+    "alviz @ git+https://github.com/nunglert/alviz.git@main",
     "ase",
     "scikit-learn",
     "pyyaml",
@@ -31,8 +31,8 @@ readme = "README.md"
 
 [project.optional-dependencies]
 run = [
-    "remote_handler[dev,mace_freeze,quests,neuralil,steinhardt] @ git+ssh://git@gitlab.tuwien.ac.at/e165-03-1_theoretische_materialchemie/madsen-s-research-group/remote_handler.git@dev-NU",
-    "jaxrens[mace,neuralil,nequix,jaxmd] @ git+ssh://git@github.com/nunglert/jaxrens.git@main",
+    "remote_handler[dev,mace_freeze,quests,neuralil,steinhardt] @ git+https://github.com/nunglert/remote_handler.git@main",
+    "jaxrens[mace,neuralil,nequix,jaxmd] @ git+https://github.com/nunglert/jaxrens.git@main",
     # phase-grid relaxations (run/phase_grid.py, processors/torchsim_relax.py).
     # torch-sim 0.6 delegates its MACE wrapper to mace.calculators.mace_torchsim
     # (mace-torch >= 0.3.16); 0.5 carries its own, compatible with this env's mace.
@@ -51,6 +51,9 @@ dev = [
 all = [
     "jaxrens_active_learning[dev,run,refdb]"
 ]
+
+[project.urls]
+"Homepage" = "https://github.com/nunglert/jaxrens_active_learning"
 
 [project.scripts]
 jaxrens-al = "jaxrens_al.__main__:main"

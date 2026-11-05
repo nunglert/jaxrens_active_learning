@@ -82,6 +82,16 @@ the new `## [X.Y.Z] — YYYY-MM-DD`, add a fresh empty `[Unreleased]`, then tag.
   (verified against `Monitor.expectation`), and the P-on-x/T-on-y heatmap mixin
   the Steinhardt / thermodynamics / RDF panels previously each copied.
 
+### Changed
+- **The repository moved to GitHub:**
+  <https://github.com/nunglert/jaxrens_active_learning>. CI runs on GitHub
+  Actions; the GitLab project is no longer updated.
+- **Sibling dependencies install from public GitHub HTTPS URLs.** `alviz`,
+  `remote_handler` and `jaxrens` were pinned as SSH URLs (two of them on
+  GitLab), so installing needed SSH keys, and CI needed tokens. They now
+  install with no key or token. `remote_handler` is pinned to `main`
+  instead of `dev-NU`.
+
 ### Fixed
 - **`ns_thermodynamics` with `quantity: volume` works again.** It read
   `Monitor.dead_volumes`, which `MonitorCollection.from_multi_run_directory`
@@ -122,4 +132,4 @@ the new `## [X.Y.Z] — YYYY-MM-DD`, add a fresh empty `[Unreleased]`, then tag.
   checkout scripts under `scripts/` and the Python `jaxrens_al.cli` /
   `jaxrens_al.run.reference_db` entry points are unchanged).
 
-[Unreleased]: https://gitlab.tuwien.ac.at/e165-03-1_theoretische_materialchemie/madsen-s-research-group/jaxrens_active_learning/-/commits/main
+[Unreleased]: https://github.com/nunglert/jaxrens_active_learning/compare/v0.1.0...HEAD
