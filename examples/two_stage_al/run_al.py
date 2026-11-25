@@ -73,16 +73,9 @@ INPUTS = Path(__file__).resolve().parent / "inputs"
 RH_SCRIPTS = Path("/home/you/code/remote_handler/src/remote_handler/scripts")
 
 # Phase-1 MACE artifacts (real-shaped; edit for your model) ----------------
-# The foundation model as a mace-jax bundle DIRECTORY (config.json +
-# params.msgpack -- what jaxrens' create_mace loads). Iteration 0's sampler
-# loads this; later iterations use the finetuned bundles the trainer emits.
-# The AL pipeline now ships directories (not just single files), so a bundle
-# dir flows through both the handler and the sampler unchanged.
 FOUNDATION_MODEL_JAX = INPUTS / "foundation_mace_jax"
-# The torch foundation model the finetuner starts from.
 FOUNDATION_MODEL = INPUTS / "foundation.model"
 MACE_CONFIG = INPUTS / "mace.yaml"  # MACE (finetuning) training config
-# MACE run_train.py on the training cluster.
 MACE_TRAIN_RUNNER = Path("/home/you/code/mace/mace/cli/run_train.py")
 
 
@@ -109,12 +102,6 @@ def collect_evaluated_outputs(calchome: Path) -> list[Path]:
 
 # ==========================================================================
 # Sampler schedules: ramp NS settings across iterations (per phase).
-#
-# kwargs are dotted jaxrens keys, applied by JaxrensNSSampler as
-# ``jaxrens run --set run.n_live=...`` overrides on the base ns.yaml. Legacy
-# cumulative-threshold style (experiments/al_loop.py): later ``if`` blocks
-# override earlier ones. Every stage MUST return the SAME keys --
-# Schedule.check() (run in __init__) enforces this.
 # ==========================================================================
 class Phase1SamplerSchedule(active_learning_base.Schedule):
     def get_kwargs(self, iteration_idx):
@@ -155,8 +142,7 @@ def preflight(schedule, sampler):
 # PHASE 1 -- MACE foundation bootstrap.
 # ==========================================================================
 def run_phase1(calchome: Path, gpu_cluster, dft_cluster, gpu_fs, dft_fs):
-    # SAMPLER: jaxrens NS on the MACE (mace-jax) model -- a pure producer that
-    # emits all dead points. QUESTS *diversity* selection is the stage below.
+    # SAMPLER: jaxrens NS on the MACE (mace-jax) model
     sampler = JaxrensNSSampler(
         remote_fs=gpu_fs,
         cluster_config=gpu_cluster,
@@ -181,8 +167,7 @@ def run_phase1(calchome: Path, gpu_cluster, dft_cluster, gpu_fs, dft_fs):
         remote_savepath=dft_cluster.savepath,
     )
 
-    # TRAINER: finetune the MACE foundation model, convert torch -> mace-jax in
-    # the same job so the next iteration's sampler can load the .pkl bundle.
+    # TRAINER: finetune the MACE foundation model, convert torch to jax
     trainer = trainers.MaceFinetuningTrainer(
         remote_fs=gpu_fs,
         cluster_config=gpu_cluster,
@@ -192,9 +177,6 @@ def run_phase1(calchome: Path, gpu_cluster, dft_cluster, gpu_fs, dft_fs):
         remote_mace_train_runner=MACE_TRAIN_RUNNER,
         num_models=1,
         convert_to_jax=True,
-        # mace-jax bundle DIR (config.json + params.msgpack) -- the format the
-        # mace backend loads. The staged handler copytree's it into the next
-        # iteration's input (the classic handler's shutil.copy could not).
         jax_output_format="bundle",
         stub=STUB,
         loop_time=LOOP_TIME,
@@ -212,9 +194,6 @@ def run_phase1(calchome: Path, gpu_cluster, dft_cluster, gpu_fs, dft_fs):
         calchome=str(calchome),
         selector=QUESTSSelector(n_configs=SAMPLE_SIZE, method="msc"),
         sampler_schedule=schedule,
-        # Enter at the sampler with the foundation model (as mace-jax) so the
-        # very first RENS run is foundation-driven; each later iteration's
-        # sampler uses the freshly finetuned model.
         cycle_entry_point="sampler",
         initial_trainer_out=[FOUNDATION_MODEL_JAX],
         combine_evaluator_outputs=True,  # finetune on the growing dataset
@@ -230,9 +209,7 @@ def run_phase1(calchome: Path, gpu_cluster, dft_cluster, gpu_fs, dft_fs):
 def run_phase2(
     calchome, seed_evaluated, gpu_cluster, dft_cluster, gpu_fs, dft_fs
 ):
-    # SAMPLER: jaxrens NS on the NeuralIL ensemble; resample by committee
-    # uncertainty. The phase-2 ns config has jaxrens annotate the trajectory
-    # in place, so each frame carries ns_energy_std + per-atom ns_force_std.
+    # SAMPLER: jaxrens NS on the NeuralIL ensemble
     sampler = JaxrensNSSampler(
         remote_fs=gpu_fs,
         cluster_config=gpu_cluster,
@@ -256,8 +233,7 @@ def run_phase2(
         remote_savepath=dft_cluster.savepath,
     )
 
-    # TRAINER: NeuralIL ensemble, retrained from scratch each iteration on the
-    # full accumulated dataset (combine_evaluator_outputs=True below).
+    # TRAINER: NeuralIL ensemble, retrained from scratch each iteration
     trainer = trainers.NeuralilILTrainer(
         training_script=RH_SCRIPTS / "neuralil" / "neuralil_training.py",
         remote_fs=gpu_fs,
@@ -279,9 +255,6 @@ def run_phase2(
     schedule = Phase2SamplerSchedule(PHASE2_ITERS)
     preflight(schedule, sampler)
 
-    # Staged: sampler -> selector (committee uncertainty) -> evaluator ->
-    # trainer. The uncertainty selector reads jaxrens' ns_energy_std /
-    # ns_force_std (annotated in place by the phase-2 ns config).
     handler = StagedActiveLearningHandler.from_actors(
         sampler=sampler,
         evaluator=evaluator,
@@ -295,8 +268,6 @@ def run_phase2(
             forces_weight=1.0,
         ),
         sampler_schedule=schedule,
-        # Enter at training: iteration 0 trains the NeuralIL ensemble from
-        # scratch on ALL of phase 1's labelled configs, then samples with it.
         cycle_entry_point="training",
         initial_evaluator_out=seed_evaluated,
         combine_evaluator_outputs=True,  # always train on the full dataset
@@ -324,24 +295,11 @@ INCAR_KWARGS = {
 def main(calchome: str = "calchome"):
     calchome = Path(calchome)
 
-    # Clusters (lugus/musica/...) are read from your remote_handler config --
-    # the default ~/.config/remote_handler, or REMOTE_HANDLER_CONFIG_DIR if you
-    # export one. (Do NOT force it to a local dir here, or ClusterConfig.
-    # from_name won't find your registered clusters.)
-    #
-    # The only thing remote_handler can't find on its own is jaxrens_al's
-    # SLURM *body* template (body_jaxrens.sh.j2) -- the cluster *headers*
-    # (musica.sh.j2, dirona.sh.j2) are remote_handler built-ins. So point the
-    # template search at the packaged dir that ships the body (no copy needed).
-    # If you use a custom, non-built-in cluster header, instead point this at a
-    # dir holding BOTH that header and body_jaxrens.sh.j2.
     os.environ["REMOTE_HANDLER_SLURM_TEMPLATES"] = str(template_dir())
 
     # --- file systems + clusters -----------------------------------------
     dft_cluster = ClusterConfig.from_name("lugus")  # CPU: VASP single-points
     gpu_cluster = ClusterConfig.from_name("musica")  # GPU: NS + training
-    # cluster.remote_fs() carries the cluster's connection policy, so the
-    # connect and every SFTP op honour resilient_connection.
     lugus_fs = dft_cluster.remote_fs()
     musica_fs = gpu_cluster.remote_fs()
 

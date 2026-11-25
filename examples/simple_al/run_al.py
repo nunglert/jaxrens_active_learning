@@ -50,7 +50,6 @@ N_GPU_PARALLEL = 1
 HOME = Path(os.getcwd())
 INPUTS = Path(__file__).resolve().parent / "inputs"
 # remote-side payloads shipped + run on the cluster (from remote_handler):
-RH_SCRIPTS = Path("/home/you/code/remote_handler/src/remote_handler/scripts")
 
 
 def make_template_dir() -> Path:
@@ -102,8 +101,6 @@ def main(calchome: str = "calchome"):
     )
 
     # --- SAMPLER: jaxrens nested sampling (this project) ------------------
-    # Pure producer: emits ALL dead points. Reducing them to candidates is the
-    # selector stage below.
     sampler = JaxrensNSSampler(
         remote_fs=remote_fs,
         cluster_config=gpu_cluster,
@@ -118,7 +115,6 @@ def main(calchome: str = "calchome"):
 
     # --- EVALUATOR: VASP single-point DFT (remote_handler) ---------------
     evaluator = evaluators.VASPEvaluator(
-        singlepoint_script=RH_SCRIPTS / "dft_singlepoint.py",
         remote_fs=local_fs,
         cluster_config=dft_cluster,
         num_parallel=25,
@@ -142,7 +138,6 @@ def main(calchome: str = "calchome"):
 
     # --- TRAINER: NeuralIL force field (remote_handler) ------------------
     trainer = trainers.NeuralilILTrainer(
-        training_script=RH_SCRIPTS / "neuralil" / "neuralil_training.py",
         remote_fs=remote_fs,
         cluster_config=gpu_cluster,
         training_kwargs={
@@ -160,15 +155,6 @@ def main(calchome: str = "calchome"):
     )
 
     # --- SAMPLER SCHEDULE: ramp NS settings across iterations ------------
-    # A remote_handler ``Schedule`` returns per-iteration kwargs that the
-    # handler feeds to ``Sampler.update``. For JaxrensNSSampler the kwargs are
-    # dotted jaxrens keys, applied as ``jaxrens run --set run.n_live=...``
-    # overrides on the base ns.yaml.
-    #
-    # Legacy cumulative-threshold style (see experiments/al_loop.py): later
-    # ``if`` blocks override earlier ones, so each stage is "the settings from
-    # this iteration onward". Every stage MUST return the SAME keys --
-    # ``Schedule.check()`` (run in __init__) rejects a schedule that doesn't.
     class SamplerSchedule(active_learning_base.Schedule):
         def get_kwargs(self, iteration_idx):
             # Warm-up: many live points + short walks -> cheap, broad coverage
@@ -184,12 +170,6 @@ def main(calchome: str = "calchome"):
 
     sampler_schedule = SamplerSchedule(NUM_ITERATIONS)
 
-    # Pre-flight the schedule before committing to a long run (legacy pattern):
-    #   * visualize() prints the ramp table so you can eyeball it;
-    #   * test() trial-applies EVERY iteration's kwargs to the base config via
-    #     the sampler's own config assembly, so a bad override (e.g. a dotted
-    #     key that doesn't fit the YAML) fails HERE, not mid-run on the cluster.
-    # This is pure dict work -- no cluster, no jaxrens needed.
     sampler_schedule.visualize()
     sampler_schedule.test(
         lambda kwargs: sampler._build_config(
@@ -197,11 +177,6 @@ def main(calchome: str = "calchome"):
         )
     )
 
-    # --- orchestrate ------------------------------------------------------
-    # Staged handler: sampler -> selector -> evaluator -> trainer. The selector
-    # stage (UniformSelector) does the uniform thinning the sampler used to do
-    # internally -- here it picks 100 evenly-spaced configs from the dead-point
-    # pool. Swap in QUESTSSelector / UncertaintySelector to change strategy.
     handler = StagedActiveLearningHandler.from_actors(
         sampler=sampler,
         evaluator=evaluator,
@@ -209,15 +184,12 @@ def main(calchome: str = "calchome"):
         calchome=str(calchome),
         selector=UniformSelector(n_configs=100),
         sampler_schedule=sampler_schedule,
-        # Seed the loop with an initial labelled dataset and enter at
-        # evaluation so iteration 0 produces the first model the sampler needs.
         initial_sampler_out=INPUTS / "initial_train.extxyz",
         cycle_entry_point="evaluation",
         num_iterations=NUM_ITERATIONS,
     )
     handler.run()
 
-    # Visualize separately with the standalone dashboard CLI:
     #     jaxrens-al-dashboard <calchome>
     print(f"AL run complete: {calchome}")
     print(f"Build the dashboard with:  jaxrens-al-dashboard {calchome}")
